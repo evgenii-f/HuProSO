@@ -9,14 +9,15 @@ import torch
 
 from hp.utils.rotation_tools import RotationConverterTorchRoma as RotationConverterTorch
 from hp.utils.skeleton_forward_kinematics import perform_forward_kinematics
-from hp.data.amass_cfg import AmassJoints, AmassJoints4Learning, ORIGINAL_AMASS_SPLITS
+from hp.data.amass_cfg import AmassJoints, AmassJoints4Learning, ORIGINAL_AMASS_SPLITS, SUBSET_AMASS_SPLITS
+from hp.utils.paths import get_path, get_amass_split
 
 
 class AMASS(torch.utils.data.Dataset):
     def __init__(
         self,
         datasets: list = [],
-        path_to_dataset: str = "../data/AMASS_rotations/",
+        path_to_dataset: str = None,  # default: "amass_rotations" in config/paths.yaml
         mode: str = None,  # 'train', 'valid', 'test'
         selected_joints: List[AmassJoints] = AmassJoints4Learning,
         rotation_representation: str = "matrix",
@@ -28,13 +29,14 @@ class AMASS(torch.utils.data.Dataset):
 
         self.mode = mode
         if mode is not None:
-            self.datasets = ORIGINAL_AMASS_SPLITS[mode]
+            splits = SUBSET_AMASS_SPLITS if get_amass_split() == "subset" else ORIGINAL_AMASS_SPLITS
+            self.datasets = splits[mode]
 
         self.data = data
 
         logging.info(f"Using the following datasets of AMASS: {self.datasets}.")
 
-        self.path_to_dataset = path_to_dataset
+        self.path_to_dataset = get_path("amass_rotations", override=path_to_dataset)
 
         self.selected_joints = selected_joints
         self.selected_joints_ints = [sj.value for sj in selected_joints]
@@ -105,7 +107,14 @@ class AMASS(torch.utils.data.Dataset):
         if not standard_amass:
             data = []
             for d in self.datasets:
-                d_name = f"{self.path_to_dataset}{d}.pt"
+                d_name = os.path.join(self.path_to_dataset, f"{d}.pt")
+                if not os.path.isfile(d_name):
+                    raise FileNotFoundError(
+                        f"Preprocessed dataset {d_name} not found. Create it with "
+                        "scripts/preprocess/preprocess_amass_data.sh, point 'amass_rotations' "
+                        "in config/paths.yaml to the right folder, or set "
+                        "'amass_split: subset' to use only the preprocessed subset."
+                    )
                 data.append(torch.load(d_name).numpy()[:, :22])
             data = np.concatenate(data, axis=0)
         else:

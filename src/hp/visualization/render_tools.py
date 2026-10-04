@@ -1,65 +1,70 @@
+import os
+from os import path as osp
+
+import numpy as np
+import matplotlib.pyplot as plt
+import torch
+
 from human_body_prior.body_model.body_model import BodyModel
-from os import path as osp
-import torch
-import numpy as np
-import matplotlib.pyplot as plt
 
-from scipy.spatial.transform import Rotation
-from os import path as osp
-
-import numpy as np
-import matplotlib.pyplot as plt
-import torch
-
-from body_visualizer.tools.vis_tools import render_smpl_params
-from body_visualizer.tools.vis_tools import imagearray2file
-from body_visualizer.tools.vis_tools import show_image
-
-from hp.data.amass_cfg import AmassJoints
+from hp.utils.paths import get_path
+from hp.visualization.pv_render import render_mesh
 
 RENDER_WIDTH = 360
 RENDER_HEIGHT = 400
 dpi = 100
 
+# SMPL-X neutral model, obtain from https://smpl-x.is.tue.mpg.de/downloads
+# The folder is set by "body_models" in config/paths.yaml.
+
+
+def load_body_model(bm_fname: str = None, device: str = "cpu") -> BodyModel:
+    if bm_fname is None:
+        bm_fname = osp.join(get_path("body_models"), "smplx/SMPLX_NEUTRAL.npz")
+    if not osp.exists(bm_fname):
+        raise FileNotFoundError(
+            f"SMPL-X model not found at {bm_fname}. Download SMPLX_NEUTRAL.npz from "
+            "https://smpl-x.is.tue.mpg.de/downloads and set body_models in config/paths.yaml."
+        )
+    return BodyModel(bm_fname=bm_fname).to(device)
+
 
 class HumanRender:
-    def __init__(self, device: str = "cpu") -> None:
-        support_dir = "../human_body_prior/support_data/dowloads/"
-        expr_dir = osp.join(
-            support_dir, "V02_05"
-        )  #'TRAINED_MODEL_DIRECTORY'  in this directory the trained model along with the model code exist
+    def __init__(self, device: str = "cpu", bm: BodyModel = None) -> None:
         self.device = device
-        bm_fname = osp.join(
-            support_dir, "models/smplx/SMPLX_NEUTRAL.npz"
-        )  #'PATH_TO_SMPLX_model.npz'  obtain from https://smpl-x.is.tue.mpg.de/downloads
-        sample_amass_fname = osp.join(
-            support_dir, "amass_sample.npz"
-        )  # a sample npz file from AMASS
-        self.bm = BodyModel(bm_fname=bm_fname).to(device)
+        self.bm = bm if bm is not None else load_body_model(device=device)
+
+    def render_images(self, pose_body, w=None, h=None, azimuths_deg=(0,)) -> np.ndarray:
+        """Render each pose of pose_body [N, 63] (or [21, 3]). Returns [N, n_views, h, w, 3]."""
+        w = RENDER_WIDTH if w is None else w
+        h = RENDER_HEIGHT if h is None else h
+        pose_body = torch.as_tensor(pose_body).float().reshape(-1, 63)
+        faces = self.bm.f.detach().cpu().numpy()
+        images = []
+        with torch.no_grad():
+            for pose in pose_body:
+                v = self.bm(pose_body=pose[None].to(self.device)).v[0].cpu().numpy()
+                images.append(render_mesh(v, faces, w, h, azimuths_deg))
+        return np.stack(images)
 
     def render_human(
         self,
-        pose_body: np.ndarray,
+        pose_body,
         N_plot: int = 1,
         dpi=150,
         show_img=True,
         w=None,
         h=None,
     ) -> None:
-        if w is None:
-            w = RENDER_WIDTH
-        if h is None:
-            h = RENDER_HEIGHT
+        w = RENDER_WIDTH if w is None else w
+        h = RENDER_HEIGHT if h is None else h
         print(f"Rendering with {w}x{h}, DPI={dpi}")
-        images = render_smpl_params(
-            self.bm,
-            {"pose_body": pose_body.reshape(-1, 63)},
-            rot_body=np.array([0, 0, 0]),
-            imw_imh=(w, h),
-        ).reshape(1, N_plot, 1, h, w, 3)
-        img = imagearray2file(images)
+        images = self.render_images(pose_body, w, h)  # [N, 1, h, w, 3]
+        img = np.hstack(list(images[:, 0]))
         if show_img:
-            show_image(img[0], dpi=dpi)
+            fig = plt.figure(figsize=(4 * len(images), 4), dpi=dpi)
+            plt.imshow(img)
+            plt.axis("off")
         else:
             return img, images
 
@@ -71,22 +76,10 @@ class HumanRender:
         return vertices
 
 
-def render_human(bm, pose_body: np.ndarray, N_plot: int = 1, show_img=True) -> None:
-    images = render_smpl_params(
-        bm,
-        {"pose_body": pose_body.reshape(-1, 63)},
-        imw_imh=(RENDER_WIDTH, RENDER_HEIGHT),
-    ).reshape(1, N_plot, 1, RENDER_HEIGHT, RENDER_WIDTH, 3)
-    img = imagearray2file(images)
-    if show_img:
-        show_image(img[0], dpi=dpi)
-
-    return img, images
+def render_human(bm, pose_body: np.ndarray, N_plot: int = 1, show_img=True):
+    return HumanRender(bm=bm).render_human(pose_body, N_plot=N_plot, show_img=show_img)
 
 
 def render_human_from_pose_body(pose_body):
-    support_dir = "../human_body_prior/support_data/dowloads/"
-    bm_fname = osp.join(support_dir, "models/smplx/SMPLX_NEUTRAL.npz")
-    bm = BodyModel(bm_fname=bm_fname)
     pose_body = torch.tensor(pose_body).float()
-    render_human(bm, pose_body[1:])
+    HumanRender().render_human(pose_body[1:])

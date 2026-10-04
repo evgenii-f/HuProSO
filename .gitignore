@@ -5,3 +5,5 @@ data/*
 ray_results/*
 runs/
 logs/
+config/paths.yaml
+.ipynb_checkpoints/

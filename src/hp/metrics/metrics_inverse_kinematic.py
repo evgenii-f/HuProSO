@@ -8,7 +8,7 @@ from hp.utils.rotation_tools import RotationConverterTorchRoma as RotationConver
 from hp.utils.smpl import relative2absolute_joint_coordinates
 
 try:
-    from hp.visualization.vis_tools import HumanRender
+    from hp.visualization.render_tools import HumanRender
 except:
     print("Visualizer not available. Install body_visualizer to use it.")
 

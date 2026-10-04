@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # Define target directory
-SAVE_DIR="<TO SPECIFY>"
-DIR_OF_TAR_FILES="<TO SPECIFY>"
+SAVE_DIR="$HOME/data/amass"
+DIR_OF_TAR_FILES="$HOME/Documents/amass_subsets"
 
 cd $DIR_OF_TAR_FILES
 

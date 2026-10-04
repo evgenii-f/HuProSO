@@ -481,7 +481,7 @@ class PriorEvaluator:
 
         # Visualize generated samples
         if render_human:
-            from hp.visualization.vis_tools import HumanRender
+            from hp.visualization.render_tools import HumanRender
 
             print("Render huaman...")
             with torch.no_grad():

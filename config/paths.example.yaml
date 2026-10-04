@@ -1,0 +1,7 @@
+# Copy to config/paths.yaml (git-ignored) or ~/.config/huproso/paths.yaml and edit.
+# Read on every use: no reinstall or kernel restart needed after changes.
+amass_raw: ~/data/amass                  # extracted AMASS datasets (input of preprocessing)
+amass_rotations: ~/data/AMASS_rotations  # preprocessed <Dataset>.pt files (used for training/eval)
+body_models: ~/data/body_models          # contains smplx/SMPLX_NEUTRAL.npz (rendering only)
+amass_split: subset                      # original | subset (see SUBSET_AMASS_SPLITS in amass_cfg.py)
+device: auto                            # auto | cpu | mps | cuda:N (auto: the experiment's device if available, else cuda, else cpu)

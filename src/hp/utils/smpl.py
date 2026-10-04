@@ -1,9 +1,12 @@
+import os
+
 import numpy as np
 from typing import Dict
 import logging
 import torch
 from hp.utils.rotation_tools import RotationConverterTorchRoma as RC
 from hp.data.amass_cfg import AmassJoints
+from hp.utils.paths import get_path
 from typing import Union, List
 
 device = "cpu"
@@ -17,7 +20,14 @@ class SmplSkeleton:
         # parents = {0: -1, 1: 0, 2: 0, 3: 0, 4: 1, 5: 2, 6: 3, 7: 4, 8: 5, 9: 6, 10: 7, 11: 8, 12: 9, 13: 9, 14: 9, 15: 12, 16: 13, 17: 14, 18: 16, 19: 17, 20: 18, 21: 19, 22: 20, 23: 21}
         self.skel = None
         if parents is None:
-            self.skel = np.load("../body_visualizer/support_data/smpl_skeleton.npz")
+            skel_file = os.path.join(get_path("body_models"), "smpl_skeleton.npz")
+            if not os.path.isfile(skel_file):
+                raise FileNotFoundError(
+                    f"{skel_file} not found. Take body_models/smpl_skeleton.npz from "
+                    "https://github.com/wei-mao-2019/HisRepItself and put it into the "
+                    "'body_models' folder set in config/paths.yaml."
+                )
+            self.skel = np.load(skel_file)
             parents = self.skel["parents"]
 
         parent = {}

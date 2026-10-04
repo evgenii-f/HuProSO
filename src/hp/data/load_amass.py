@@ -33,8 +33,8 @@ class AmassLoader:
                     if (
                         file_name.endswith(".npz")
                         and not file_name.startswith(".")
-                        and ("neutral_stagei" not in file_name)
-                    ):  # neutral_stagei can come in SMPLX
+                        and not file_name.endswith("_stagei.npz")
+                    ):  # *_stagei.npz (shape fits, no poses) come in SMPLX
                         self.data_dirs.append(f"{sub_dir}/{file_name}")
 
     def get_number_of_frames(self) -> Tuple[int, dict]:

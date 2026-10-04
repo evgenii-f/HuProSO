@@ -14,6 +14,7 @@ from hp.estimators.rotnorm.flow.flow_nd import get_nd_flow
 from hp.estimators.rotnorm.flow.flow import get_flow
 import hp.estimators.rotnorm.utils.sd as sd
 from hp.core.evaluator import PriorEvaluator, IKEvaluator
+from hp.utils.device import resolve_device
 
 
 class PriorTrainer:
@@ -22,7 +23,8 @@ class PriorTrainer:
 
         self.writer = None
         self.config = config
-        logging.info(f"Creating {self.config.trainer}...")
+        self.config.device = resolve_device(self.config.device)
+        logging.info(f"Creating {self.config.trainer} on {self.config.device}...")
 
         selected_joints = (
             AmassJoints4Learning
@@ -439,7 +441,8 @@ class SO3PriorTrainer(PriorTrainer):
         )
         logging.info(f"Saved models and permute dims to {self.config.save.path_dir}.")
 
-    def load_model(self, save_path="", end_str="", device="cuda:0") -> None:
+    def load_model(self, save_path="", end_str="", device=None) -> None:
+        device = self.config.device if device is None else device
         save_path = self.config.save.path_dir if save_path == "" else save_path
         cpkt_path = f"{save_path}/model_ckpt_pdf_estimator{end_str}.pt"
         state_dict_loaded = torch.load(cpkt_path, map_location=device)

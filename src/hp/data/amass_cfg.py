@@ -73,3 +73,11 @@ ORIGINAL_AMASS_SPLITS = {
         "ACCAD",
     ],  # 14779964 samples
 }
+
+# Small splits (~0.7M frames in total) for quick experiments.
+# Select with the environment variable HUPROSO_SUBSET=1.
+SUBSET_AMASS_SPLITS = {
+    "train": ["ACCAD", "EKUT", "TotalCapture", "TCDHands"],
+    "valid": ["MoSh"],
+    "test": ["SSM"],
+}

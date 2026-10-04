@@ -9,31 +9,38 @@ import roma
 import torch
 
 from hp.data.load_amass import AmassLoader
+from hp.utils.paths import get_path
 
 
 logging.basicConfig(level=logging.INFO)
 
 N_joints = 165 // 3
 
+# Folder names on disk that differ from the dataset names used in the splits.
+DATASET_DIRS = {"EyesJapanDataset": "Eyes_Japan_Dataset"}
+
 
 def main():
-    os.chdir(f"{os.path.dirname(__file__)}/..")
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", type=str, help="Name of folder of dataset.")
-    parser.add_argument("--data_dir", type=str, help="Directory of data")
-    parser.add_argument("--save_dir", type=str, help="Directory of pickled data")
+    parser.add_argument("--data_dir", type=str, help="Directory of data (default: amass_raw in config/paths.yaml)")
+    parser.add_argument("--save_dir", type=str, help="Directory of pickled data (default: amass_rotations in config/paths.yaml)")
     args = parser.parse_args()
+    args.data_dir = get_path("amass_raw", override=args.data_dir)
+    args.save_dir = get_path("amass_rotations", override=args.save_dir)
 
     logging.info(f"Processing dataset {args.dataset}.")
 
-    filedir = args.save_dir
-    filename_rotations = f"rotations_{args.dataset.lower()}_xn.pt"
+    os.makedirs(args.save_dir, exist_ok=True)
+    filedir = args.save_dir.rstrip("/") + "/"
+    # AMASS (training code) loads <path_to_dataset><dataset>.pt
+    filename_rotations = f"{args.dataset}.pt"
 
     dataset = args.dataset
     ALoader = AmassLoader(
         unpacked_directory=args.data_dir,
         datasets=[
-            dataset,
+            DATASET_DIRS.get(dataset, dataset),
         ],
     )
     N_frames, _ = ALoader.get_number_of_frames()
@@ -57,14 +64,14 @@ def main():
 
     poses_ax_angles = poses_ax_angles[:i_frame]
 
-    logging.info("Number of samples:", i_frame)
+    logging.info(f"Number of samples: {i_frame}")
 
     qs = roma.rotvec_to_unitquat(torch.tensor(poses_ax_angles)).numpy()
 
     save_dir = filedir + filename_rotations
 
     if not (filename_rotations in os.listdir(filedir)):
-        torch.save(qs, f"{save_dir}")
+        torch.save(torch.from_numpy(qs), f"{save_dir}")
         logging.info(f"Saved rotations to {save_dir}.")
 
 
