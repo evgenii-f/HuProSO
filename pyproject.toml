@@ -13,6 +13,9 @@ authors = [
 ]
 urls = { Homepage = "https://github.com/odunkel/HuProSO" }
 
+[project.optional-dependencies]
+dev = ["ipywidgets"]
+
 [tool.setuptools]
 package-dir = { "" = "src" }
 
