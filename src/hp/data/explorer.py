@@ -9,13 +9,13 @@ import zipfile
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
-from numpy.lib import format as npf
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
 from PIL import Image
 from scipy.spatial.transform import Rotation
 
 from hp.data.amass_cfg import AmassJoints4Learning
+from hp.data.compression import compress, npy_len as _npy_len
 from hp.utils.paths import get_path
 
 N_BODY = 22  # root + 21 body joints in SMPL-X pose order
@@ -24,13 +24,6 @@ N_BODY = 22  # root + 21 body joints in SMPL-X pose order
 def list_datasets(raw_dir: str = None) -> List[str]:
     raw_dir = get_path("amass_raw", override=raw_dir)
     return sorted(d for d in os.listdir(raw_dir) if os.path.isdir(os.path.join(raw_dir, d)))
-
-
-def _npy_len(z: zipfile.ZipFile, name: str) -> int:
-    with z.open(name) as f:
-        version = npf.read_magic(f)
-        read = npf.read_array_header_1_0 if version == (1, 0) else npf.read_array_header_2_0
-        return read(f)[0][0]
 
 
 def scan_dataset(dataset: str, raw_dir: str = None) -> List[Dict]:
@@ -120,24 +113,6 @@ def skeleton_joints(pose: np.ndarray, trans: np.ndarray, parents: np.ndarray, p3
             rot_global[i] = rot_global[p] @ rot_local[i]
             joints[i] = joints[p] + rot_global[p] @ (p3d0[i] - p3d0[p])
     return joints
-
-
-def compress(seq: Dict, stride: int = 1, crop_start_s: float = 0.0, crop_end_s: float = 0.0) -> Dict:
-    """Crop the start/end (seconds), then keep every `stride`-th frame.
-    Returns the shortened sequence plus `index` (original frame numbers) and `range` (kept [a, b))."""
-    n, fps = len(seq["poses"]), seq["fps"]
-    a = min(int(round(crop_start_s * fps)), n - 1)
-    b = max(n - int(round(crop_end_s * fps)), a + 1)
-    idx = np.arange(a, b, max(1, int(stride)))
-    return dict(
-        poses=seq["poses"][idx],
-        trans=seq["trans"][idx],
-        fps=fps / max(1, int(stride)),
-        gender=seq["gender"],
-        index=idx,
-        range=(a, b),
-        stride=max(1, int(stride)),
-    )
 
 
 def _kept_frame(comp: Dict, frame: int) -> Optional[int]:
