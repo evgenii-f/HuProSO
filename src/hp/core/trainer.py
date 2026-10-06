@@ -223,11 +223,11 @@ class PriorTrainer:
                     if (it + 1) % self.config.save_ckpt_every == 0:
                         self.save_model(end_str=f"_{it:05d}")
 
+                    pbar.update(1)
+                    it += 1
                     if it >= self.max_iter:
                         stop_training = True
                         break
-                    pbar.update(1)
-                    it += 1
 
                 if stop_training:
                     break
