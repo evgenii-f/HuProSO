@@ -49,18 +49,10 @@ def main():
 
     i_frame = 0
     for n_subject, subject in enumerate(tqdm(ALoader)):
-        N = subject["poses"].shape[0]
-        for i_sample in range(N):
-            try:
-                data = subject["poses"][i_sample]
-            except:
-                logging.warning(
-                    f"Failed to load data for subject {n_subject} sample {i_sample}. Continuing."
-                )
-                continue
-            axis_angle = data[0 : N_joints * 3].reshape(N_joints, 3)
-            poses_ax_angles[i_frame] = axis_angle.reshape(N_joints, 3)
-            i_frame += 1
+        poses = subject["poses"]  # an npz member is read on every access, so load it once
+        N = poses.shape[0]
+        poses_ax_angles[i_frame : i_frame + N] = poses[:, : N_joints * 3].reshape(N, N_joints, 3)
+        i_frame += N
 
     poses_ax_angles = poses_ax_angles[:i_frame]
 
