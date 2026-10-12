@@ -22,12 +22,13 @@ class AMASS(torch.utils.data.Dataset):
         selected_joints: List[AmassJoints] = AmassJoints4Learning,
         rotation_representation: str = "matrix",
         last_dim_flattened: bool = True,
-        data: np.ndarray = None,
+        data: np.ndarray = None,  # instead of the files: quaternions [N, joints, 4] as [x, y, z, w], like <Dataset>.pt
         no_preprocess: bool = False,
         conditioning_modality: str = "",  # "3D", "2D"
     ):
 
         self.mode = mode
+        self.datasets = datasets
         if mode is not None:
             splits = SUBSET_AMASS_SPLITS if get_amass_split() == "subset" else ORIGINAL_AMASS_SPLITS
             self.datasets = splits[mode]
@@ -132,6 +133,8 @@ class AMASS(torch.utils.data.Dataset):
             data = self.load_data()
         else:
             logging.info("Using provided data.")
+            # as an array, like load_data(), so the quaternion convention is swapped below
+            data = self.data.numpy() if torch.is_tensor(self.data) else np.asarray(self.data)
         data = data[:, self.selected_joints_ints, :]
 
         # According to pytorch3d convention [w,x,y,z] instead of [x,y,z,w].
