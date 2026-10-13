@@ -29,6 +29,7 @@ class SO3Flow(PoseModel):
     """Exact log-likelihood on SO(3)^J. `flow` overrides entries of PAPER_FLOW_CONFIG (e.g. {"layers": 2})."""
 
     has_log_prob = True
+    density_space = "SO(3)^J"
 
     def __init__(self, num_joints: int, flow: Optional[dict] = None, representation: str = "matrix", cond_dim: int = 0):
         if representation != "matrix":

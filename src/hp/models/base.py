@@ -27,6 +27,9 @@ class PoseModel(nn.Module, ABC):
     name: ClassVar[str] = ""  # set by @register_model
     has_log_prob: ClassVar[bool] = False  # True if log_prob is implemented
     supports_cond: ClassVar[bool] = False  # True if the model can be conditioned
+    # The space the density of log_prob lives on, e.g. "SO(3)^J". Log-likelihoods are comparable only within
+    # one space: a density on R^(6J) of a 6D model is a different quantity.
+    density_space: ClassVar[Optional[str]] = None
 
     def __init__(self, num_joints: int, representation: str = "matrix", cond_dim: int = 0):
         super().__init__()

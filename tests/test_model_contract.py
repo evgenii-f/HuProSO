@@ -102,3 +102,9 @@ def test_conditioning_is_supported_or_refused(name):
     cond = torch.randn(8, 3)
     assert torch.isfinite(model.loss(fixed_rotations(batch=8, joints=JOINTS), cond))
     assert model.sample(8, cond).shape == (8, JOINTS, 3, 3)
+
+
+@pytest.mark.parametrize("name", NAMES)
+def test_a_model_with_a_log_prob_says_which_space_its_density_lives_on(name):
+    cls = get_model_class(name)
+    assert (cls.density_space is not None) == cls.has_log_prob
