@@ -7,3 +7,6 @@ runs/
 logs/
 config/paths.yaml
 .ipynb_checkpoints/
+.DS_Store
+.idea/
+/build/
