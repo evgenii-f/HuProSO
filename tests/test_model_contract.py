@@ -4,6 +4,7 @@ import torch
 from conftest import fixed_rotations
 from test_trainer import Poses
 
+from hp.evaluation.evaluate import EvalConfig, evaluate
 from hp.models import available_models, build_model, get_model_class
 from hp.models.io import load_model, save_model
 from hp.training import TrainConfig, Trainer
@@ -102,6 +103,14 @@ def test_conditioning_is_supported_or_refused(name):
     cond = torch.randn(8, 3)
     assert torch.isfinite(model.loss(fixed_rotations(batch=8, joints=JOINTS), cond))
     assert model.sample(8, cond).shape == (8, JOINTS, 3, 3)
+
+
+@pytest.mark.parametrize("name", NAMES)
+def test_the_model_can_be_evaluated(name):
+    model = small(name)
+    config = EvalConfig(n_wasserstein=20, n_queries=20, n_generated=40, n_likelihood=20, repeats=1, sample_batch=20)
+    report = evaluate(model, fixed_rotations(batch=64, joints=JOINTS), config)
+    assert report["model"]["name"] == name and (report["likelihood"] is not None) == model.has_log_prob
 
 
 @pytest.mark.parametrize("name", NAMES)
