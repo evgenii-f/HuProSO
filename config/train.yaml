@@ -1,0 +1,25 @@
+# Training of a model of the zoo:
+#   python scripts/train_model.py model=so3_flow train.max_iterations=2000 model.args.flow.layers=6
+# The file config/models/<model>.yaml is merged over this one, and command line arguments win over both.
+model: so3_flow                  # a file name in config/models/
+run_name: null                   # null: the name of the model
+run_root: ~/data/experiments     # runs go to <run_root>/<run_name>/run_0001, run_0002, ... and are never overwritten
+seed: 10
+tensorboard: true
+data:
+  rotations: null                # folder with the <Dataset>.pt files; null: amass_rotations of config/paths.yaml
+  split: null                    # original | subset; null: amass_split of config/paths.yaml
+train:                           # the fields of hp.training.TrainConfig
+  max_iterations: 20000
+  batch_size: 2000
+  lr: 0.005
+  scheduler: step
+  lr_step_fraction: 0.7
+  lr_gamma: 0.5
+  clip_grad_norm: 1.0
+  ema_decay: null
+  valid_interval: 500
+  checkpoint_every: 1000
+  device: auto                   # auto | cpu | mps | cuda:N (auto: as in config/paths.yaml)
+  num_workers: 0
+  progress: true

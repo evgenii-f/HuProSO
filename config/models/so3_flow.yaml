@@ -1,0 +1,5 @@
+# The normalizing flow on SO(3)^J of HuProSO3 (hp/models/so3_flow.py), with the settings of the paper's prior.
+name: so3_flow
+args:                            # given to build_model
+  flow: {}                       # entries of PAPER_FLOW_CONFIG to change, e.g. layers: 6
+train: {}                        # changes to the train section of config/train.yaml; none: the paper's settings
