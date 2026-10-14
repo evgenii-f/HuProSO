@@ -28,7 +28,8 @@ class PoseModel(nn.Module, ABC):
     has_log_prob: ClassVar[bool] = False  # True if log_prob is implemented
     supports_cond: ClassVar[bool] = False  # True if the model can be conditioned
     # The space the density of log_prob lives on, e.g. "SO(3)^J". Log-likelihoods are comparable only within
-    # one space: a density on R^(6J) of a 6D model is a different quantity.
+    # one space: a density on R^(6J) of a 6D model is a different quantity. On "SO(3)^J" the density is
+    # relative to the uniform distribution (the normalized Haar measure), so a uniform model has log_prob 0.
     density_space: ClassVar[Optional[str]] = None
 
     def __init__(self, num_joints: int, representation: str = "matrix", cond_dim: int = 0):
@@ -49,7 +50,10 @@ class PoseModel(nn.Module, ABC):
         """n poses [n, J, 3, 3], valid rotations. `cond` has one row per sample: [n, cond_dim]."""
 
     def log_prob(self, pose: torch.Tensor, cond: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """Exact log-likelihood [B] of the poses. Only models with has_log_prob implement it."""
+        """Exact log-likelihood [B] of the poses. Only models with has_log_prob implement it.
+
+        The evaluation calls it under torch.no_grad(). A model that needs derivatives for it (e.g. the divergence
+        of a probability flow ODE) takes them itself, with torch.func or inside torch.enable_grad()."""
         raise NotImplementedError(f"Model '{self.name or type(self).__name__}' has no exact log-likelihood.")
 
     # ---- helpers for the models ----

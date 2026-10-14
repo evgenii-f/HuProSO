@@ -33,7 +33,8 @@ def main(argv: Optional[Sequence[str]] = None):
 
     with _env(HUPROSO_AMASS_SPLIT=cfg.data.split):
         data = {mode: AMASS(mode=mode, path_to_dataset=cfg.data.rotations, rotation_representation="matrix",
-                            selected_joints=AmassJoints4Learning) for mode in ("train", "valid")}
+                            selected_joints=AmassJoints4Learning, load_dtype=cfg.data.get("load_dtype"))
+                for mode in ("train", "valid")}
     model = build_model(cfg.model.name, num_joints=len(AmassJoints4Learning), **OmegaConf.to_container(cfg.model.args))
 
     run_dir = make_run_dir(cfg.run_root, cfg.run_name or cfg.model.name)

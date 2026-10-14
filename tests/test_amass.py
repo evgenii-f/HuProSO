@@ -40,3 +40,11 @@ def test_provided_data_equals_files(quaternions, as_tensor):
 def test_provided_subset(quaternions):
     idx = [3, 0, 17, 25]
     torch.testing.assert_close(AMASS(data=quaternions[idx]).data, AMASS(mode="test").data[idx])
+
+
+def test_loading_as_float32_gives_the_same_poses(quaternions):
+    default = AMASS(mode="test", rotation_representation="matrix")
+    assert default.load_data().dtype == np.float64  # the files' type, unless asked otherwise
+    small = AMASS(mode="test", rotation_representation="matrix", load_dtype="float32")
+    assert small.load_data().dtype == np.float32
+    assert torch.equal(small.data, default.data)

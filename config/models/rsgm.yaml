@@ -1,0 +1,20 @@
+# Riemannian score-based generative model on SO(3)^J (hp/models/rsgm.py), with the settings of the SO(3)
+# experiment of riemannian-score-sde (config/experiment/so3.yaml there).
+name: rsgm
+args:                            # given to build_model
+  hidden: [512, 512, 512, 512, 512]
+  activation: sin
+  beta_0: 0.001
+  beta_f: 10.0                   # the JAX so3 experiment has 6; with 10, p_1 is uniform up to exp(-5) in the l=1 mode, so the
+                                 # likelihood (which takes p_1 as uniform) is off by ~3e-4 nats per joint instead of ~0.01
+  eps: 2.0e-4
+  loss_t_min: 1.0e-3
+  sample_steps: 100
+  likelihood_steps: 100
+train:                           # changes to the train section of config/train.yaml
+  lr: 2.0e-4                     # Adam as in the JAX code (it uses a cosine schedule with warm-up; here: step)
+  batch_size: 512
+  ema_decay: 0.999
+  max_iterations: 100000
+  valid_interval: 2000
+  checkpoint_every: 10000

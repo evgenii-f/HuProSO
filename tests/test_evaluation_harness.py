@@ -183,3 +183,15 @@ def test_the_report_explains_itself_and_the_contrast_only_when_there_is_one():
     assert set(plain["notes"]) == {"units", "wasserstein", "floor_and_baseline"}
     with_contrast = evaluate(Around(), REFERENCE, CONFIG, contrast=cloud(300, seed=5))
     assert "no goals" in with_contrast["notes"]["floor_and_baseline"] and "Compare the model with this" in with_contrast["notes"]["contrast"]
+
+
+def test_progress_bars_do_not_change_the_report(capsys):
+    model = build_model("rsgm", num_joints=JOINTS, hidden=[16], sample_steps=3, likelihood_steps=3)
+    real, contrast = cloud(400), cloud(400, seed=1)
+    quiet = evaluate(model, real, CONFIG, contrast)
+    loud = evaluate(model, real, CONFIG, contrast, progress=True)
+    for report in (quiet, loud):
+        report.pop("sampling")  # the time it took
+    assert loud == quiet
+    shown = capsys.readouterr().err
+    assert all(stage in shown for stage in ("sampling", "wasserstein", "nearest neighbours", "log-likelihood"))

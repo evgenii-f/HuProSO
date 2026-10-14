@@ -25,6 +25,7 @@ class AMASS(torch.utils.data.Dataset):
         data: np.ndarray = None,  # instead of the files: quaternions [N, joints, 4] as [x, y, z, w], like <Dataset>.pt
         no_preprocess: bool = False,
         conditioning_modality: str = "",  # "3D", "2D"
+        load_dtype: str = None,  # None: as in the files (float64); e.g. "float32": cast each file right after loading
     ):
 
         self.mode = mode
@@ -44,6 +45,7 @@ class AMASS(torch.utils.data.Dataset):
 
         self.rotation_representation = rotation_representation
         self.last_dim_flattened = last_dim_flattened
+        self.load_dtype = None if load_dtype is None else np.dtype(load_dtype)
 
         if no_preprocess:
             self.data = self.load_data()
@@ -116,7 +118,14 @@ class AMASS(torch.utils.data.Dataset):
                         "in config/paths.yaml to the right folder, or set "
                         "'amass_split: subset' to use only the preprocessed subset."
                     )
-                data.append(torch.load(d_name).numpy()[:, :22])
+                part = torch.load(d_name).numpy()[:, :22]
+                if self.load_dtype is not None:
+                    # a copy of the 22 body joints in the smaller type, so that the full file (55 joints) is freed at
+                    # once. Otherwise all files stay in memory until the concatenation (full AMASS train: ~25 GB of
+                    # float64). With float32 the full AMASS loads with a peak of ~26 GB (train, valid and test), and
+                    # the poses are the same, as get_dataset() converts to float32 anyway.
+                    part = np.ascontiguousarray(part, dtype=self.load_dtype)
+                data.append(part)
             data = np.concatenate(data, axis=0)
         else:
             ds_dir = f"XXX/VXX_SVXX_TXX/stage_I/{self.mode}/"

@@ -48,7 +48,7 @@ def main(argv: Optional[Sequence[str]] = None) -> dict:
     output = cfg.output or run / f"metrics_{cfg.split}.json"
     device = resolve_device(None if cfg.device == "auto" else cfg.device)
     report = evaluate_run(run, reference, EvalConfig(**OmegaConf.to_container(cfg.eval)), weights=cfg.weights,
-                          output=output, device=device, contrast=contrast)
+                          output=output, device=device, contrast=contrast, progress=cfg.progress)
     print(format_report(report))
     print(f"Report written to {output}")
     return report

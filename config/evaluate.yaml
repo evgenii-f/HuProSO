@@ -12,6 +12,7 @@ contrast: train                  # train | valid, or null for no contrast
 contrast_rotations: null         # folder of the contrast poses; null: the same as data.rotations
 output: null                     # null: <run>/metrics_<split>.json
 device: auto                     # auto | cpu | mps | cuda:N
+progress: true                   # a progress bar for every stage of the evaluation
 data:
   rotations: null                # folder with the <Dataset>.pt files; null: amass_rotations of config/paths.yaml
   split: null                    # original | subset; null: amass_split of config/paths.yaml

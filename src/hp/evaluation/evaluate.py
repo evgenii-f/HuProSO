@@ -44,6 +44,7 @@ from typing import Dict, List, Optional
 import numpy as np
 import torch
 from omegaconf import OmegaConf
+from tqdm.auto import tqdm
 
 from hp.evaluation.neighbours import nearest_distances, summarize
 from hp.evaluation.wasserstein import wasserstein_with_floor
@@ -68,17 +69,20 @@ def _aggregate(runs: List[Dict[str, float]]) -> Dict[str, Dict[str, float]]:
 
 
 @torch.no_grad()
-def _generate(model: PoseModel, n: int, batch: int):
+def _generate(model: PoseModel, n: int, batch: int, progress: bool = False):
     start, pieces = time.perf_counter(), []
-    for done in range(0, n, batch):
+    for done in tqdm(range(0, n, batch), desc="sampling", unit="batch", disable=not progress):
         pieces.append(model.sample(min(batch, n - done)).float().cpu())
     if model.device.type == "cuda":
         torch.cuda.synchronize()
     return torch.cat(pieces), time.perf_counter() - start
 
 
-def _wasserstein(reference, generated, cfg, rng, joints, contrast=None):
-    runs = [wasserstein_with_floor(reference, generated, cfg.n_wasserstein, rng, contrast) for _ in range(cfg.repeats)]
+def _wasserstein(reference, generated, cfg, rng, joints, contrast=None, progress=False):
+    problems = cfg.repeats * (joints + 1) * (2 if contrast is None else 3)  # transport problems
+    with tqdm(total=problems, desc="wasserstein", unit="OT", disable=not progress) as bar:
+        runs = [wasserstein_with_floor(reference, generated, cfg.n_wasserstein, rng, contrast, step=bar.update)
+                for _ in range(cfg.repeats)]
     out = {"n": runs[0]["n"]}
     for key in ("generated", "floor", *(["contrast"] if contrast is not None else [])):
         sums = [r[key]["joint_sum_rad"] for r in runs]
@@ -93,9 +97,9 @@ def _wasserstein(reference, generated, cfg, rng, joints, contrast=None):
     return out
 
 
-def _coverage(reference, generated, cfg, rng, contrast=None):
+def _coverage(reference, generated, cfg, rng, contrast=None, progress=False):
     runs, sizes = [], {}
-    for _ in range(cfg.repeats):
+    for _ in tqdm(range(cfg.repeats), desc="nearest neighbours", unit="repeat", disable=not progress):
         n_q = min(cfg.n_queries, len(reference) // 2, len(generated))
         n_c = min(cfg.n_generated, len(reference) - n_q)
         order = rng.permutation(len(reference))
@@ -120,16 +124,22 @@ def _coverage(reference, generated, cfg, rng, contrast=None):
 
 
 @torch.no_grad()
-def _likelihood(model, reference, cfg, rng):
+def _likelihood(model, reference, cfg, rng, progress=False):
     if not model.has_log_prob:
         return None
     means, nan_fraction = [], []
+    n = min(cfg.n_likelihood, len(reference))
+    bar = tqdm(total=cfg.repeats * n, desc="log-likelihood", unit="pose", disable=not progress)
     for _ in range(cfg.repeats):
-        poses = reference[rng.choice(len(reference), min(cfg.n_likelihood, len(reference)), replace=False)]
-        values = torch.cat([model.log_prob(poses[i : i + cfg.sample_batch].to(model.device)).float().cpu()
-                            for i in range(0, len(poses), cfg.sample_batch)])
+        poses = reference[rng.choice(len(reference), n, replace=False)]
+        pieces = []
+        for i in range(0, len(poses), cfg.sample_batch):
+            pieces.append(model.log_prob(poses[i : i + cfg.sample_batch].to(model.device)).float().cpu())
+            bar.update(len(pieces[-1]))
+        values = torch.cat(pieces)
         nan_fraction.append(float((~torch.isfinite(values)).float().mean()))
         means.append(float(values[torch.isfinite(values)].mean()))
+    bar.close()
     return {"mean": float(np.mean(means)), "std": float(np.std(means)), "nan_fraction": float(np.mean(nan_fraction)),
             "space": model.density_space, "n": min(cfg.n_likelihood, len(reference))}
 
@@ -151,9 +161,10 @@ def _plain(value):
 
 
 def evaluate(model: PoseModel, reference: torch.Tensor, config: Optional[EvalConfig] = None,
-             contrast: Optional[torch.Tensor] = None) -> dict:
+             contrast: Optional[torch.Tensor] = None, progress: bool = False) -> dict:
     """Evaluate `model` against real poses [N, J, 3, 3]. Returns a report that json can write.
-    `contrast`: real poses of other subjects (e.g. the training poses), for the yardstick numbers."""
+    `contrast`: real poses of other subjects (e.g. the training poses), for the yardstick numbers.
+    `progress`: a progress bar for every stage (sampling, Wasserstein, nearest neighbours, log-likelihood)."""
     cfg = config or EvalConfig()
     reference = torch.as_tensor(reference).float().cpu()
     if contrast is not None:
@@ -171,7 +182,7 @@ def evaluate(model: PoseModel, reference: torch.Tensor, config: Optional[EvalCon
         devices = [model.device] if model.device.type == "cuda" else []
         with torch.random.fork_rng(devices=devices):  # the random state of the caller is restored afterwards
             torch.manual_seed(cfg.seed)
-            generated, seconds = _generate(model, cfg.n_generated, cfg.sample_batch)
+            generated, seconds = _generate(model, cfg.n_generated, cfg.sample_batch, progress)
         if generated.shape != (cfg.n_generated, model.num_joints, 3, 3) or not torch.isfinite(generated).all():
             raise ValueError("The model produced samples of the wrong shape or with non-finite values.")
         report = {
@@ -180,9 +191,9 @@ def evaluate(model: PoseModel, reference: torch.Tensor, config: Optional[EvalCon
             "notes": {k: v for k, v in NOTES.items() if contrast is not None or k != "contrast"},
             "reference": {"poses": len(reference), "joints": model.num_joints},
             "sampling": {"generated": cfg.n_generated, "seconds_per_1000": seconds / cfg.n_generated * 1000},
-            "wasserstein": _wasserstein(reference, generated, cfg, rng, model.num_joints, contrast),
-            **_coverage(reference, generated, cfg, rng, contrast),
-            "likelihood": _likelihood(model, reference, cfg, rng),
+            "wasserstein": _wasserstein(reference, generated, cfg, rng, model.num_joints, contrast, progress),
+            **_coverage(reference, generated, cfg, rng, contrast, progress),
+            "likelihood": _likelihood(model, reference, cfg, rng, progress),
         }
     finally:
         model.train(was_training)
@@ -201,10 +212,10 @@ def load_report(path) -> dict:
 
 
 def evaluate_run(run_dir, reference: torch.Tensor, config: Optional[EvalConfig] = None, weights: str = "weights",
-                 output=None, device: str = "cpu", contrast: Optional[torch.Tensor] = None) -> dict:
+                 output=None, device: str = "cpu", contrast: Optional[torch.Tensor] = None, progress: bool = False) -> dict:
     """Load a saved run (see hp.models.io), evaluate it and write the report (default: <run_dir>/metrics.json)."""
     run_dir = Path(run_dir)
-    report = evaluate(load_model(run_dir, device=device, weights=weights), reference, config, contrast)
+    report = evaluate(load_model(run_dir, device=device, weights=weights), reference, config, contrast, progress)
     report["run"] = {"directory": str(run_dir), "weights": weights}
     save_report(report, output or run_dir / "metrics.json")
     return report

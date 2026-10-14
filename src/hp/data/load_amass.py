@@ -27,7 +27,7 @@ class AmassLoader:
             dataset_dir = f"{self.data_dir}/{dataset}"
             for subject in os.listdir(dataset_dir):
                 sub_dir = f"{dataset_dir}/{subject}"
-                if ".gz" in sub_dir or "txt" in sub_dir:
+                if ".gz" in sub_dir or "txt" in sub_dir or not os.path.isdir(sub_dir):  # e.g. .DS_Store of macOS
                     continue
                 for file_name in os.listdir(sub_dir):
                     if (

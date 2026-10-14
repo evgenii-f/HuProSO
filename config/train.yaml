@@ -9,6 +9,7 @@ tensorboard: true
 data:
   rotations: null                # folder with the <Dataset>.pt files; null: amass_rotations of config/paths.yaml
   split: null                    # original | subset; null: amass_split of config/paths.yaml
+  load_dtype: null               # null: as in the files (float64); float32: less memory at loading (full AMASS: ~26 GB peak)
 train:                           # the fields of hp.training.TrainConfig
   max_iterations: 20000
   batch_size: 2000
