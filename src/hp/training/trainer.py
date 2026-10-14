@@ -10,9 +10,10 @@ as the AMASS dataset gives for conditioning. The model gets poses [B, J, 3, 3].
 import copy
 import json
 import logging
+import math
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 import torch
 from torch.utils.data import DataLoader, Dataset
@@ -27,9 +28,10 @@ class TrainConfig:
     max_iterations: int = 20_000
     batch_size: int = 2000
     lr: float = 5e-3
-    scheduler: str = "step"  # "step" as in the paper, or "none"
+    scheduler: str = "step"  # "step" as in the paper, "cosine" (decay to 0 after a linear warm-up), or "none"
     lr_step_fraction: float = 0.7  # StepLR: the learning rate decays at multiples of this share of max_iterations
     lr_gamma: float = 0.5
+    warmup_steps: int = 0  # cosine: steps of the linear warm-up
     clip_grad_norm: Optional[float] = 1.0  # None: no clipping
     ema_decay: Optional[float] = None  # e.g. 0.999; None: no EMA
     valid_interval: int = 500
@@ -90,8 +92,16 @@ class Trainer:
             self.scheduler = torch.optim.lr_scheduler.StepLR(
                 self.optimizer, step_size=c.lr_step_fraction * c.max_iterations, gamma=c.lr_gamma
             )
+        elif c.scheduler == "cosine":
+            def factor(step):  # of the learning rate, after `step` optimizer steps
+                if step < c.warmup_steps:
+                    return (step + 1) / c.warmup_steps
+                progress = (step - c.warmup_steps) / max(1, c.max_iterations - c.warmup_steps)
+                return 0.5 * (1 + math.cos(math.pi * min(1.0, progress)))
+
+            self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, factor)
         elif c.scheduler != "none":
-            raise ValueError(f"Unknown scheduler '{c.scheduler}'. Use 'step' or 'none'.")
+            raise ValueError(f"Unknown scheduler '{c.scheduler}'. Use 'step', 'cosine' or 'none'.")
         self.train_loader = DataLoader(train_set, batch_size=c.batch_size, shuffle=True, num_workers=c.num_workers)
         self.valid_loader = None
         if valid_set is not None:
@@ -138,7 +148,10 @@ class Trainer:
         if self.ema:
             save_model(self.ema.model, directory, weights="weights_ema")
 
-    def fit(self) -> History:
+    def fit(self, callback: Optional[Callable[[int, Optional[float]], None]] = None) -> History:
+        """Train for max_iterations steps. `callback(step, valid_loss)` is called every valid_interval steps (after
+        the validation; valid_loss is None without a validation set). It may raise to stop the training, e.g.
+        optuna.TrialPruned."""
         c = self.config
         self.model.train()
         step = 0
@@ -153,13 +166,17 @@ class Trainer:
                     self.history.loss.append(loss)
                     if self.writer:
                         self.writer.add_scalar("Loss/train", loss, step)
-                    if self.valid_loader and step % c.valid_interval == 0:
-                        valid_loss = self.validate()
-                        self.history.valid_iteration.append(step)
-                        self.history.valid_loss.append(valid_loss)
-                        if self.writer:
-                            self.writer.add_scalar("Loss/valid", valid_loss, step)
-                        logging.info(f"Step {step}: valid loss {valid_loss:.2f} | train loss {loss:.2f}")
+                    if step % c.valid_interval == 0:
+                        valid_loss = None
+                        if self.valid_loader:
+                            valid_loss = self.validate()
+                            self.history.valid_iteration.append(step)
+                            self.history.valid_loss.append(valid_loss)
+                            if self.writer:
+                                self.writer.add_scalar("Loss/valid", valid_loss, step)
+                            logging.info(f"Step {step}: valid loss {valid_loss:.2f} | train loss {loss:.2f}")
+                        if callback:
+                            callback(step, valid_loss)
                     if self.run_dir and c.checkpoint_every and step % c.checkpoint_every == 0:
                         self.save(self.run_dir / f"checkpoint_{step:06d}")
                     if step >= c.max_iterations:

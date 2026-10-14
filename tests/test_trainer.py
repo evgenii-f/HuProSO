@@ -116,6 +116,32 @@ def test_conditioned_batches_reach_the_model(make_gaussian):
     assert len(history.loss) == 2
 
 
+def test_the_cosine_schedule_warms_up_and_decays_to_zero(make_gaussian):
+    trainer = Trainer(make_gaussian(), Poses(), None, config(max_iterations=20, scheduler="cosine", warmup_steps=4, valid_interval=1))
+    lrs = []
+    trainer.fit(callback=lambda step, _: lrs.append(trainer.optimizer.param_groups[0]["lr"]))  # after every step
+    assert lrs[:4] == pytest.approx([0.05 * k / 4 for k in (2, 3, 4)] + [0.05])  # linear warm-up, then the full rate
+    assert all(a >= b for a, b in zip(lrs[3:], lrs[4:])) and lrs[-1] == pytest.approx(0.0, abs=1e-12)
+
+
+def test_the_callback_comes_at_the_interval_and_can_stop_the_training(make_gaussian):
+    calls = []
+    Trainer(make_gaussian(), Poses(), Poses(n=32), config(max_iterations=6)).fit(callback=lambda s, v: calls.append((s, v)))
+    assert [s for s, _ in calls] == [2, 4, 6] and all(np.isfinite(v) for _, v in calls)
+    calls = []
+    Trainer(make_gaussian(), Poses(), None, config(max_iterations=4)).fit(callback=lambda s, v: calls.append((s, v)))
+    assert calls == [(2, None), (4, None)]  # no validation set: no validation loss
+
+    class Stop(Exception):
+        pass
+
+    def stop(step, _):
+        raise Stop
+
+    with pytest.raises(Stop):
+        Trainer(make_gaussian(), Poses(), None, config(max_iterations=10)).fit(callback=stop)
+
+
 def test_bad_settings_are_refused(make_gaussian):
     class Empty(Dataset):
         def __len__(self):
@@ -124,7 +150,7 @@ def test_bad_settings_are_refused(make_gaussian):
     with pytest.raises(ValueError, match="empty"):
         Trainer(make_gaussian(), Empty(), None, config())
     with pytest.raises(ValueError, match="scheduler"):
-        Trainer(make_gaussian(), Poses(), None, config(scheduler="cosine"))
+        Trainer(make_gaussian(), Poses(), None, config(scheduler="linear"))
 
 
 def test_the_flow_trains_like_the_old_trainer(rotations, tmp_path):  # noqa: F811

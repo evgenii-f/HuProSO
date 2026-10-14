@@ -68,6 +68,7 @@ class RSGM(PoseModel):
         loss_t_min: float = 1e-3,  # the smallest time of the training loss (t0 + 1e-3 in the JAX code)
         sample_steps: int = 100,
         likelihood_steps: int = 100,
+        weighting: str = "std",  # of the loss over time: "std" (std(t)^2, as the JAX code) or "likelihood" (beta(t))
         representation: str = "matrix",
         cond_dim: int = 0,
     ):
@@ -76,6 +77,9 @@ class RSGM(PoseModel):
         super().__init__(num_joints, "matrix", cond_dim)
         self.beta_0, self.beta_f, self.eps, self.loss_t_min = beta_0, beta_f, eps, loss_t_min
         self.sample_steps, self.likelihood_steps = sample_steps, likelihood_steps
+        if weighting not in ("std", "likelihood"):
+            raise ValueError(f"Unknown weighting '{weighting}'. Use 'std' or 'likelihood'.")
+        self.weighting = weighting
         layers, width = [], 9 * num_joints + 1
         for h in hidden:
             layers += [nn.Linear(width, h), ACTIVATIONS[activation]()]
@@ -98,6 +102,22 @@ class RSGM(PoseModel):
         """The scale of the std trick: sqrt(1 - exp(-s)), as marginal_prob of the JAX code."""
         return torch.sqrt(-torch.expm1(-self.s(t)))
 
+    def loss_times(self, u: torch.Tensor) -> torch.Tensor:
+        """Times of the training loss from uniform numbers u in [0, 1] (float64).
+
+        "std": t uniform on [loss_t_min, 1]. "likelihood": the loss weighted by beta(t) instead of std(t)^2, which
+        makes it a bound on the negative log-likelihood (Song et al. 2021, "Maximum likelihood training of score-based
+        diffusion models"). It is done by importance sampling: t is drawn with the density q(t) proportional to
+        beta(t) / std(t)^2, so the loss itself stays the same (up to a constant factor, to which Adam is blind).
+        In the Brownian time s the density is 1 / (1 - exp(-s)), with the CDF log(exp(s) - 1), inverted in closed form."""
+        if self.weighting == "std":
+            return self.loss_t_min + (1 - self.loss_t_min) * u
+        t_lo = torch.tensor(self.loss_t_min, dtype=torch.float64)
+        lo, hi = torch.log(torch.expm1(self.s(t_lo))), torch.log(torch.expm1(self.s(torch.ones_like(t_lo))))
+        s = torch.log1p(torch.exp(lo + u * (hi - lo)))
+        # s = beta_0 t + (beta_f - beta_0) t^2 / 2, solved for t
+        return (-self.beta_0 + torch.sqrt(self.beta_0**2 + 2 * (self.beta_f - self.beta_0) * s)) / (self.beta_f - self.beta_0)
+
     # ---- the score ----
 
     def score(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
@@ -114,7 +134,7 @@ class RSGM(PoseModel):
         self.check_cond(cond, len(pose))
         generator = None if self.training else torch.Generator().manual_seed(0)
         batch, joints = pose.shape[0], self.num_joints
-        t = self.loss_t_min + (1 - self.loss_t_min) * torch.rand(batch, dtype=torch.float64, generator=generator)
+        t = self.loss_times(torch.rand(batch, dtype=torch.float64, generator=generator))
         s = self.s(t)[:, None].expand(batch, joints)
         omega = self.angles.sample(s, generator)
         axis = igso3.random_axes((batch, joints), generator)

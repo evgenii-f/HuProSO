@@ -116,3 +116,18 @@ def test_the_training_loss_stays_finite_on_mps():
     model = build_model("rsgm", num_joints=19, hidden=[64]).to("mps")
     pose = roma.random_rotmat(256 * 19).reshape(256, 19, 3, 3).to("mps")
     assert all(torch.isfinite(model.loss(pose)) for _ in range(100))
+
+
+def test_likelihood_weighting_draws_the_times_with_density_beta_over_std_squared():
+    model = build_model("rsgm", num_joints=1, hidden=[8], beta_f=10.0, weighting="likelihood")
+    t = model.loss_times(torch.rand(50_000, dtype=torch.float64, generator=torch.Generator().manual_seed(0))).sort().values
+    assert t.min() >= model.loss_t_min - 1e-12 and t.max() <= 1 + 1e-12
+    # the CDF of q(t) ~ beta / std^2 is log(exp(s(t)) - 1), normalized
+    log_em1 = lambda tt: torch.log(torch.expm1(model.s(torch.as_tensor(tt, dtype=torch.float64))))
+    cdf = (log_em1(t) - log_em1(model.loss_t_min)) / (log_em1(1.0) - log_em1(model.loss_t_min))
+    empirical = torch.arange(1, len(t) + 1, dtype=torch.float64) / len(t)
+    assert (cdf - empirical).abs().max() < 1.63 / math.sqrt(len(t))
+    std = build_model("rsgm", num_joints=1, hidden=[8], beta_f=10.0)
+    assert torch.equal(std.loss_times(torch.tensor([0.0, 1.0], dtype=torch.float64)), torch.tensor([std.loss_t_min, 1.0], dtype=torch.float64))
+    with pytest.raises(ValueError, match="weighting"):
+        build_model("rsgm", num_joints=1, weighting="uniform")

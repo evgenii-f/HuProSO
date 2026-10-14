@@ -14,9 +14,10 @@ train:                           # the fields of hp.training.TrainConfig
   max_iterations: 20000
   batch_size: 2000
   lr: 0.005
-  scheduler: step
+  scheduler: step                # step | cosine (after warmup_steps of linear warm-up) | none
   lr_step_fraction: 0.7
   lr_gamma: 0.5
+  warmup_steps: 0
   clip_grad_norm: 1.0
   ema_decay: null
   valid_interval: 500

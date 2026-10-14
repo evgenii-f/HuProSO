@@ -10,3 +10,5 @@ ipykernel
 tqdm
 pandas
 pot
+optuna
+optuna-dashboard

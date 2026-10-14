@@ -33,6 +33,23 @@ def test_command_line_beats_the_model_file_beats_the_base_config(tmp_path):
     assert load_config(["train.lr=0.3"], config_dir=tmp_path).train.lr == 0.3
 
 
+def test_the_model_can_be_chosen_and_its_arguments_changed_together(tmp_path):
+    (tmp_path / "models").mkdir()
+    (tmp_path / "train.yaml").write_text("model: tiny\nseed: 1\ntrain: {lr: 0.1}\n")
+    (tmp_path / "models" / "tiny.yaml").write_text("name: tiny\nargs: {size: 3}\n")
+    (tmp_path / "models" / "big.yaml").write_text("name: big\nargs: {size: 30, depth: 2}\n")
+    for overrides in (["model=big", "model.args.size=40"], ["model.args.size=40", "model=big"]):
+        cfg = load_config(overrides, config_dir=tmp_path)
+        assert cfg.model.name == "big" and OmegaConf.to_container(cfg.model.args) == {"size": 40, "depth": 2}
+
+
+def test_a_config_file_that_is_no_mapping_is_refused(tmp_path):
+    (tmp_path / "models").mkdir()
+    (tmp_path / "train.yaml").write_text("- model\n- seed\n")
+    with pytest.raises(ValueError, match="mapping"):
+        load_config(config_dir=tmp_path)
+
+
 def test_an_unknown_model_lists_the_available_ones():
     with pytest.raises(ValueError, match="so3_flow"):
         load_config(["model=nope"])

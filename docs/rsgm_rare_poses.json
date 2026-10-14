@@ -1,0 +1,743 @@
+{
+ "about": "Poses on which RSGM rsgm_tuned_r2t12 (run_0001) breaks down; see docs/rsgm_rare_pose_instability.md. valid_index: position in the official valid split (HumanEva 61,020 poses first, then HDM05); hdm05_index: position in ~/data/AMASS_rotations/HDM05.pt; file/frame: the source sequence in ~/data/amass. Log-likelihoods: EMA weights, 200 ODE steps.",
+ "valid_poses": [
+  {
+   "valid_index": 290043,
+   "hdm05_index": 229023,
+   "file": "HDM05/dg/HDM_dg_01-03_02_120_stageii.npz",
+   "frame": 962,
+   "frames": 3794,
+   "fps": 120.0,
+   "seconds": 8.016666666666667,
+   "nn_deg_per_joint": 28.752920150756836,
+   "nn_percentile": 100.0,
+   "joints_far_from_nn": {
+    "RightArm": 103.8,
+    "RightElbow": 72.0,
+    "RightShoulder": 65.2
+   },
+   "largest_joint_angles": {
+    "RightArm": 135.7,
+    "RightElbow": 101.1,
+    "RightShoulder": 78.0
+   }
+  },
+  {
+   "valid_index": 290049,
+   "hdm05_index": 229029,
+   "file": "HDM05/dg/HDM_dg_01-03_02_120_stageii.npz",
+   "frame": 968,
+   "frames": 3794,
+   "fps": 120.0,
+   "seconds": 8.066666666666666,
+   "nn_deg_per_joint": 29.17383575439453,
+   "nn_percentile": 100.0,
+   "joints_far_from_nn": {
+    "RightArm": 106.1,
+    "RightShoulder": 67.3,
+    "RightElbow": 60.9
+   },
+   "largest_joint_angles": {
+    "RightArm": 142.9,
+    "RightElbow": 104.5,
+    "LeftArm": 79.5
+   }
+  },
+  {
+   "valid_index": 277906,
+   "hdm05_index": 216886,
+   "file": "HDM05/dg/HDM_dg_03-09_01_120_stageii.npz",
+   "frame": 4676,
+   "frames": 5314,
+   "fps": 120.0,
+   "seconds": 38.96666666666667,
+   "nn_deg_per_joint": 30.754018783569336,
+   "nn_percentile": 100.0,
+   "joints_far_from_nn": {
+    "Head": 87.9,
+    "LeftHand": 65.9,
+    "LeftElbow": 64.7
+   },
+   "largest_joint_angles": {
+    "LeftHand": 102.1,
+    "RightElbow": 98.1,
+    "RightHand": 88.4
+   }
+  },
+  {
+   "valid_index": 269748,
+   "hdm05_index": 208728,
+   "file": "HDM05/dg/HDM_dg_04-01_02_120_stageii.npz",
+   "frame": 7270,
+   "frames": 8316,
+   "fps": 120.0,
+   "seconds": 60.583333333333336,
+   "nn_deg_per_joint": 27.752073287963867,
+   "nn_percentile": 100.0,
+   "joints_far_from_nn": {
+    "LeftFoot": 107.9,
+    "LeftLeg": 61.7,
+    "RightArm": 49.8
+   },
+   "largest_joint_angles": {
+    "LeftFoot": 150.3,
+    "LeftLeg": 127.4,
+    "RightLeg": 96.2
+   }
+  },
+  {
+   "valid_index": 290050,
+   "hdm05_index": 229030,
+   "file": "HDM05/dg/HDM_dg_01-03_02_120_stageii.npz",
+   "frame": 969,
+   "frames": 3794,
+   "fps": 120.0,
+   "seconds": 8.075,
+   "nn_deg_per_joint": 29.15680503845215,
+   "nn_percentile": 100.0,
+   "joints_far_from_nn": {
+    "RightArm": 106.9,
+    "RightShoulder": 65.7,
+    "RightElbow": 60.5
+   },
+   "largest_joint_angles": {
+    "RightArm": 143.2,
+    "RightElbow": 104.4,
+    "LeftArm": 79.9
+   }
+  },
+  {
+   "valid_index": 277880,
+   "hdm05_index": 216860,
+   "file": "HDM05/dg/HDM_dg_03-09_01_120_stageii.npz",
+   "frame": 4650,
+   "frames": 5314,
+   "fps": 120.0,
+   "seconds": 38.75,
+   "nn_deg_per_joint": 27.010677337646484,
+   "nn_percentile": 100.0,
+   "joints_far_from_nn": {
+    "RightHand": 68.8,
+    "LeftHand": 64.4,
+    "Head": 51.6
+   },
+   "largest_joint_angles": {
+    "RightElbow": 104.4,
+    "LeftHand": 91.8,
+    "RightHand": 85.0
+   }
+  },
+  {
+   "valid_index": 290022,
+   "hdm05_index": 229002,
+   "file": "HDM05/dg/HDM_dg_01-03_02_120_stageii.npz",
+   "frame": 941,
+   "frames": 3794,
+   "fps": 120.0,
+   "seconds": 7.841666666666667,
+   "nn_deg_per_joint": 21.60137367248535,
+   "nn_percentile": 98.95,
+   "joints_far_from_nn": {
+    "RightArm": 75.0,
+    "RightElbow": 55.2,
+    "RightShoulder": 50.6
+   },
+   "largest_joint_angles": {
+    "RightArm": 100.2,
+    "RightElbow": 74.6,
+    "LeftArm": 65.4
+   }
+  },
+  {
+   "valid_index": 277120,
+   "hdm05_index": 216100,
+   "file": "HDM05/dg/HDM_dg_03-09_01_120_stageii.npz",
+   "frame": 3890,
+   "frames": 5314,
+   "fps": 120.0,
+   "seconds": 32.416666666666664,
+   "nn_deg_per_joint": 27.592390060424805,
+   "nn_percentile": 100.0,
+   "joints_far_from_nn": {
+    "Head": 56.0,
+    "LeftHand": 50.0,
+    "RightShoulder": 45.5
+   },
+   "largest_joint_angles": {
+    "RightElbow": 104.3,
+    "LeftHand": 95.4,
+    "RightHand": 83.9
+   }
+  },
+  {
+   "valid_index": 277910,
+   "hdm05_index": 216890,
+   "file": "HDM05/dg/HDM_dg_03-09_01_120_stageii.npz",
+   "frame": 4680,
+   "frames": 5314,
+   "fps": 120.0,
+   "seconds": 39.0,
+   "nn_deg_per_joint": 26.204532623291016,
+   "nn_percentile": 100.0,
+   "joints_far_from_nn": {
+    "Head": 67.1,
+    "RightShoulder": 48.0,
+    "LeftArm": 45.7
+   },
+   "largest_joint_angles": {
+    "LeftHand": 95.0,
+    "RightElbow": 93.9,
+    "RightHand": 85.7
+   }
+  },
+  {
+   "valid_index": 631354,
+   "hdm05_index": 570334,
+   "file": "HDM05/bk/HDM_bk_01-04_02_120_stageii.npz",
+   "frame": 2157,
+   "frames": 7752,
+   "fps": 120.0,
+   "seconds": 17.975,
+   "nn_deg_per_joint": 9.062644958496094,
+   "nn_percentile": 33.2,
+   "joints_far_from_nn": {
+    "RightHand": 21.9,
+    "RightElbow": 16.9,
+    "LeftHand": 16.4
+   },
+   "largest_joint_angles": {
+    "RightArm": 56.0,
+    "LeftArm": 54.1,
+    "RightElbow": 40.2
+   }
+  }
+ ],
+ "log_likelihood_over_training_r2t12": {
+  "10000": {
+   "outliers": [
+    58.4,
+    56.4,
+    39.9,
+    76.2,
+    56.6,
+    50.1,
+    69.1,
+    47.2,
+    50.6,
+    125.6
+   ],
+   "normal_mean": 129.06
+  },
+  "20000": {
+   "outliers": [
+    50.2,
+    51.1,
+    44.1,
+    72.6,
+    51.6,
+    54.9,
+    58.2,
+    52.1,
+    55.7,
+    128.6
+   ],
+   "normal_mean": 131.26
+  },
+  "30000": {
+   "outliers": [
+    52.7,
+    53.8,
+    41.0,
+    76.3,
+    54.2,
+    51.4,
+    60.4,
+    49.2,
+    54.3,
+    125.2
+   ],
+   "normal_mean": 131.71
+  },
+  "40000": {
+   "outliers": [
+    48.8,
+    -139.8,
+    -213.2,
+    72.4,
+    42.6,
+    51.8,
+    62.6,
+    50.2,
+    55.0,
+    127.4
+   ],
+   "normal_mean": 132.16
+  },
+  "50000": {
+   "outliers": [
+    202.7,
+    1114.4,
+    -53.5,
+    74.3,
+    947.6,
+    47.1,
+    58.7,
+    43.7,
+    49.1,
+    128.8
+   ],
+   "normal_mean": 132.75
+  },
+  "60000": {
+   "outliers": [
+    1488.9,
+    621.4,
+    1410.0,
+    71.9,
+    -492.1,
+    44.0,
+    58.8,
+    1848.1,
+    45.7,
+    130.6
+   ],
+   "normal_mean": 132.78
+  },
+  "70000": {
+   "outliers": [
+    1357.0,
+    2903.8,
+    30.5,
+    69.1,
+    -4784.9,
+    48.3,
+    2597.3,
+    -1267.3,
+    7087.2,
+    129.8
+   ],
+   "normal_mean": 132.75
+  },
+  "80000": {
+   "outliers": [
+    1733.8,
+    2171.6,
+    1509.9,
+    66.4,
+    -6572.1,
+    1674.1,
+    3639.2,
+    1983.1,
+    -5773.7,
+    127.3
+   ],
+   "normal_mean": 132.71
+  },
+  "90000": {
+   "outliers": [
+    5039.9,
+    4716.1,
+    -3619.1,
+    66.6,
+    -2728.2,
+    -335.6,
+    961.6,
+    977.1,
+    835.6,
+    126.1
+   ],
+   "normal_mean": 132.68
+  },
+  "100000": {
+   "outliers": [
+    2583.2,
+    -3359.7,
+    -1577.0,
+    3486.3,
+    -1566.7,
+    5669.4,
+    4645.1,
+    53.2,
+    -3271.3,
+    126.0
+   ],
+   "normal_mean": 132.38
+  }
+ },
+ "log_likelihood_reference_models": {
+  "rsgm (default, full)": {
+   "outliers": [
+    37.0,
+    36.9,
+    29.8,
+    77.3,
+    37.7,
+    41.1,
+    59.0,
+    37.2,
+    43.3,
+    125.3
+   ],
+   "normal_mean": 129.46
+  },
+  "rsgm_tuned_t23": {
+   "outliers": [
+    2.5,
+    1.4,
+    22.3,
+    65.4,
+    1.9,
+    34.6,
+    26.3,
+    36.1,
+    46.1,
+    122.2
+   ],
+   "normal_mean": 130.62
+  }
+ },
+ "nearest_training_pose_reference": {
+  "median_deg_per_joint": 10.158000946044922,
+  "p99_deg_per_joint": 21.65728759765625
+ },
+ "scan_fixed_t_0.01": {
+  "valid/r2t12": {
+   "n": 1320126,
+   "median": 51.891743389501066,
+   "counts": {
+    ">100": 1641,
+    ">1000": 138,
+    ">10000": 107,
+    ">1e+06": 78
+   },
+   "by_dataset": {
+    "HDM05": 138
+   }
+  },
+  "valid/t23": {
+   "n": 1320126,
+   "median": 50.84295376822217,
+   "counts": {
+    ">100": 1832,
+    ">1000": 0,
+    ">10000": 0,
+    ">1e+06": 0
+   },
+   "by_dataset": {}
+  },
+  "valid/default": {
+   "n": 1320126,
+   "median": 49.97900814785883,
+   "counts": {
+    ">100": 1241,
+    ">1000": 0,
+    ">10000": 0,
+    ">1e+06": 0
+   },
+   "by_dataset": {}
+  },
+  "train/r2t12": {
+   "n": 14779964,
+   "median": 41.69903468519141,
+   "counts": {
+    ">100": 4592,
+    ">1000": 313,
+    ">10000": 256,
+    ">1e+06": 141
+   },
+   "by_dataset": {
+    "CMU": 20,
+    "PosePrior": 2,
+    "EyesJapanDataset": 76,
+    "KIT": 203,
+    "BMLrub": 10,
+    "ACCAD": 2
+   }
+  },
+  "train/t23": {
+   "n": 14779964,
+   "median": 41.038070204680125,
+   "counts": {
+    ">100": 3601,
+    ">1000": 0,
+    ">10000": 0,
+    ">1e+06": 0
+   },
+   "by_dataset": {}
+  }
+ },
+ "worst_valid_r2t12": [
+  {
+   "index": 277117,
+   "dataset": "HDM05",
+   "local": 216097,
+   "loss": 4124202555.53129,
+   "file": "HDM05/dg/HDM_dg_03-09_01_120_stageii.npz",
+   "frame": 3887,
+   "seconds": 32.39
+  },
+  {
+   "index": 277116,
+   "dataset": "HDM05",
+   "local": 216096,
+   "loss": 3464087373.9883738,
+   "file": "HDM05/dg/HDM_dg_03-09_01_120_stageii.npz",
+   "frame": 3886,
+   "seconds": 32.38
+  },
+  {
+   "index": 277113,
+   "dataset": "HDM05",
+   "local": 216093,
+   "loss": 2747387225.583879,
+   "file": "HDM05/dg/HDM_dg_03-09_01_120_stageii.npz",
+   "frame": 3883,
+   "seconds": 32.36
+  },
+  {
+   "index": 277118,
+   "dataset": "HDM05",
+   "local": 216098,
+   "loss": 2448489725.731491,
+   "file": "HDM05/dg/HDM_dg_03-09_01_120_stageii.npz",
+   "frame": 3888,
+   "seconds": 32.4
+  },
+  {
+   "index": 277115,
+   "dataset": "HDM05",
+   "local": 216095,
+   "loss": 2443948092.885601,
+   "file": "HDM05/dg/HDM_dg_03-09_01_120_stageii.npz",
+   "frame": 3885,
+   "seconds": 32.38
+  },
+  {
+   "index": 277114,
+   "dataset": "HDM05",
+   "local": 216094,
+   "loss": 2220943714.341908,
+   "file": "HDM05/dg/HDM_dg_03-09_01_120_stageii.npz",
+   "frame": 3884,
+   "seconds": 32.37
+  },
+  {
+   "index": 277112,
+   "dataset": "HDM05",
+   "local": 216092,
+   "loss": 1764445200.6637836,
+   "file": "HDM05/dg/HDM_dg_03-09_01_120_stageii.npz",
+   "frame": 3882,
+   "seconds": 32.35
+  },
+  {
+   "index": 277906,
+   "dataset": "HDM05",
+   "local": 216886,
+   "loss": 1693820169.6166856,
+   "file": "HDM05/dg/HDM_dg_03-09_01_120_stageii.npz",
+   "frame": 4676,
+   "seconds": 38.97
+  },
+  {
+   "index": 277111,
+   "dataset": "HDM05",
+   "local": 216091,
+   "loss": 1534243405.7947755,
+   "file": "HDM05/dg/HDM_dg_03-09_01_120_stageii.npz",
+   "frame": 3881,
+   "seconds": 32.34
+  },
+  {
+   "index": 277907,
+   "dataset": "HDM05",
+   "local": 216887,
+   "loss": 1369187057.053685,
+   "file": "HDM05/dg/HDM_dg_03-09_01_120_stageii.npz",
+   "frame": 4677,
+   "seconds": 38.98
+  },
+  {
+   "index": 277904,
+   "dataset": "HDM05",
+   "local": 216884,
+   "loss": 1227440336.7623644,
+   "file": "HDM05/dg/HDM_dg_03-09_01_120_stageii.npz",
+   "frame": 4674,
+   "seconds": 38.95
+  },
+  {
+   "index": 290047,
+   "dataset": "HDM05",
+   "local": 229027,
+   "loss": 1212484638.313549,
+   "file": "HDM05/dg/HDM_dg_01-03_02_120_stageii.npz",
+   "frame": 966,
+   "seconds": 8.05
+  },
+  {
+   "index": 277905,
+   "dataset": "HDM05",
+   "local": 216885,
+   "loss": 1166096631.8247514,
+   "file": "HDM05/dg/HDM_dg_03-09_01_120_stageii.npz",
+   "frame": 4675,
+   "seconds": 38.96
+  },
+  {
+   "index": 290048,
+   "dataset": "HDM05",
+   "local": 229028,
+   "loss": 1146236169.6981812,
+   "file": "HDM05/dg/HDM_dg_01-03_02_120_stageii.npz",
+   "frame": 967,
+   "seconds": 8.06
+  },
+  {
+   "index": 290043,
+   "dataset": "HDM05",
+   "local": 229023,
+   "loss": 1045069188.778809,
+   "file": "HDM05/dg/HDM_dg_01-03_02_120_stageii.npz",
+   "frame": 962,
+   "seconds": 8.02
+  }
+ ],
+ "worst_train_r2t12": [
+  {
+   "index": 9424594,
+   "dataset": "KIT",
+   "local": 2816281,
+   "loss": 81755906174.30933,
+   "file": "KIT/576/MarcusS_AdrianM12_stageii.npz",
+   "frame": 8133,
+   "seconds": 67.78
+  },
+  {
+   "index": 8353591,
+   "dataset": "KIT",
+   "local": 1745278,
+   "loss": 73777066053.14139,
+   "file": "KIT/575/MarcusS_AdrianM12_stageii.npz",
+   "frame": 8133,
+   "seconds": 67.78
+  },
+  {
+   "index": 8353592,
+   "dataset": "KIT",
+   "local": 1745279,
+   "loss": 59938170644.88622,
+   "file": "KIT/575/MarcusS_AdrianM12_stageii.npz",
+   "frame": 8134,
+   "seconds": 67.78
+  },
+  {
+   "index": 9424595,
+   "dataset": "KIT",
+   "local": 2816282,
+   "loss": 54378543007.63013,
+   "file": "KIT/576/MarcusS_AdrianM12_stageii.npz",
+   "frame": 8134,
+   "seconds": 67.78
+  },
+  {
+   "index": 9424596,
+   "dataset": "KIT",
+   "local": 2816283,
+   "loss": 34961491651.65216,
+   "file": "KIT/576/MarcusS_AdrianM12_stageii.npz",
+   "frame": 8135,
+   "seconds": 67.79
+  },
+  {
+   "index": 8353593,
+   "dataset": "KIT",
+   "local": 1745280,
+   "loss": 33737546786.159966,
+   "file": "KIT/575/MarcusS_AdrianM12_stageii.npz",
+   "frame": 8135,
+   "seconds": 67.79
+  },
+  {
+   "index": 8353594,
+   "dataset": "KIT",
+   "local": 1745281,
+   "loss": 20963535639.078842,
+   "file": "KIT/575/MarcusS_AdrianM12_stageii.npz",
+   "frame": 8136,
+   "seconds": 67.8
+  },
+  {
+   "index": 9424597,
+   "dataset": "KIT",
+   "local": 2816284,
+   "loss": 19755089860.117416,
+   "file": "KIT/576/MarcusS_AdrianM12_stageii.npz",
+   "frame": 8136,
+   "seconds": 67.8
+  },
+  {
+   "index": 8353595,
+   "dataset": "KIT",
+   "local": 1745282,
+   "loss": 17076709835.977404,
+   "file": "KIT/575/MarcusS_AdrianM12_stageii.npz",
+   "frame": 8137,
+   "seconds": 67.81
+  },
+  {
+   "index": 9424603,
+   "dataset": "KIT",
+   "local": 2816290,
+   "loss": 16944143472.532658,
+   "file": "KIT/576/MarcusS_AdrianM12_stageii.npz",
+   "frame": 8142,
+   "seconds": 67.85
+  },
+  {
+   "index": 9424599,
+   "dataset": "KIT",
+   "local": 2816286,
+   "loss": 16874236966.13478,
+   "file": "KIT/576/MarcusS_AdrianM12_stageii.npz",
+   "frame": 8138,
+   "seconds": 67.82
+  },
+  {
+   "index": 8353621,
+   "dataset": "KIT",
+   "local": 1745308,
+   "loss": 16686589386.264767,
+   "file": "KIT/575/MarcusS_AdrianM12_stageii.npz",
+   "frame": 8163,
+   "seconds": 68.03
+  },
+  {
+   "index": 9424601,
+   "dataset": "KIT",
+   "local": 2816288,
+   "loss": 16412786824.138466,
+   "file": "KIT/576/MarcusS_AdrianM12_stageii.npz",
+   "frame": 8140,
+   "seconds": 67.83
+  },
+  {
+   "index": 8353597,
+   "dataset": "KIT",
+   "local": 1745284,
+   "loss": 16296927289.813221,
+   "file": "KIT/575/MarcusS_AdrianM12_stageii.npz",
+   "frame": 8139,
+   "seconds": 67.83
+  },
+  {
+   "index": 9424602,
+   "dataset": "KIT",
+   "local": 2816289,
+   "loss": 16018232482.054663,
+   "file": "KIT/576/MarcusS_AdrianM12_stageii.npz",
+   "frame": 8141,
+   "seconds": 67.84
+  }
+ ]
+}
