@@ -1,6 +1,6 @@
 # Hyperparameter tuning of RSGM
 
-How the hyperparameters of RSGM (the Riemannian score-based generative model on SO(3)^19, `src/hp/models/rsgm.py`) were tuned, what came out, and what it does and does not show. The search is in `explore/rsgm-hyperparameter-tuning.ipynb`; the studies are in `~/data/experiments/rsgm_hpo/optuna.db` (view them with `optuna-dashboard sqlite:///$HOME/data/experiments/rsgm_hpo/optuna.db`).
+How the hyperparameters of RSGM (the Riemannian score-based generative model on SO(3)^19, `src/hp/models/rsgm.py`) were tuned, what came out, and what it does and does not show. The search is in `explore/training/rsgm_hyperparameter_tuning.ipynb`; the studies are in `~/data/experiments/rsgm_hpo/optuna.db` (view them with `optuna-dashboard sqlite:///$HOME/data/experiments/rsgm_hpo/optuna.db`).
 
 ## Summary
 
@@ -94,7 +94,7 @@ At width 1024 the objective rises with the learning rate (correlation with log l
 
 ## From the search to the test
 
-The search ranks configurations after 30k steps on validation poses. The real question is the test split at the full budget. Evaluation with the harness of the model zoo (`explore/rsgm_huproso_comparison.ipynb`) on the full official test split (Transitions + SSM, 117,679 poses); RSGM likelihoods with 200 ODE steps; angles in degrees per joint; ± over 3 evaluation repeats (the sampling of the evaluated poses, not training seeds).
+The search ranks configurations after 30k steps on validation poses. The real question is the test split at the full budget. Evaluation with the harness of the model zoo (`explore/evaluation/rsgm_huproso_comparison.ipynb`) on the full official test split (Transitions + SSM, 117,679 poses); RSGM likelihoods with 200 ODE steps; angles in degrees per joint; ± over 3 evaluation repeats (the sampling of the evaluated poses, not training seeds).
 
 | model | trained on | log-likelihood | Wasserstein | recall | precision |
 |---|---|---|---|---|---|
@@ -107,7 +107,7 @@ The search ranks configurations after 30k steps on validation poses. The real qu
 
 - The tuned configuration (trial 23: MLP 1024 × 3, silu, lr 1.06e-3, β_f 8.99) is better than the default on every metric, and its samples are closer to the test poses than real poses of other subjects are (all three sample metrics below the contrast).
 - The gain shrinks from the search to the test: +5.6 nats at 30k steps on the validation poses, +1.0 at 100k on the test. A short budget favors configurations that learn fast (large learning rates, short EMA); the default catches up with longer training. The 30k-step differences between the top configurations (a few tenths of a nat) are not expected to survive.
-- The best configuration of round 2 (trial 12: 1024 × 5, lr 1.6e-3, β_f 6.0) is being trained at the full budget (`explore/train_rsgm.ipynb`, run `rsgm_tuned_r2t12`).
+- The best configuration of round 2 (trial 12: 1024 × 5, lr 1.6e-3, β_f 6.0) is being trained at the full budget (`explore/training/rsgm_train.ipynb`, run `rsgm_tuned_r2t12`).
 
 ## Caveats
 
@@ -131,4 +131,4 @@ The search ranks configurations after 30k steps on validation poses. The real qu
 pip install optuna optuna-dashboard
 ```
 
-Run `explore/rsgm-hyperparameter-tuning.ipynb` top to bottom: the studies are resumable, so with the existing database it only loads them and shows the results; `RUN_FINAL = True` runs the final retraining with seeds (hours). Train a configuration at the full budget with `explore/train_rsgm.ipynb` (the best one is printed by the notebook as `TUNED` overrides) and evaluate it with `explore/rsgm_huproso_comparison.ipynb`.
+Run `explore/training/rsgm_hyperparameter_tuning.ipynb` top to bottom: the studies are resumable, so with the existing database it only loads them and shows the results; `RUN_FINAL = True` runs the final retraining with seeds (hours). Train a configuration at the full budget with `explore/training/rsgm_train.ipynb` (the best one is printed by the notebook as `TUNED` overrides) and evaluate it with `explore/evaluation/rsgm_huproso_comparison.ipynb`.

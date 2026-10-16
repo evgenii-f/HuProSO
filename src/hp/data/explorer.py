@@ -1,6 +1,6 @@
 """Helpers to browse raw AMASS (SMPL-X) sequences and decide what can be cropped.
 
-Used by explore/inspect_amass.ipynb. Works on the extracted *_stageii.npz files
+Used by explore/data/inspect_amass.ipynb. Works on the extracted *_stageii.npz files
 ("amass_raw" in config/paths.yaml), where sequence boundaries are still known.
 """
 import io

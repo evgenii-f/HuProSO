@@ -2,7 +2,7 @@
 
 For one dataset: integrity of the compressed files, how well the compressed poses cover the
 original ones (nearest-neighbour recall, per-joint Wasserstein) and how much of the motion speed
-is kept. Used by explore/compare_datasets.ipynb.
+is kept. Used by explore/data/compare_datasets.ipynb.
 """
 import os
 from typing import Dict, List, Optional
