@@ -49,3 +49,31 @@ def make_run_dir(root, name: str) -> Path:
     run_dir = parent / f"run_{max(numbers, default=0) + 1:04d}"
     run_dir.mkdir(parents=True)
     return run_dir
+
+
+# What may be changed when a run is resumed: where the data is (the same data: the trainer checks its size), how it
+# is loaded, the device, how often things are written. Everything else (the data split, the model, the optimization)
+# must stay as the run had it.
+RESUMABLE = ("data.rotations", "data.load_dtype", "tensorboard", "train.device", "train.num_workers", "train.progress",
+             "train.checkpoint_every", "train.keep_last", "train.keep_best", "train.time_limit_minutes")
+
+
+def _leaves(node, prefix=""):
+    for key, value in node.items():
+        name = f"{prefix}{key}"
+        if isinstance(value, dict):
+            yield from _leaves(value, name + ".")
+        else:
+            yield name
+
+
+def load_resume_config(run_dir, overrides: Sequence[str] = ()) -> DictConfig:
+    """The config.yaml of the run, with the `overrides` that are allowed when resuming (RESUMABLE)."""
+    saved = _load_mapping(Path(run_dir) / "config.yaml")
+    cli = OmegaConf.from_dotlist(list(overrides))
+    refused = [k for k in _leaves(OmegaConf.to_container(cli)) if not any(k == r or k.startswith(r + ".") for r in RESUMABLE)]
+    if refused:
+        raise ValueError(f"Cannot change {refused} when resuming a run; only {list(RESUMABLE)} can be changed.")
+    config = OmegaConf.merge(saved, cli)
+    assert isinstance(config, DictConfig)
+    return config

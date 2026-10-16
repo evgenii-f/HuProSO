@@ -1,5 +1,7 @@
 import dataclasses
+import json
 import os
+import signal
 
 import pytest
 from omegaconf import OmegaConf
@@ -7,8 +9,8 @@ from test_training_smoke import rotations  # noqa: F401  (a fixture: random <Dat
 
 from hp.models.io import load_model
 from hp.models.so3_flow import SO3Flow
-from hp.training import TrainConfig
-from hp.training.cli import main
+from hp.training import TrainConfig, Trainer, find_checkpoint
+from hp.training.cli import EXIT_STOPPED, exit_code, main
 from hp.training.config import CONFIG_DIR, load_config, make_run_dir
 
 
@@ -74,10 +76,84 @@ def test_the_script_trains_and_saves_a_loadable_run(rotations, tmp_path):  # noq
     run = main(args(tmp_path, rotations))
     assert run == tmp_path / "runs" / "so3_flow" / "run_0001"
     assert sorted(p.name for p in run.iterdir()) == [
-        "checkpoint_000003", "config.yaml", "history.json", "model.json", "weights.pt"]
+        "checkpoint_000003", "config.yaml", "history.json", "model.json", "status.json", "train_state.pt", "weights.pt"]
     saved = OmegaConf.load(run / "config.yaml")
     assert saved.train.max_iterations == 3 and saved.model.args.flow.layers == 2
     model = load_model(run)
     assert isinstance(model, SO3Flow) and model.num_joints == 19
     assert main(args(tmp_path, rotations)).name == "run_0002"  # the second run does not touch the first
     assert dict(os.environ) == before  # the settings of the run did not leak into the environment
+
+
+def test_resume_goes_on_in_the_same_run_folder(rotations, tmp_path):  # noqa: F811
+    base = args(tmp_path, rotations, "train.max_iterations=4", "train.checkpoint_every=2", "train.keep_last=0", "train.keep_best=0", "tensorboard=false")
+    run = main(base)
+    full = load_model(run)
+    (run / "weights.pt").unlink(), (run / "history.json").unlink(), (run / "train_state.pt").unlink()  # a run that was killed
+    assert main(["resume=" + str(run), "train.device=cpu"]) == run  # no run_0002: the newest checkpoint of run_0001
+    assert [p.name for p in (tmp_path / "runs" / "so3_flow").iterdir()] == ["run_0001"]
+    # the newest checkpoint is the last step: nothing to train, no new session, only the final files are rewritten
+    assert not list(run.glob("config_resume_*")) and len(json.loads((run / "history.json").read_text())["loss"]) == 4
+    assert exit_code(run) == 0
+    assert isinstance(load_model(run), SO3Flow) and full.num_joints == 19
+
+
+def test_resume_from_a_checkpoint_with_more_steps_to_do(rotations, tmp_path):  # noqa: F811
+    run = main(args(tmp_path, rotations, "train.max_iterations=4", "train.checkpoint_every=2", "train.keep_last=0", "train.keep_best=0"))
+    assert main([f"resume={run / 'checkpoint_000002'}", "train.device=cpu", "train.progress=false"]) == run
+    assert len(json.loads((run / "history.json").read_text())["loss"]) == 4  # steps 3 and 4 were made again
+
+
+def test_resume_refuses_to_change_the_model_or_the_optimization(rotations, tmp_path):  # noqa: F811
+    run = main(args(tmp_path, rotations, "train.max_iterations=4", "train.checkpoint_every=2"))
+    for bad in ("train.lr=0.1", "train.max_iterations=8", "model.args.flow.layers=3", "seed=1"):
+        with pytest.raises(ValueError, match="Cannot change"):
+            main([f"resume={run}", bad])
+    with pytest.raises(FileNotFoundError, match="Nothing to resume"):
+        main([f"resume={tmp_path}"])
+
+
+def test_find_checkpoint_names_the_run_and_the_state_to_use(rotations, tmp_path):  # noqa: F811
+    run = main(args(tmp_path, rotations, "train.max_iterations=4", "train.checkpoint_every=2", "train.keep_last=0", "train.keep_best=0"))
+    assert find_checkpoint(run) == (run, run)  # a finished run holds its final state
+    assert find_checkpoint(run / "checkpoint_000002") == (run, run / "checkpoint_000002")
+    (run / "train_state.pt").unlink()
+    assert find_checkpoint(run) == (run, run / "checkpoint_000004")  # a run that stopped: the newest checkpoint
+    (run / "checkpoint_000004" / "train_state.pt").unlink()  # one of the old kind, weights only, is skipped
+    assert find_checkpoint(run) == (run, run / "checkpoint_000002")
+
+
+def test_a_signal_stops_the_run_cleanly_and_resume_finishes_it(rotations, tmp_path, monkeypatch):  # noqa: F811
+    step = Trainer.training_step
+    calls = []
+
+    def step_then_signal(self, batch):  # the scheduler's warning arrives during the second step
+        calls.append(1)
+        if len(calls) == 2:
+            os.kill(os.getpid(), signal.SIGTERM)
+        return step(self, batch)
+
+    base = args(tmp_path, rotations, "train.max_iterations=4", "train.checkpoint_every=0")
+    handler_before = signal.getsignal(signal.SIGTERM)
+    with monkeypatch.context() as patch:
+        patch.setattr(Trainer, "training_step", step_then_signal)
+        run = main(base)
+    assert exit_code(run) == EXIT_STOPPED and not (run / "weights.pt").exists()
+    assert [p.name for p in run.glob("checkpoint_*")] == ["checkpoint_000002"]
+    assert signal.getsignal(signal.SIGTERM) is handler_before  # the handler of the run is taken off again
+    assert main([f"resume={run}", "train.device=cpu"]) == run
+    assert exit_code(run) == 0 and len(json.loads((run / "history.json").read_text())["loss"]) == 4
+
+
+def test_the_time_limit_stops_the_script_with_a_status_to_resubmit(rotations, tmp_path):  # noqa: F811
+    run = main(args(tmp_path, rotations, "train.max_iterations=4", "train.time_limit_minutes=1e-9"))
+    assert exit_code(run) == EXIT_STOPPED == 75
+    assert main([f"resume={run}", "train.device=cpu", "train.time_limit_minutes=null"]) == run
+    assert exit_code(run) == 0
+
+
+def test_resume_may_move_the_data_but_not_change_the_split(rotations, tmp_path):  # noqa: F811
+    run = main(args(tmp_path, rotations, "train.max_iterations=4", "train.checkpoint_every=2"))
+    with pytest.raises(ValueError, match="Cannot change"):
+        main([f"resume={run / 'checkpoint_000002'}", "data.split=subset"])
+    assert main([f"resume={run / 'checkpoint_000002'}", f"data.rotations={rotations}", "train.device=cpu"]) == run

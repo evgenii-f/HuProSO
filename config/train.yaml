@@ -22,6 +22,9 @@ train:                           # the fields of hp.training.TrainConfig
   ema_decay: null
   valid_interval: 500
   checkpoint_every: 1000
+  keep_last: 3                   # the newest checkpoints kept (the others are deleted, unless they are among the best)
+  keep_best: 3                   # also kept: the checkpoints with the lowest validation loss (train loss without a validation set)
+  time_limit_minutes: null       # stop cleanly (with a checkpoint) after this long, then go on with resume=<run folder>
   device: auto                   # auto | cpu | mps | cuda:N (auto: as in config/paths.yaml)
   num_workers: 0
   progress: true

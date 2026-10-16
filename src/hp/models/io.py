@@ -23,6 +23,11 @@ def _plain(value):
     return OmegaConf.to_container(value) if OmegaConf.is_config(value) else value
 
 
+def plain_build_args(model: PoseModel) -> dict:
+    """How the model was built, as plain python (what model.json holds)."""
+    return {k: _plain(v) for k, v in model.build_args.items()}
+
+
 def save_model(model: PoseModel, directory, weights: str = "weights") -> Path:
     """Write model.json and <weights>.pt into `directory`. Another `weights` name (e.g. "weights_ema")
     stores a second set of weights of the same model next to the first."""
@@ -30,7 +35,7 @@ def save_model(model: PoseModel, directory, weights: str = "weights") -> Path:
         raise ValueError("The model was not made with build_model(), so a checkpoint could not rebuild it.")
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
-    manifest = {"format": FORMAT_VERSION, "build_args": {k: _plain(v) for k, v in model.build_args.items()}}
+    manifest = {"format": FORMAT_VERSION, "build_args": plain_build_args(model)}
     (directory / MANIFEST).write_text(json.dumps(manifest, indent=2))
     torch.save(model.state_dict(), directory / f"{weights}.pt")
     return directory
