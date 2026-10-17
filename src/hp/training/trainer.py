@@ -15,7 +15,7 @@ import random
 import re
 import shutil
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Callable, List, Optional
 
@@ -32,8 +32,9 @@ STATE_FORMAT = 1
 METRIC_FILE = "metric.json"  # in a checkpoint: what it is ranked by, see TrainConfig.keep_best
 CHECKPOINT = re.compile(r"checkpoint_(\d{6})")
 # settings of the optimization: they must not change when a run is resumed (the learning rate schedule depends on them)
-LOCKED = ("max_iterations", "batch_size", "lr", "scheduler", "lr_step_fraction", "lr_gamma", "warmup_steps",
-          "clip_grad_norm", "ema_decay")
+LOCKED = ("max_iterations", "batch_size", "lr", "optimizer", "weight_decay", "scheduler", "lr_step_fraction", "lr_gamma",
+          "warmup_steps", "clip_grad_norm", "ema_decay")
+OPTIMIZERS = {"adam": torch.optim.Adam, "adamw": torch.optim.AdamW}
 
 
 @dataclass
@@ -41,6 +42,8 @@ class TrainConfig:
     max_iterations: int = 20_000
     batch_size: int = 2000
     lr: float = 5e-3
+    optimizer: str = "adam"  # "adam" as in the paper, or "adamw" (Loshchilov & Hutter: the weight decay is decoupled)
+    weight_decay: float = 0.0  # adam: an L2 penalty added to the gradient; adamw: the weights shrink by lr * weight_decay
     scheduler: str = "step"  # "step" as in the paper, "cosine" (decay to 0 after a linear warm-up), or "none"
     lr_step_fraction: float = 0.7  # StepLR: the learning rate decays at multiples of this share of max_iterations
     lr_gamma: float = 0.5
@@ -57,6 +60,15 @@ class TrainConfig:
     device: str = "cpu"
     num_workers: int = 0
     progress: bool = True
+
+
+def make_optimizer(parameters, config: "TrainConfig") -> torch.optim.Optimizer:
+    """The optimizer of `config` (optimizer, lr, weight_decay). With weight_decay 0, adam and adamw are the same."""
+    if config.optimizer not in OPTIMIZERS:
+        raise ValueError(f"Unknown optimizer '{config.optimizer}'. Use {' or '.join(repr(k) for k in OPTIMIZERS)}.")
+    if not config.weight_decay >= 0:
+        raise ValueError(f"weight_decay must be >= 0, got {config.weight_decay}.")
+    return OPTIMIZERS[config.optimizer](parameters, lr=config.lr, weight_decay=config.weight_decay)
 
 
 @dataclass
@@ -148,7 +160,7 @@ class Trainer:
             raise ValueError("The training set is empty.")
         self.model = model.to(c.device)
         self.ema = EMA(self.model, c.ema_decay) if c.ema_decay else None
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=c.lr)
+        self.optimizer = make_optimizer(self.model.parameters(), c)
         self.scheduler = None
         if c.scheduler == "step":
             self.scheduler = torch.optim.lr_scheduler.StepLR(
@@ -245,7 +257,10 @@ class Trainer:
         directory = Path(directory)
         state = read_state(directory)
         c = self.config
-        changed = {k: (state["config"].get(k), getattr(c, k)) for k in LOCKED if state["config"].get(k) != getattr(c, k)}
+        # a setting that the run's state does not have was added later: the run had its default
+        defaults = {f.name: f.default for f in fields(TrainConfig)}
+        saved_config = {k: state["config"].get(k, defaults[k]) for k in LOCKED}
+        changed = {k: (saved_config[k], getattr(c, k)) for k in LOCKED if saved_config[k] != getattr(c, k)}
         if changed:
             raise ValueError("Cannot resume with other optimization settings than the run had (saved, now): "
                              + ", ".join(f"{k} {a} -> {b}" for k, (a, b) in changed.items()) + ".")

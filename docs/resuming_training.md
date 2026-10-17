@@ -15,7 +15,7 @@ the weights (`weights.pt`, `weights_ema.pt`), a `train_state.pt`:
 | | |
 |---|---|
 | step, history of the losses | the run goes on from the step, and `history.json` is complete |
-| optimizer (Adam moments), scheduler | the learning rate continues where it was |
+| optimizer (Adam or AdamW moments), scheduler | the learning rate continues where it was |
 | EMA counter | the warm-up of the EMA decay |
 | random generators (torch, device, numpy, python) | |
 
@@ -41,7 +41,7 @@ checkpoint are replaced by the new ones.
 Only things that do not change the training may be given: `data.rotations` (the same data elsewhere, e.g. on another
 machine: the number of training and validation poses must be the same), `data.load_dtype`, `tensorboard`,
 `train.device`, `num_workers`, `progress`, `checkpoint_every`, `keep_last`, `keep_best`, `time_limit_minutes`. The data split, the
-model and the optimization (`lr`, `batch_size`, `max_iterations`, scheduler, EMA, ...) are refused: the learning rate
+model and the optimization (`lr`, `optimizer`, `weight_decay`, `batch_size`, `max_iterations`, scheduler, EMA, ...) are refused: the learning rate
 schedule depends on them.
 
 **Resuming from an older checkpoint** (not the newest) goes on from it as from any other: the checkpoints after it and

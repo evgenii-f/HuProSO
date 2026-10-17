@@ -125,6 +125,51 @@ def test_the_cosine_schedule_warms_up_and_decays_to_zero(make_gaussian):
     assert all(a >= b for a, b in zip(lrs[3:], lrs[4:])) and lrs[-1] == pytest.approx(0.0, abs=1e-12)
 
 
+def _steps(model, steps=1, **kwargs):
+    """The weights before and after `steps` training steps on the first batch. The weights start at fixed non-zero
+    values (the model's zeros would hide any weight decay)."""
+    torch.manual_seed(0)
+    with torch.no_grad():
+        for p in model.parameters():
+            p.copy_(torch.randn_like(p))
+    trainer = Trainer(model, Poses(), None, config(max_iterations=steps, scheduler="none", **kwargs))
+    before = _params(trainer)
+    batch = next(iter(trainer.train_loader))
+    for _ in range(steps):
+        trainer.training_step(batch)
+    return before, _params(trainer), trainer
+
+
+def test_adamw_shrinks_the_weights_apart_from_the_gradient_step(make_gaussian):
+    before, adam, _ = _steps(make_gaussian())
+    _, adamw, trainer = _steps(make_gaussian(), optimizer="adamw", weight_decay=0.1)
+    assert isinstance(trainer.optimizer, torch.optim.AdamW) and trainer.optimizer.param_groups[0]["weight_decay"] == 0.1
+    for p0, a, w in zip(before, adam, adamw):  # decoupled: the same Adam step, and the weights shrink by lr * weight_decay
+        assert p0.abs().min() > 0
+        assert torch.allclose(w - a, -0.05 * 0.1 * p0, atol=1e-6)
+
+
+def test_without_weight_decay_adam_and_adamw_make_the_same_steps(make_gaussian):
+    _, adam, trainer = _steps(make_gaussian(), steps=3)
+    _, adamw, _ = _steps(make_gaussian(), steps=3, optimizer="adamw")
+    assert type(trainer.optimizer) is torch.optim.Adam and trainer.optimizer.param_groups[0]["weight_decay"] == 0.0
+    for a, w in zip(adam, adamw):
+        assert torch.equal(a, w)
+
+
+def test_weight_decay_in_adam_is_an_l2_penalty_in_the_gradient(make_gaussian):
+    class Penalized(Gaussian):
+        def loss(self, pose, cond=None):  # weight_decay / 2 * |p|^2, with weight_decay 0.1
+            return super().loss(pose, cond) + 0.05 * sum((p**2).sum() for p in self.parameters())
+
+    # without clipping: the optimizer adds weight_decay * p after the gradient is clipped, a penalty in the loss is clipped too
+    _, decayed, _ = _steps(make_gaussian(), steps=3, weight_decay=0.1, clip_grad_norm=None)
+    _, penalized, _ = _steps(Penalized(num_joints=4), steps=3, clip_grad_norm=None)
+    _, adam, _ = _steps(make_gaussian(), steps=3, clip_grad_norm=None)
+    for d, p, a in zip(decayed, penalized, adam):
+        assert torch.allclose(d, p, atol=1e-6) and not torch.allclose(d, a, atol=1e-4)
+
+
 def test_the_callback_comes_at_the_interval_and_can_stop_the_training(make_gaussian):
     calls = []
     Trainer(make_gaussian(), Poses(), Poses(n=32), config(max_iterations=6)).fit(callback=lambda s, v: calls.append((s, v)))
@@ -152,6 +197,10 @@ def test_bad_settings_are_refused(make_gaussian):
         Trainer(make_gaussian(), Empty(), None, config())
     with pytest.raises(ValueError, match="scheduler"):
         Trainer(make_gaussian(), Poses(), None, config(scheduler="linear"))
+    with pytest.raises(ValueError, match="optimizer 'sgd'"):
+        Trainer(make_gaussian(), Poses(), None, config(optimizer="sgd"))
+    with pytest.raises(ValueError, match="weight_decay"):
+        Trainer(make_gaussian(), Poses(), None, config(weight_decay=-0.1))
 
 
 def test_the_flow_trains_like_the_old_trainer(rotations, tmp_path):  # noqa: F811
@@ -211,10 +260,12 @@ def _params(trainer):
     return [p.detach().clone() for p in trainer.model.parameters()]
 
 
+@pytest.mark.parametrize("optimizer", ["adam", "adamw"])
 @pytest.mark.parametrize("scheduler", ["step", "cosine", "none"])
-def test_a_resumed_run_equals_an_uninterrupted_one_at_the_end_of_a_pass(make_gaussian, tmp_path, scheduler):
+def test_a_resumed_run_equals_an_uninterrupted_one_at_the_end_of_a_pass(make_gaussian, tmp_path, scheduler, optimizer):
     # 64 poses / batch 16 = 4 steps per pass: the checkpoint at step 4 is at the end of a pass
-    cfg = config(max_iterations=8, checkpoint_every=4, ema_decay=0.9, scheduler=scheduler, warmup_steps=1, lr_step_fraction=0.75)  # step: the rate halves at step 6
+    cfg = config(max_iterations=8, checkpoint_every=4, ema_decay=0.9, scheduler=scheduler, warmup_steps=1, lr_step_fraction=0.75,  # step: the rate halves at step 6
+                 optimizer=optimizer, weight_decay=0.01)
     whole = Trainer(make_gaussian(), Poses(), Poses(n=32), cfg, run_dir=tmp_path / "whole")
     whole.fit()
     torch.manual_seed(123)  # whatever the state of the generators is: it comes from the checkpoint
@@ -261,7 +312,23 @@ def test_resuming_with_other_optimization_settings_is_refused(make_gaussian, tmp
         Trainer(make_gaussian(), Poses(), None, config(max_iterations=8)).fit(resume=checkpoint)
     with pytest.raises(ValueError, match="ema_decay"):
         Trainer(make_gaussian(), Poses(), None, config(max_iterations=4, ema_decay=0.9)).fit(resume=checkpoint)
+    with pytest.raises(ValueError, match="optimizer adam -> adamw"):
+        Trainer(make_gaussian(), Poses(), None, config(max_iterations=4, optimizer="adamw")).fit(resume=checkpoint)
+    with pytest.raises(ValueError, match="weight_decay 0.0 -> 0.01"):
+        Trainer(make_gaussian(), Poses(), None, config(max_iterations=4, weight_decay=0.01)).fit(resume=checkpoint)
     Trainer(make_gaussian(), Poses(), None, config(max_iterations=4, valid_interval=1)).fit(resume=checkpoint)  # others may change
+
+
+def test_a_checkpoint_from_before_the_optimizer_setting_resumes_with_the_defaults(make_gaussian, tmp_path):
+    cfg = config(max_iterations=4, checkpoint_every=2)
+    Trainer(make_gaussian(), Poses(), None, cfg, run_dir=tmp_path / "run").fit()
+    path = tmp_path / "run" / "checkpoint_000002" / "train_state.pt"
+    state = torch.load(path, weights_only=True)
+    del state["config"]["optimizer"], state["config"]["weight_decay"]  # as written before these settings existed
+    torch.save(state, path)
+    Trainer(make_gaussian(), Poses(), None, cfg).fit(resume=path.parent)  # it was Adam without weight decay
+    with pytest.raises(ValueError, match="optimizer adam -> adamw"):
+        Trainer(make_gaussian(), Poses(), None, config(max_iterations=4, optimizer="adamw")).fit(resume=path.parent)
 
 
 def test_resuming_another_model_or_a_checkpoint_without_state_is_refused(make_gaussian, tmp_path):

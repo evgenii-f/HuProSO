@@ -14,6 +14,8 @@ train:                           # the fields of hp.training.TrainConfig
   max_iterations: 20000
   batch_size: 2000
   lr: 0.005
+  optimizer: adam                # adam (as in the paper) | adamw (decoupled weight decay)
+  weight_decay: 0.0              # adam: L2 penalty added to the gradient; adamw: the weights shrink by lr * weight_decay
   scheduler: step                # step | cosine (after warmup_steps of linear warm-up) | none
   lr_step_fraction: 0.7
   lr_gamma: 0.5

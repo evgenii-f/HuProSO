@@ -9,7 +9,7 @@ from test_training_smoke import rotations  # noqa: F401  (a fixture: random <Dat
 
 from hp.models.io import load_model
 from hp.models.so3_flow import SO3Flow
-from hp.training import TrainConfig, Trainer, find_checkpoint
+from hp.training import TrainConfig, Trainer, find_checkpoint, read_state
 from hp.training.cli import EXIT_STOPPED, exit_code, main
 from hp.training.config import CONFIG_DIR, load_config, make_run_dir
 
@@ -104,9 +104,20 @@ def test_resume_from_a_checkpoint_with_more_steps_to_do(rotations, tmp_path):  #
     assert len(json.loads((run / "history.json").read_text())["loss"]) == 4  # steps 3 and 4 were made again
 
 
+def test_the_script_trains_with_adamw_and_resumes_it(rotations, tmp_path):  # noqa: F811
+    run = main(args(tmp_path, rotations, "train.max_iterations=4", "train.checkpoint_every=2", "train.keep_last=0",
+                    "train.keep_best=0", "train.optimizer=adamw", "train.weight_decay=0.01"))
+    saved = OmegaConf.load(run / "config.yaml")
+    assert saved.train.optimizer == "adamw" and saved.train.weight_decay == 0.01
+    assert read_state(run)["config"]["optimizer"] == "adamw"
+    assert main([f"resume={run / 'checkpoint_000002'}", "train.device=cpu", "train.progress=false"]) == run
+    assert len(json.loads((run / "history.json").read_text())["loss"]) == 4
+
+
 def test_resume_refuses_to_change_the_model_or_the_optimization(rotations, tmp_path):  # noqa: F811
     run = main(args(tmp_path, rotations, "train.max_iterations=4", "train.checkpoint_every=2"))
-    for bad in ("train.lr=0.1", "train.max_iterations=8", "model.args.flow.layers=3", "seed=1"):
+    for bad in ("train.lr=0.1", "train.max_iterations=8", "train.optimizer=adamw", "train.weight_decay=0.01",
+                "model.args.flow.layers=3", "seed=1"):
         with pytest.raises(ValueError, match="Cannot change"):
             main([f"resume={run}", bad])
     with pytest.raises(FileNotFoundError, match="Nothing to resume"):
