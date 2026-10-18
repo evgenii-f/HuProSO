@@ -16,7 +16,7 @@ from hp.training.config import CONFIG_DIR, load_config, make_run_dir
 
 def test_train_yaml_matches_the_train_config_defaults():
     train = OmegaConf.to_container(load_config().train)
-    defaults = dataclasses.asdict(TrainConfig())
+    defaults = {f.name: f.default for f in dataclasses.fields(TrainConfig)}  # as declared (weight_decay: None)
     assert train.keys() == defaults.keys()
     assert {k: v for k, v in train.items() if k != "device"} == {k: v for k, v in defaults.items() if k != "device"}
 
@@ -112,6 +112,15 @@ def test_the_script_trains_with_adamw_and_resumes_it(rotations, tmp_path):  # no
     assert read_state(run)["config"]["optimizer"] == "adamw"
     assert main([f"resume={run / 'checkpoint_000002'}", "train.device=cpu", "train.progress=false"]) == run
     assert len(json.loads((run / "history.json").read_text())["loss"]) == 4
+
+
+def test_the_saved_config_holds_the_weight_decay_that_was_used(rotations, tmp_path):  # noqa: F811
+    for extra, optimizer, weight_decay in (((), "adam", 0.0), (("train.optimizer=adamw",), "adamw", 0.01),
+                                          (("train.optimizer=adamw", "train.weight_decay=0.0"), "adamw", 0.0)):
+        run = main(args(tmp_path, rotations, *extra))
+        saved = OmegaConf.load(run / "config.yaml").train
+        assert (saved.optimizer, saved.weight_decay) == (optimizer, weight_decay)
+        assert read_state(run)["config"]["weight_decay"] == weight_decay
 
 
 def test_resume_refuses_to_change_the_model_or_the_optimization(rotations, tmp_path):  # noqa: F811

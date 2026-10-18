@@ -79,6 +79,9 @@ def main(argv: Optional[Sequence[str]] = None):
                 for mode in ("train", "valid")}
     model = build_model(cfg.model.name, num_joints=len(AmassJoints4Learning), **OmegaConf.to_container(cfg.model.args))
 
+    train_cfg = TrainConfig(**{**OmegaConf.to_container(cfg.train), "device": resolve_device(None if cfg.train.device == "auto" else cfg.train.device)})
+    # the saved config says what the run used, not "the default": e.g. weight_decay null becomes the optimizer's default
+    cfg.train.optimizer, cfg.train.weight_decay = train_cfg.optimizer, train_cfg.weight_decay
     step = 0
     if resume:
         step = read_state(checkpoint)["step"]
@@ -87,7 +90,6 @@ def main(argv: Optional[Sequence[str]] = None):
     else:
         run_dir = make_run_dir(cfg.run_root, cfg.run_name or cfg.model.name)
         OmegaConf.save(cfg, run_dir / "config.yaml")
-    train_cfg = TrainConfig(**{**OmegaConf.to_container(cfg.train), "device": resolve_device(None if cfg.train.device == "auto" else cfg.train.device)})
     writer = None
     if cfg.tensorboard:
         from torch.utils.tensorboard import SummaryWriter

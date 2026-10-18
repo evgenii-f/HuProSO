@@ -35,6 +35,7 @@ CHECKPOINT = re.compile(r"checkpoint_(\d{6})")
 LOCKED = ("max_iterations", "batch_size", "lr", "optimizer", "weight_decay", "scheduler", "lr_step_fraction", "lr_gamma",
           "warmup_steps", "clip_grad_norm", "ema_decay")
 OPTIMIZERS = {"adam": torch.optim.Adam, "adamw": torch.optim.AdamW}
+DEFAULT_WEIGHT_DECAY = {"adam": 0.0, "adamw": 0.01}  # the defaults of torch.optim.Adam and AdamW
 
 
 @dataclass
@@ -43,7 +44,9 @@ class TrainConfig:
     batch_size: int = 2000
     lr: float = 5e-3
     optimizer: str = "adam"  # "adam" as in the paper, or "adamw" (Loshchilov & Hutter: the weight decay is decoupled)
-    weight_decay: float = 0.0  # adam: an L2 penalty added to the gradient; adamw: the weights shrink by lr * weight_decay
+    # adam: an L2 penalty added to the gradient; adamw: the weights shrink by lr * weight_decay every step.
+    # None: the PyTorch default of the optimizer (adam 0, adamw 0.01); the config holds the resolved value afterwards
+    weight_decay: Optional[float] = None
     scheduler: str = "step"  # "step" as in the paper, "cosine" (decay to 0 after a linear warm-up), or "none"
     lr_step_fraction: float = 0.7  # StepLR: the learning rate decays at multiples of this share of max_iterations
     lr_gamma: float = 0.5
@@ -60,6 +63,10 @@ class TrainConfig:
     device: str = "cpu"
     num_workers: int = 0
     progress: bool = True
+
+    def __post_init__(self):
+        if self.weight_decay is None and self.optimizer in DEFAULT_WEIGHT_DECAY:
+            self.weight_decay = DEFAULT_WEIGHT_DECAY[self.optimizer]
 
 
 def make_optimizer(parameters, config: "TrainConfig") -> torch.optim.Optimizer:
@@ -257,9 +264,9 @@ class Trainer:
         directory = Path(directory)
         state = read_state(directory)
         c = self.config
-        # a setting that the run's state does not have was added later: the run had its default
-        defaults = {f.name: f.default for f in fields(TrainConfig)}
-        saved_config = {k: state["config"].get(k, defaults[k]) for k in LOCKED}
+        # a setting that the run's state does not have was added later: the run had its default (resolved as for a new run)
+        names = {f.name for f in fields(TrainConfig)}
+        saved_config = asdict(TrainConfig(**{k: v for k, v in state["config"].items() if k in names}))
         changed = {k: (saved_config[k], getattr(c, k)) for k in LOCKED if saved_config[k] != getattr(c, k)}
         if changed:
             raise ValueError("Cannot resume with other optimization settings than the run had (saved, now): "

@@ -1,4 +1,5 @@
 import importlib
+import inspect
 import json
 import time
 
@@ -149,9 +150,25 @@ def test_adamw_shrinks_the_weights_apart_from_the_gradient_step(make_gaussian):
         assert torch.allclose(w - a, -0.05 * 0.1 * p0, atol=1e-6)
 
 
+def test_weight_decay_defaults_to_the_pytorch_default_of_the_optimizer(make_gaussian):
+    for name, optimizer in (("adam", torch.optim.Adam), ("adamw", torch.optim.AdamW)):
+        pytorch_default = inspect.signature(optimizer).parameters["weight_decay"].default
+        cfg = TrainConfig(optimizer=name)
+        assert cfg.weight_decay == pytorch_default  # adam 0, adamw 0.01
+        assert Trainer(make_gaussian(), Poses(), None, cfg).optimizer.param_groups[0]["weight_decay"] == pytorch_default
+    assert TrainConfig(optimizer="adamw", weight_decay=0.0).weight_decay == 0.0  # an explicit value is kept
+    assert TrainConfig(optimizer="adam", weight_decay=0.1).weight_decay == 0.1
+
+
+def test_adamw_by_default_is_not_adam(make_gaussian):
+    _, adam, _ = _steps(make_gaussian(), steps=3)
+    _, adamw, _ = _steps(make_gaussian(), steps=3, optimizer="adamw")  # weight_decay 0.01: the weights shrink
+    assert all(not torch.equal(a, w) for a, w in zip(adam, adamw))
+
+
 def test_without_weight_decay_adam_and_adamw_make_the_same_steps(make_gaussian):
     _, adam, trainer = _steps(make_gaussian(), steps=3)
-    _, adamw, _ = _steps(make_gaussian(), steps=3, optimizer="adamw")
+    _, adamw, _ = _steps(make_gaussian(), steps=3, optimizer="adamw", weight_decay=0.0)
     assert type(trainer.optimizer) is torch.optim.Adam and trainer.optimizer.param_groups[0]["weight_decay"] == 0.0
     for a, w in zip(adam, adamw):
         assert torch.equal(a, w)
@@ -329,6 +346,16 @@ def test_a_checkpoint_from_before_the_optimizer_setting_resumes_with_the_default
     Trainer(make_gaussian(), Poses(), None, cfg).fit(resume=path.parent)  # it was Adam without weight decay
     with pytest.raises(ValueError, match="optimizer adam -> adamw"):
         Trainer(make_gaussian(), Poses(), None, config(max_iterations=4, optimizer="adamw")).fit(resume=path.parent)
+
+
+def test_a_run_of_adamw_without_weight_decay_resumes_only_without_it(make_gaussian, tmp_path):
+    """Its state says weight_decay 0.0: a config that leaves weight_decay to the default (0.01 for adamw) is another run."""
+    Trainer(make_gaussian(), Poses(), None, config(max_iterations=4, checkpoint_every=2, optimizer="adamw", weight_decay=0.0),
+            run_dir=tmp_path / "run").fit()
+    checkpoint = tmp_path / "run" / "checkpoint_000002"
+    Trainer(make_gaussian(), Poses(), None, config(max_iterations=4, optimizer="adamw", weight_decay=0.0)).fit(resume=checkpoint)
+    with pytest.raises(ValueError, match="weight_decay 0.0 -> 0.01"):
+        Trainer(make_gaussian(), Poses(), None, config(max_iterations=4, optimizer="adamw")).fit(resume=checkpoint)
 
 
 def test_resuming_another_model_or_a_checkpoint_without_state_is_refused(make_gaussian, tmp_path):
