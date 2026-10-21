@@ -1,0 +1,20 @@
+# PoseRFM, Riemannian flow matching on SO(3)^J (hp/models/poserfm.py), with the settings of PoseD-Flow (Nadar, Foti,
+# Birdal, CVPR 2026, Sec. 3 "Implementation details").
+name: poserfm
+args:                            # given to build_model
+  hidden: [512, 512, 512, 512]   # 4 hidden layers of 512, Swish (= silu)
+  activation: silu
+  eps: 1.0e-3                    # the log-likelihood is that of the path at t = 1 - eps (0.18 degrees of smoothing at most)
+  sample_steps: 100              # midpoint steps, as the paper
+  likelihood_steps: 100
+train:                           # changes to the train section of config/train.yaml
+  max_iterations: 50000
+  batch_size: 4096
+  lr: 1.0e-3
+  optimizer: adamw
+  weight_decay: 1.0e-4
+  ema_decay: 0.99
+  scheduler: step                # the paper uses ReduceLROnPlateau (factor 0.5, patience 5 validations), which the trainer
+                                 # does not have yet; the step schedule halves the rate once, at 70% of the steps
+  valid_interval: 1000
+  checkpoint_every: 5000
