@@ -131,11 +131,38 @@ def test_the_validation_loss_is_the_same_every_time_and_the_training_loss_is_not
     assert not torch.equal(m.loss(x1), m.loss(x1))
 
 
+def test_the_times_of_the_loss_follow_the_chosen_distribution():
+    uniform = model(joints=2).loss_times(200_000, torch.Generator().manual_seed(8))
+    assert uniform.min() >= 0 and uniform.max() <= 1 and abs(uniform.mean().item() - 0.5) < 0.005
+    m = model(joints=2, time_sampling="logit_normal", time_mean=1.0, time_std=0.5)
+    t = m.loss_times(200_000, torch.Generator().manual_seed(8))
+    logit = torch.log(t / (1 - t))
+    assert abs(logit.mean().item() - 1.0) < 0.01 and abs(logit.std().item() - 0.5) < 0.01
+    assert (t > 0.5).double().mean() > 0.95  # most of the weight near the data
+
+
+def test_the_default_times_are_uniform_as_before():
+    """time_sampling='uniform' (the default) draws exactly torch.rand: the loss is the one of the first version."""
+    m = model(joints=3)
+    x1, _ = pairs(n=32)
+    torch.manual_seed(9)
+    loss = m.train().loss(x1)
+    torch.manual_seed(9)
+    t = torch.rand(32, dtype=torch.float64)
+    x0 = random_rotations((32, 3), dtype=torch.float64)
+    xt, target = PoseRFM.conditional_path(x0, x1, t)
+    assert torch.allclose(loss, ((m.velocity(xt, t) - target) ** 2).sum(dim=(1, 2)).mean())
+
+
 def test_bad_settings_are_refused():
     with pytest.raises(ValueError, match="eps"):
         PoseRFM(num_joints=2, eps=1.0)
     with pytest.raises(ValueError, match="matrix"):
         PoseRFM(num_joints=2, representation="6d")
+    with pytest.raises(ValueError, match="time_sampling"):
+        PoseRFM(num_joints=2, time_sampling="beta")
+    with pytest.raises(ValueError, match="time_std"):
+        PoseRFM(num_joints=2, time_sampling="logit_normal", time_std=0.0)
 
 
 @pytest.mark.skipif(not torch.backends.mps.is_available(), reason="needs an Apple GPU")

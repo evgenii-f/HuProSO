@@ -7,6 +7,9 @@ args:                            # given to build_model
   eps: 1.0e-3                    # the log-likelihood is that of the path at t = 1 - eps (0.18 degrees of smoothing at most)
   sample_steps: 100              # midpoint steps, as the paper
   likelihood_steps: 100
+  time_sampling: uniform         # the times of the loss: uniform (as the paper) or logit_normal (sigmoid of a normal)
+  time_mean: 0.0                 # logit_normal: the mean of logit(t) (> 0: more weight near the data)
+  time_std: 1.0                  # logit_normal: the standard deviation of logit(t)
 train:                           # changes to the train section of config/train.yaml
   max_iterations: 50000
   batch_size: 4096

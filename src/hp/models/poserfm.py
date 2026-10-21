@@ -13,6 +13,12 @@ angle metric (as RSGM), summed over the joints:
 
     loss = E_{t, x0, x1} || v(x_t, t) - v0 ||^2.
 
+The times t of the loss are uniform by default (as the paper). With time_sampling="logit_normal" they are
+sigmoid(time_mean + time_std * z), z ~ N(0, 1) (as in Stable Diffusion 3): time_mean > 0 puts more weight near the
+data (t -> 1), where the field contracts and most of the divergence of the likelihood accumulates. This only weights
+the times differently; the minimizer of the loss at every t is still the marginal field, so the model it aims at is
+the same.
+
 Where x0^T x1 is a rotation by pi (the cut locus) the geodesic is not unique and v0 jumps; such pairs have measure
 zero, and the loss stays finite there.
 
@@ -65,6 +71,9 @@ class PoseRFM(PoseModel):
         eps: float = 1e-3,  # the likelihood is that of the path at t = 1 - eps
         sample_steps: int = 100,
         likelihood_steps: int = 100,
+        time_sampling: str = "uniform",  # the times of the loss: "uniform" or "logit_normal"
+        time_mean: float = 0.0,  # logit_normal: the mean of logit(t); > 0 puts more weight near the data
+        time_std: float = 1.0,  # logit_normal: the standard deviation of logit(t)
         representation: str = "matrix",
         cond_dim: int = 0,
     ):
@@ -72,8 +81,13 @@ class PoseRFM(PoseModel):
             raise ValueError("PoseRFM works on rotation matrices directly; use representation='matrix'.")
         if not 0 <= eps < 1:
             raise ValueError(f"eps must be in [0, 1), got {eps}.")
+        if time_sampling not in ("uniform", "logit_normal"):
+            raise ValueError(f"Unknown time_sampling '{time_sampling}'. Use 'uniform' or 'logit_normal'.")
+        if not time_std > 0:
+            raise ValueError(f"time_std must be > 0, got {time_std}.")
         super().__init__(num_joints, "matrix", cond_dim)
         self.eps, self.sample_steps, self.likelihood_steps = eps, sample_steps, likelihood_steps
+        self.time_sampling, self.time_mean, self.time_std = time_sampling, time_mean, time_std
         layers, width = [], 9 * num_joints + 1
         for h in hidden:
             layers += [nn.Linear(width, h), ACTIVATIONS[activation]()]
@@ -99,6 +113,13 @@ class PoseRFM(PoseModel):
         v0 = log_frame(x0, x1)
         return exp_frame(x0, t[:, None, None] * v0), v0
 
+    def loss_times(self, n: int, generator: Optional[torch.Generator] = None) -> torch.Tensor:
+        """n times of the loss in [0, 1], drawn as time_sampling says."""
+        if self.time_sampling == "uniform":
+            return torch.rand(n, generator=generator, device=self.device, dtype=self.dtype)
+        z = torch.randn(n, generator=generator, device=self.device, dtype=self.dtype)
+        return torch.sigmoid(self.time_mean + self.time_std * z)
+
     def loss(self, pose: torch.Tensor, cond: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Riemannian conditional flow matching: E || v(x_t, t) - log(x0^T x1) ||^2, summed over the joints.
 
@@ -108,7 +129,7 @@ class PoseRFM(PoseModel):
         device, dtype = self.device, self.dtype
         generator = None if self.training else torch.Generator(device=device).manual_seed(0)
         x1 = move(pose.detach().reshape(-1, self.num_joints, 3, 3), device, dtype)
-        t = torch.rand(x1.shape[0], generator=generator, device=device, dtype=dtype)
+        t = self.loss_times(x1.shape[0], generator)
         x0 = random_rotations(x1.shape[:2], generator, device, dtype)
         xt, target = self.conditional_path(x0, x1, t)
         return ((self.velocity(xt, t) - target) ** 2).sum(dim=(1, 2)).mean()
