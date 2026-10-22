@@ -10,3 +10,4 @@ config/paths.yaml
 .DS_Store
 .idea/
 /build/
+cache/
