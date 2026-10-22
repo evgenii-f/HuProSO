@@ -33,7 +33,7 @@ class Oracle(RSGM):
         self.double()
         self.mu = roma.random_rotmat(num_joints, generator=torch.Generator().manual_seed(1)).double()
 
-    def score(self, x, t):
+    def score(self, x, t, f=None):
         v = log_map(self.mu.transpose(-1, -2) @ x)
         angle = v.norm(dim=-1)
         return (igso3.d_log_density(angle, self.s0 + self.s(t)[:, None]) / angle)[..., None] * v
@@ -131,3 +131,104 @@ def test_likelihood_weighting_draws_the_times_with_density_beta_over_std_squared
     assert torch.equal(std.loss_times(torch.tensor([0.0, 1.0], dtype=torch.float64)), torch.tensor([std.loss_t_min, 1.0], dtype=torch.float64))
     with pytest.raises(ValueError, match="weighting"):
         build_model("rsgm", num_joints=1, weighting="uniform")
+
+
+# ---- conditioning on keypoints ----
+
+from hp.data.amass_cfg import AmassJoints4Learning  # noqa: E402
+from hp.data.conditions import keypoints  # noqa: E402
+from hp.models.io import load_model, save_model  # noqa: E402
+
+J19 = len(AmassJoints4Learning)
+
+
+def poses19(n, seed=0, dtype=torch.float32):
+    return roma.random_rotmat(n * J19, generator=torch.Generator().manual_seed(seed), dtype=dtype).reshape(n, J19, 3, 3)
+
+
+def test_an_unconditional_model_has_no_condition_weights():
+    model = build_model("rsgm", num_joints=2, hidden=[8])
+    assert model.cond_dim == 0 and not any(k.startswith("cond_net") for k in model.state_dict())
+    with pytest.raises(ValueError):
+        model.loss(roma.random_rotmat(2 * 2).reshape(2, 2, 3, 3), torch.zeros(2, 66))
+
+
+def test_the_condition_sets_cond_dim_and_bad_settings_are_refused():
+    assert build_model("rsgm", num_joints=J19, hidden=[8], condition="3D").cond_dim == 66
+    assert build_model("rsgm", num_joints=J19, hidden=[8], condition="2D").cond_dim == 44
+    with pytest.raises(ValueError):
+        build_model("rsgm", num_joints=J19, hidden=[8], cond_dim=66, cond_mask="random")  # a mask needs keypoints
+    with pytest.raises(ValueError):
+        build_model("rsgm", num_joints=J19, hidden=[8], condition="3D", cond_dim=44)
+    with pytest.raises(ValueError):
+        build_model("rsgm", num_joints=J19, hidden=[8], condition="3D", cond_mask="joints")
+
+
+def test_without_a_condition_the_loss_takes_the_keypoints_of_the_poses():
+    torch.manual_seed(0)
+    model = build_model("rsgm", num_joints=J19, hidden=[16], condition="3D").eval()
+    pose = poses19(32)
+    assert model.loss(pose).item() == model.loss(pose, keypoints(pose).reshape(32, -1)).item()
+    assert model.loss(pose).item() != model.loss(pose, keypoints(poses19(32, seed=1)).reshape(32, -1)).item()
+
+
+def test_a_hidden_joint_is_its_mask_bit_whatever_its_keypoint():
+    torch.manual_seed(0)
+    model = build_model("rsgm", num_joints=J19, hidden=[16], condition="3D")
+    c = keypoints(poses19(4)).reshape(4, 22, 3)
+    a, b = c.clone(), c.clone()
+    a[:, 5], b[:, 5] = float("nan"), 0.0
+    b[:, 5, 0] = float("nan")  # one NaN coordinate hides the whole joint
+    fa, fb = model.cond_features(a.reshape(4, -1), 4), model.cond_features(b.reshape(4, -1), 4)
+    assert torch.isfinite(fa).all() and torch.equal(fa, fb)
+    assert not torch.equal(fa, model.cond_features(c.reshape(4, -1), 4))
+
+
+def test_random_masks_hide_half_of_the_joints_on_average(monkeypatch):
+    model = build_model("rsgm", num_joints=J19, hidden=[16], condition="3D", cond_mask="random").eval()
+    seen = []
+    features = model.cond_features
+    monkeypatch.setattr(model, "cond_features", lambda cond, batch: seen.append(cond.clone()) or features(cond, batch))
+    model.loss(poses19(2000))
+    hidden = torch.isnan(seen[0].reshape(2000, 22, 3)).all(-1)
+    assert abs(hidden.float().mean().item() - 0.5) < 0.02
+    # the share of hidden joints varies from pose to pose (p ~ U(0, 1)), not around a fixed p
+    assert hidden.float().mean(1).std() > 0.25
+
+
+def test_sample_and_log_prob_need_the_condition_and_depend_on_it():
+    torch.manual_seed(0)
+    model = build_model("rsgm", num_joints=J19, hidden=[16], condition="3D", sample_steps=5, likelihood_steps=3).eval()
+    pose = poses19(3)
+    c, other = keypoints(pose).reshape(3, -1), keypoints(poses19(3, seed=1)).reshape(3, -1)
+    assert model.sample(3, c).shape == (3, J19, 3, 3)
+    with pytest.raises(ValueError):
+        model.sample(3)
+    lp = model.log_prob(pose, c)
+    assert lp.shape == (3,) and torch.isfinite(lp).all() and not torch.allclose(lp, model.log_prob(pose, other))
+
+
+def test_the_conditional_divergence_is_the_one_of_finite_differences():
+    torch.manual_seed(0)
+    model = build_model("rsgm", num_joints=J19, hidden=[32], condition="2D").double()
+    x, t = poses19(4, dtype=torch.float64), torch.rand(4, dtype=torch.float64)
+    f = model.cond_features(keypoints(poses19(4, seed=2, dtype=torch.float64), "2D").reshape(4, -1), 4)
+    with torch.no_grad():
+        _, divergence = model.velocity_and_divergence(x, t, f)
+        numeric = torch.zeros(4, dtype=torch.float64)
+        for joint in range(J19):
+            for i in range(3):
+                e = torch.zeros(4, J19, 3, dtype=torch.float64)
+                e[:, joint, i] = 1e-5
+                numeric += (model.velocity(exp_frame(x, e), t, f) - model.velocity(exp_frame(x, -e), t, f))[:, joint, i] / 2e-5
+    assert torch.allclose(divergence, numeric, atol=1e-6)
+
+
+def test_a_conditional_model_is_saved_and_loaded(tmp_path):
+    torch.manual_seed(0)
+    model = build_model("rsgm", num_joints=J19, hidden=[16], condition="3D", cond_mask="random")
+    save_model(model, tmp_path)
+    loaded = load_model(tmp_path)
+    assert loaded.condition == "3D" and loaded.cond_mask == "random"
+    c = keypoints(poses19(2)).reshape(2, -1)
+    assert torch.equal(model.cond_features(c, 2), loaded.cond_features(c, 2))
