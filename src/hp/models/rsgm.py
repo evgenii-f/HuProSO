@@ -7,7 +7,13 @@ Lie algebra coordinates (LieAlgebraGenerator), scaled by 1/std (std trick), and 
 matching against the exact heat kernel (dsm0, like_w=false).
 
 One difference: the JAX code has no SO(3) heat kernel, so there the target falls back to the small-time
-(Varadhan) approximation. Here the target is the exact IGSO(3) score (hp/models/igso3.py) for every t.
+(Varadhan) approximation. Here the target is the exact IGSO(3) score for every t.
+
+Where the noise of the loss is drawn (`noise`): "cpu" draws it in float64 on the CPU (hp/models/igso3.py) and copies
+x_t and the target to the model's device; "device" draws it on the model's device in the model's dtype
+(hp/models/igso3_gpu.py, accurate in float32), without copies or host syncs; "auto" is "device" unless the model is
+on the CPU. Both give the same loss in distribution, but not the same random numbers: a validation loss (fixed seed)
+differs between them by its Monte Carlo noise.
 
 Conventions. Rotations act with the metric where the distance of two rotations is their angle. A tangent vector
 at x is given by its coordinates v in the frame of x: the vector x @ hat(v). The noising process is
@@ -26,7 +32,7 @@ import torch
 from torch import nn
 from torch.func import jacfwd, vmap
 
-from hp.models import igso3
+from hp.models import igso3, igso3_gpu
 from hp.models.base import PoseModel
 from hp.models.registry import register_model
 
@@ -69,6 +75,7 @@ class RSGM(PoseModel):
         sample_steps: int = 100,
         likelihood_steps: int = 100,
         weighting: str = "std",  # of the loss over time: "std" (std(t)^2, as the JAX code) or "likelihood" (beta(t))
+        noise: str = "auto",  # where the loss draws its noise: "cpu" (float64), "device" or "auto" (see the module doc)
         representation: str = "matrix",
         cond_dim: int = 0,
     ):
@@ -80,6 +87,9 @@ class RSGM(PoseModel):
         if weighting not in ("std", "likelihood"):
             raise ValueError(f"Unknown weighting '{weighting}'. Use 'std' or 'likelihood'.")
         self.weighting = weighting
+        if noise not in ("auto", "cpu", "device"):
+            raise ValueError(f"Unknown noise '{noise}'. Use 'auto', 'cpu' or 'device'.")
+        self.noise = noise
         layers, width = [], 9 * num_joints + 1
         for h in hidden:
             layers += [nn.Linear(width, h), ACTIVATIONS[activation]()]
@@ -88,6 +98,8 @@ class RSGM(PoseModel):
         self.net = nn.Sequential(*layers)
         s_lo, s_hi = self.s(torch.tensor(min(eps, loss_t_min))), self.s(torch.tensor(1.0))
         self.angles = igso3.AngleSampler(float(s_lo) * 0.999, float(s_hi) * 1.001)
+        # a module with a non-persistent buffer: it follows .to(device), and the state dict stays as it was
+        self.device_angles = igso3_gpu.AngleSampler(float(s_lo) * 0.999, float(s_hi) * 1.001)
 
     # ---- the noising process ----
 
@@ -103,7 +115,7 @@ class RSGM(PoseModel):
         return torch.sqrt(-torch.expm1(-self.s(t)))
 
     def loss_times(self, u: torch.Tensor) -> torch.Tensor:
-        """Times of the training loss from uniform numbers u in [0, 1] (float64).
+        """Times of the training loss from uniform numbers u in [0, 1], in the dtype and on the device of u.
 
         "std": t uniform on [loss_t_min, 1]. "likelihood": the loss weighted by beta(t) instead of std(t)^2, which
         makes it a bound on the negative log-likelihood (Song et al. 2021, "Maximum likelihood training of score-based
@@ -112,7 +124,7 @@ class RSGM(PoseModel):
         In the Brownian time s the density is 1 / (1 - exp(-s)), with the CDF log(exp(s) - 1), inverted in closed form."""
         if self.weighting == "std":
             return self.loss_t_min + (1 - self.loss_t_min) * u
-        t_lo = torch.tensor(self.loss_t_min, dtype=torch.float64)
+        t_lo = torch.tensor(self.loss_t_min, dtype=u.dtype, device=u.device)
         lo, hi = torch.log(torch.expm1(self.s(t_lo))), torch.log(torch.expm1(self.s(torch.ones_like(t_lo))))
         s = torch.log1p(torch.exp(lo + u * (hi - lo)))
         # s = beta_0 t + (beta_f - beta_0) t^2 / 2, solved for t
@@ -132,19 +144,37 @@ class RSGM(PoseModel):
         In eval mode the times and the noise are drawn from a fixed seed, so that a validation loss is the same
         number every time (and two copies of a model give the same loss)."""
         self.check_cond(cond, len(pose))
+        x0 = pose.detach().reshape(pose.shape[0], self.num_joints, 3, 3)
+        on_device = self.noise == "device" or (self.noise == "auto" and self.device.type != "cpu")
+        xt, target, t = self.noised_device(x0) if on_device else self.noised_cpu(x0)
+        scaled = self.score(xt, t) * self.std(t)[:, None, None]
+        return ((scaled - target) ** 2).sum(dim=(1, 2)).mean()
+
+    def noised_cpu(self, x0: torch.Tensor):
+        """(x_t, target, t) for the loss, drawn in float64 on the CPU and copied to the model's device and dtype."""
         generator = None if self.training else torch.Generator().manual_seed(0)
-        batch, joints = pose.shape[0], self.num_joints
+        batch, joints = x0.shape[:2]
         t = self.loss_times(torch.rand(batch, dtype=torch.float64, generator=generator))
         s = self.s(t)[:, None].expand(batch, joints)
         omega = self.angles.sample(s, generator)
         axis = igso3.random_axes((batch, joints), generator)
-        x0 = move(pose.detach().reshape(batch, joints, 3, 3), "cpu", torch.float64)
-        xt = exp_frame(x0, omega[..., None] * axis)
+        xt = exp_frame(move(x0, "cpu", torch.float64), omega[..., None] * axis)
         target = (self.std(t)[:, None, None] * igso3.d_log_density(omega, s)[..., None] * axis)
         dtype = self.net[0].weight.dtype
-        xt, target, t = (move(v, self.device, dtype) for v in (xt, target, t))
-        scaled = self.score(xt, t) * self.std(t)[:, None, None]
-        return ((scaled - target) ** 2).sum(dim=(1, 2)).mean()
+        return tuple(move(v, self.device, dtype) for v in (xt, target, t))
+
+    def noised_device(self, x0: torch.Tensor):
+        """(x_t, target, t) for the loss, drawn on the model's device in its dtype: no copies, no host syncs."""
+        device, dtype = self.device, self.net[0].weight.dtype
+        generator = None if self.training else torch.Generator(device=device).manual_seed(0)
+        batch, joints = x0.shape[:2]
+        t = self.loss_times(torch.rand(batch, generator=generator, device=device, dtype=dtype))
+        s = self.s(t)[:, None].expand(batch, joints)
+        omega = self.device_angles.sample(s, generator)
+        axis = igso3_gpu.random_axes((batch, joints), generator, device=device, dtype=dtype)
+        xt = exp_frame(move(x0, device, dtype), omega[..., None] * axis)
+        target = self.std(t)[:, None, None] * igso3_gpu.d_log_density(omega, s)[..., None] * axis
+        return xt, target, t
 
     # ---- sampling: the time reversal, by geodesic Euler-Maruyama ----
 

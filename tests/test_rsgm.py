@@ -131,3 +131,69 @@ def test_likelihood_weighting_draws_the_times_with_density_beta_over_std_squared
     assert torch.equal(std.loss_times(torch.tensor([0.0, 1.0], dtype=torch.float64)), torch.tensor([std.loss_t_min, 1.0], dtype=torch.float64))
     with pytest.raises(ValueError, match="weighting"):
         build_model("rsgm", num_joints=1, weighting="uniform")
+
+
+# ---- where the noise of the loss is drawn: "cpu" (float64, igso3) or "device" (igso3_gpu) ----
+
+def expected_loss(model, pose, draws=200):
+    with torch.no_grad():
+        losses = torch.stack([model.loss(pose).cpu() for _ in range(draws)]).double()
+    return losses.mean().item(), losses.std().item() / math.sqrt(draws)
+
+
+def test_both_noise_kernels_give_the_same_expected_loss():
+    torch.manual_seed(0)
+    cpu = build_model("rsgm", num_joints=3, hidden=[32], noise="cpu")
+    device = build_model("rsgm", num_joints=3, hidden=[32], noise="device")
+    device.load_state_dict(cpu.state_dict())
+    pose = roma.random_rotmat(256 * 3, generator=torch.Generator().manual_seed(1)).reshape(256, 3, 3, 3)
+    (a, sem_a), (b, sem_b) = expected_loss(cpu.train(), pose), expected_loss(device.train(), pose)
+    assert abs(a - b) < 4 * math.hypot(sem_a, sem_b)
+
+
+def test_auto_noise_on_the_cpu_is_the_float64_kernel():
+    torch.manual_seed(0)
+    auto = build_model("rsgm", num_joints=2, hidden=[16]).eval()
+    cpu = build_model("rsgm", num_joints=2, hidden=[16], noise="cpu").eval()
+    cpu.load_state_dict(auto.state_dict())
+    pose = roma.random_rotmat(16 * 2).reshape(16, 2, 3, 3)
+    assert auto.loss(pose).item() == cpu.loss(pose).item()
+
+
+def test_the_device_noise_validation_loss_is_the_same_every_time():
+    model = build_model("rsgm", num_joints=2, hidden=[16], noise="device").eval()
+    pose = roma.random_rotmat(16 * 2).reshape(16, 2, 3, 3)
+    assert model.loss(pose).item() == model.loss(pose).item()
+
+
+def test_the_angle_table_is_not_in_the_state_dict():
+    """Checkpoints stay as they were: only the network is saved, and old checkpoints load."""
+    model = build_model("rsgm", num_joints=2, hidden=[16])
+    assert all(key.startswith("net.") for key in model.state_dict())
+
+
+def test_likelihood_weighting_in_float32_matches_float64():
+    model = build_model("rsgm", num_joints=1, hidden=[8], beta_f=10.0, weighting="likelihood")
+    u = torch.rand(10_000, dtype=torch.float64, generator=torch.Generator().manual_seed(0))
+    t64, t32 = model.loss_times(u), model.loss_times(u.float())
+    assert t32.dtype == torch.float32 and (t32.double() - t64).abs().max() < 1e-5
+
+
+def test_unknown_noise_is_refused():
+    with pytest.raises(ValueError, match="noise"):
+        build_model("rsgm", num_joints=1, noise="gpu")
+
+
+@pytest.mark.skipif(not torch.backends.mps.is_available(), reason="needs mps")
+def test_on_mps_the_noise_is_drawn_on_the_device():
+    torch.manual_seed(0)
+    model = build_model("rsgm", num_joints=19, hidden=[64], weighting="likelihood").to("mps")
+    pose = roma.random_rotmat(256 * 19).reshape(256, 19, 3, 3).to("mps")
+    xt, target, t = model.noised_device(pose)
+    assert {v.device.type for v in (xt, target, t)} == {"mps"} and model.device_angles.table.device.type == "mps"
+    assert all(torch.isfinite(model.loss(pose)) for _ in range(100))
+    # the same expected loss as the float64 CPU kernel, on the same weights and poses
+    cpu = build_model("rsgm", num_joints=19, hidden=[64], weighting="likelihood", noise="cpu").to("mps")
+    cpu.load_state_dict(model.state_dict())
+    (a, sem_a), (b, sem_b) = expected_loss(cpu.train(), pose), expected_loss(model.train(), pose)
+    assert abs(a - b) < 4 * math.hypot(sem_a, sem_b)

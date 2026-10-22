@@ -138,6 +138,10 @@ class EMA:
             p.requires_grad_(False)
         self.decay = decay
         self.updates = 0
+        # only the buffers of the state dict are copied: the non-persistent ones are constants (e.g. the 17 MB angle
+        # table of RSGM), which deepcopy has copied already
+        saved = set(model.state_dict())
+        self._buffers = [name for name, _ in model.named_buffers() if name in saved]
 
     @torch.no_grad()
     def update(self, model: PoseModel) -> None:
@@ -145,8 +149,9 @@ class EMA:
         decay = min(self.decay, (1 + self.updates) / (10 + self.updates))
         for averaged, p in zip(self.model.parameters(), model.parameters()):
             averaged.lerp_(p, 1 - decay)  # decay * averaged + (1 - decay) * p
-        for averaged, b in zip(self.model.buffers(), model.buffers()):
-            averaged.copy_(b)
+        averaged, current = dict(self.model.named_buffers()), dict(model.named_buffers())
+        for name in self._buffers:
+            averaged[name].copy_(current[name])
 
 
 class Trainer:

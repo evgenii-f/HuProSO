@@ -11,6 +11,8 @@ args:                            # given to build_model
   loss_t_min: 1.0e-3
   sample_steps: 100
   likelihood_steps: 100
+  noise: auto                    # the noise of the loss: on the model's device in float32 (hp/models/igso3_gpu.py), or
+                                 # cpu (float64, hp/models/igso3.py, copied to the device); auto = device unless on the cpu
 train:                           # changes to the train section of config/train.yaml
   lr: 2.0e-4                     # Adam as in the JAX code (it uses a cosine schedule with warm-up; here: step)
   batch_size: 512
