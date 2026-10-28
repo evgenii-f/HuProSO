@@ -9,7 +9,8 @@ import torch
 
 from hp.utils.rotation_tools import RotationConverterTorchRoma as RotationConverterTorch
 from hp.utils.skeleton_forward_kinematics import perform_forward_kinematics
-from hp.data.amass_cfg import AmassJoints, AmassJoints4Learning, ORIGINAL_AMASS_SPLITS, SUBSET_AMASS_SPLITS
+from hp.data.amass_cfg import (POSEDFLOW_AMASS_SPLITS, AmassJoints, AmassJoints4Learning, ORIGINAL_AMASS_SPLITS,
+                                SUBSET_AMASS_SPLITS)
 from hp.utils.paths import get_path, get_amass_split
 
 
@@ -31,7 +32,7 @@ class AMASS(torch.utils.data.Dataset):
         self.mode = mode
         self.datasets = datasets
         if mode is not None:
-            splits = SUBSET_AMASS_SPLITS if get_amass_split() == "subset" else ORIGINAL_AMASS_SPLITS
+            splits = {"subset": SUBSET_AMASS_SPLITS, "posedflow": POSEDFLOW_AMASS_SPLITS}.get(get_amass_split(), ORIGINAL_AMASS_SPLITS)
             self.datasets = splits[mode]
 
         self.data = data

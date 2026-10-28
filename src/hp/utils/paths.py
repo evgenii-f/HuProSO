@@ -33,7 +33,7 @@ HINTS = {
     "amass_raw": "directory with the extracted AMASS datasets (ACCAD/, CMU/, ...)",
     "amass_rotations": "directory with the preprocessed <Dataset>.pt files",
     "body_models": "directory with smplx/SMPLX_NEUTRAL.npz",
-    "amass_split": "'original' or 'subset'",
+    "amass_split": "'original', 'subset' or 'posedflow'",
     "device": "'auto', 'cpu', 'mps' or 'cuda:N'",
 }
 
@@ -69,8 +69,8 @@ def get_amass_split() -> str:
     if os.environ.get("HUPROSO_SUBSET"):
         return "subset"
     split = get_path("amass_split")
-    if split not in ("original", "subset"):
-        raise PathNotConfigured(f"amass_split must be 'original' or 'subset', got '{split}'.")
+    if split not in ("original", "subset", "posedflow"):
+        raise PathNotConfigured(f"amass_split must be 'original', 'subset' or 'posedflow', got '{split}'.")
     return split
 
 
