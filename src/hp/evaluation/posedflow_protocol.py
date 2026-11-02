@@ -92,13 +92,21 @@ class SmplSkeleton:
         return torch.stack(positions, dim=1)
 
 
+def _sqrtm(m: np.ndarray) -> np.ndarray:
+    """scipy.linalg.sqrtm across scipy versions: older ones return (root, error) with disp=False, and newer ones no
+    longer take disp."""
+    with np.errstate(all="ignore"):
+        root = linalg.sqrtm(m)
+    return root[0] if isinstance(root, tuple) else root
+
+
 def frechet_distance(mu1, sigma1, mu2, sigma2, eps: float = 1e-6) -> float:
     """As their calculate_frechet_distance: ||mu1 - mu2||^2 + Tr(S1 + S2 - 2 sqrt(S1 S2))."""
     diff = mu1 - mu2
-    covmean, _ = linalg.sqrtm(sigma1.dot(sigma2), disp=False)
+    covmean = _sqrtm(sigma1.dot(sigma2))
     if not np.isfinite(covmean).all():
         offset = np.eye(sigma1.shape[0]) * eps
-        covmean = linalg.sqrtm((sigma1 + offset).dot(sigma2 + offset))
+        covmean = _sqrtm((sigma1 + offset).dot(sigma2 + offset))
     covmean = covmean.real
     return float(diff.dot(diff) + np.trace(sigma1) + np.trace(sigma2) - 2 * np.trace(covmean))
 
