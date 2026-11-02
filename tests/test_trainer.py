@@ -151,10 +151,10 @@ def test_adamw_shrinks_the_weights_apart_from_the_gradient_step(make_gaussian):
 
 
 def test_weight_decay_defaults_to_the_pytorch_default_of_the_optimizer(make_gaussian):
-    for name, optimizer in (("adam", torch.optim.Adam), ("adamw", torch.optim.AdamW)):
+    for name, optimizer in (("adam", torch.optim.Adam), ("adamw", torch.optim.AdamW), ("radam", torch.optim.RAdam)):
         pytorch_default = inspect.signature(optimizer).parameters["weight_decay"].default
         cfg = TrainConfig(optimizer=name)
-        assert cfg.weight_decay == pytorch_default  # adam 0, adamw 0.01
+        assert cfg.weight_decay == pytorch_default  # adam 0, adamw 0.01, radam 0
         assert Trainer(make_gaussian(), Poses(), None, cfg).optimizer.param_groups[0]["weight_decay"] == pytorch_default
     assert TrainConfig(optimizer="adamw", weight_decay=0.0).weight_decay == 0.0  # an explicit value is kept
     assert TrainConfig(optimizer="adam", weight_decay=0.1).weight_decay == 0.1

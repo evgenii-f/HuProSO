@@ -34,8 +34,8 @@ CHECKPOINT = re.compile(r"checkpoint_(\d{6})")
 # settings of the optimization: they must not change when a run is resumed (the learning rate schedule depends on them)
 LOCKED = ("max_iterations", "batch_size", "lr", "optimizer", "weight_decay", "scheduler", "lr_step_fraction", "lr_gamma",
           "warmup_steps", "clip_grad_norm", "ema_decay")
-OPTIMIZERS = {"adam": torch.optim.Adam, "adamw": torch.optim.AdamW}
-DEFAULT_WEIGHT_DECAY = {"adam": 0.0, "adamw": 0.01}  # the defaults of torch.optim.Adam and AdamW
+OPTIMIZERS = {"adam": torch.optim.Adam, "adamw": torch.optim.AdamW, "radam": torch.optim.RAdam}
+DEFAULT_WEIGHT_DECAY = {"adam": 0.0, "adamw": 0.01, "radam": 0.0}  # the defaults of torch.optim.Adam, AdamW and RAdam
 
 
 @dataclass
@@ -43,7 +43,7 @@ class TrainConfig:
     max_iterations: int = 20_000
     batch_size: int = 2000
     lr: float = 5e-3
-    optimizer: str = "adam"  # "adam" as in the paper, or "adamw" (Loshchilov & Hutter: the weight decay is decoupled)
+    optimizer: str = "adam"  # "adam" as in the paper, "adamw" (Loshchilov & Hutter: the weight decay is decoupled), or "radam"
     # adam: an L2 penalty added to the gradient; adamw: the weights shrink by lr * weight_decay every step.
     # None: the PyTorch default of the optimizer (adam 0, adamw 0.01); the config holds the resolved value afterwards
     weight_decay: Optional[float] = None
