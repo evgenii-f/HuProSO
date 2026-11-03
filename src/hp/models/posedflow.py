@@ -23,7 +23,7 @@ the uniform distribution on SO(3)^21 (comparable only with other models on these
 """
 import math
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import roma
 import torch
@@ -105,6 +105,12 @@ def projx(x: torch.Tensor) -> torch.Tensor:
     s = torch.diagonal(r, dim1=-2, dim2=-1).clone()
     s[s == 0] = 1
     return q * (s / s.abs()).unsqueeze(-2)
+
+
+def _trace_cost(x: torch.Tensor, n: int) -> torch.Tensor:
+    """Their running cost of one point of a trajectory x [n, 189]: sum over the joints of 3 - tr, mean over the batch."""
+    xm = x.view(n, NUM_JOINTS, 3, 3)
+    return (3 - xm.diagonal(dim1=-2, dim2=-1).sum(-1)).sum(-1).mean()
 
 
 def wrapped_normal_log_density(rotations: torch.Tensor, terms: int = 2) -> torch.Tensor:
@@ -205,6 +211,45 @@ class PoseDFlowPretrained(PoseModel):
     def sample(self, n: int, cond: Optional[torch.Tensor] = None) -> torch.Tensor:
         self.check_cond(cond, n)
         return self.sample_21(n)[:, KEEP]
+
+    # ---- guidance at inference: Riemannian D-Flow, as their pose_completion.py ----
+
+    def dflow_21(self, loss_fn: Callable[[torch.Tensor], torch.Tensor], n: int, steps: int = 200, lr: float = 0.1,
+                 ode_steps: int = 100, running_weight: float = 1e-3, x0: Optional[torch.Tensor] = None,
+                 generator: Optional[torch.Generator] = None) -> torch.Tensor:
+        """n poses of all 21 joints [n, 21, 3, 3] that make loss_fn small, without task-specific training.
+
+        D-Flow (Ben-Hamu et al. 2024) on SO(3)^21 as PoseD-Flow uses it: the source x_0 is optimized through the sampling
+        ODE (Euler steps in R^189 without projection, their projx at the end, gradients through all steps) to minimize
+
+            loss_fn(x_1) + running_weight * mean_batch sum_joints mean_t (3 - tr x_t),
+
+        the second term their running cost, which keeps the trajectory away from rotations far from the identity. x_0
+        moves on SO(3) as x_0 exp(hat(delta)) with Adam on delta (their RiemannianAdam on the product manifold, here in
+        the tangent coordinates at the start). loss_fn gets x_1 [n, 21, 3, 3] and returns a scalar (e.g. a mean over the
+        batch: Adam normalizes per coordinate, and every sample has its own coordinates, so the samples are optimized
+        independently). x_0: the start (default their noise, exp(N(0, I))).
+
+        Their pose completion starts from a mix of noise and an inverted guess of the observed rotations; with other
+        observations (e.g. keypoints) there is no such guess, and the start is the noise."""
+        start = (self.base_sample(n, generator) if x0 is None else x0.to(self.device, self.dtype)).detach()
+        delta = torch.zeros(n, NUM_JOINTS, 3, device=self.device, dtype=self.dtype, requires_grad=True)
+        optimizer = torch.optim.Adam([delta], lr=lr)
+        times = torch.linspace(0.0, 1.0, ode_steps + 1, device=self.device, dtype=self.dtype)
+        x1 = None
+        with torch.enable_grad():
+            for _ in range(steps):
+                optimizer.zero_grad()
+                x = exp_frame(start, delta).reshape(n, -1)
+                running = torch.zeros((), device=self.device, dtype=self.dtype)
+                for t0, t1 in zip(times[:-1], times[1:]):
+                    running = running + _trace_cost(x, n)
+                    x = x + (t1 - t0) * self.field_ambient(t0, x)
+                running = (running + _trace_cost(x, n)) / (ode_steps + 1)
+                x1 = projx(x.view(n, NUM_JOINTS, 3, 3))
+                (loss_fn(x1) + running_weight * running).backward()
+                optimizer.step()
+        return x1.detach()
 
     # ---- the likelihood on SO(3)^21 ----
 

@@ -56,3 +56,24 @@ def test_the_log_prob_bases_differ_by_the_noise_density():
     x = model.sample_21(4)
     lp, lu = model.log_prob_21(x), uniform.log_prob_21(x)
     assert torch.isfinite(lp).all() and not torch.allclose(lp, lu)
+
+
+@pytest.mark.skipif(not CHECKPOINT.is_file(), reason="the PoseD-Flow checkpoint is not downloaded")
+def test_dflow_fits_observed_rotations():
+    """D-Flow pulls the observed joints of x_1 towards a target pose (their pose completion, small settings)."""
+    model = PoseDFlowPretrained(CHECKPOINT)
+    torch.manual_seed(0)
+    target = model.sample_21(4)
+    observed = list(range(12))  # legs and spine observed, the arms free
+
+    def geodesic(x1):
+        return roma.rotmat_geodesic_distance(x1[:, observed], target[:, observed]).mean()
+
+    g = torch.Generator().manual_seed(1)
+    start = model.base_sample(4, g)
+    before = geodesic(model.sample_21(4, x0=start)).item()
+    x1 = model.dflow_21(geodesic, 4, steps=40, lr=0.1, ode_steps=20, x0=start)
+    after = geodesic(x1).item()
+    assert x1.shape == (4, 21, 3, 3) and not x1.requires_grad
+    assert torch.allclose(x1 @ x1.transpose(-1, -2), torch.eye(3).expand(4, 21, 3, 3), atol=1e-4)
+    assert after < 0.5 * before, (before, after)
