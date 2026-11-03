@@ -74,6 +74,15 @@ ORIGINAL_AMASS_SPLITS = {
     ],  # 14779964 samples
 }
 
+# The AMASS of PoseD-Flow (Nadar et al., CVPR 2026; the preprocessing of DPoser: SMPL bodies, 30 Hz, the first and last
+# 10% of each sequence trimmed, the usual dataset split), converted by scripts/preprocess/convert_posedflow.py into one
+# file per split. Select with amass_split: posedflow.
+POSEDFLOW_AMASS_SPLITS = {
+    "train": ["PoseDFlow_train"],  # 18,611,047 poses
+    "valid": ["PoseDFlow_valid"],  # 860,080 poses
+    "test": ["PoseDFlow_test"],  # 54,200 poses
+}
+
 # Small splits (~0.7M frames in total) for quick experiments.
 # Select with the environment variable HUPROSO_SUBSET=1.
 SUBSET_AMASS_SPLITS = {

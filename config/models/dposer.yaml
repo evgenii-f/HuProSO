@@ -1,0 +1,29 @@
+# DPoser, a score-based diffusion prior on z-scored axis-angle (hp/models/dposer.py), with the settings of DPoser-body
+# (Lu et al., ICCV 2025; configs/body/subvp/timefc.py and configs/body/default_amass_configs.py of DPoser-X).
+# mean and std (the normalization of the training data) must be given: hp.models.dposer.normalization(train poses).
+name: dposer
+args:                            # given to build_model
+  hidden: 1024                   # TimeFC: HIDDEN_DIM 1024, EMBED_DIM 512, N_BLOCKS 2, dropout 0.1, swish
+  embed: 512
+  blocks: 2
+  dropout: 0.1
+  beta_min: 0.1                  # sub-VP SDE
+  beta_max: 20.0
+  scale_by_sigma: true           # their output / sigmas[int(999 t)], sigmas from 50 down to 0.01
+  loss_eps: 1.0e-5
+  sample_steps: 1000             # Euler-Maruyama, no corrector, as their default sampler
+  sample_eps: 1.0e-3
+  mean: null
+  std: null
+train:                           # changes to the train section of config/train.yaml
+  max_iterations: 200000         # n_iters
+  batch_size: 5120               # 1280 per GPU on 4 GPUs (config.devices [4, 5, 6, 7], DDP): 5120 per step
+  lr: 2.0e-4
+  optimizer: radam               # RAdam, betas (0.9, 0.999), eps 1e-8, no weight decay
+  weight_decay: 0.0
+  scheduler: cosine              # theirs: the cosine over all steps times a linear ramp over the warm-up (CosineWarmupScheduler);
+  warmup_steps: 5000             # here: the linear warm-up, then the cosine over the remaining steps
+  clip_grad_norm: 1.0            # gradient_clip_val
+  ema_decay: 0.9999
+  valid_interval: 2000
+  checkpoint_every: 10000

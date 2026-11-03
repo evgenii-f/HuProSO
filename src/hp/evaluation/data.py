@@ -13,7 +13,7 @@ def load_reference(split: str = "test", rotations: Optional[str] = None, amass_s
     """Poses [N, 19, 3, 3] of a split ("train", "valid" or "test") of AMASS, as float32 rotation matrices.
 
     `rotations` is the folder of the <Dataset>.pt files (None: amass_rotations of config/paths.yaml), and
-    `amass_split` is "original" or "subset" (None: amass_split of config/paths.yaml).
+    `amass_split` is "original", "subset" or "posedflow" (None: amass_split of config/paths.yaml).
     """
     env = {} if amass_split is None else {"HUPROSO_AMASS_SPLIT": amass_split}
     with mock.patch.dict(os.environ, env):

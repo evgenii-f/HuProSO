@@ -15,6 +15,7 @@ SMALL = {  # arguments that make the model small enough for a test
     "rsgm": {"hidden": [32, 32], "sample_steps": 5, "likelihood_steps": 5},
     "poserfm": {"hidden": [32, 32], "sample_steps": 5, "likelihood_steps": 5},
     "posedflow": {"d_model": 32, "num_layers": 3, "sample_steps": 5, "likelihood_steps": 5},
+    "dposer": {"hidden": 32, "embed": 16, "blocks": 1, "sample_steps": 5},
 }
 NAMES = available_models()
 
