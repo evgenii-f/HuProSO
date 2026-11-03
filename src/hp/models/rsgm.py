@@ -18,18 +18,11 @@ log_prob is the probability flow ODE dx/dt = -beta(t)/2 * score(x, t) integrated
 of the exact divergence (torch.func, one forward-mode pass per coordinate). It is a density relative to the
 uniform distribution on SO(3)^J, the same space as so3_flow, so the numbers are comparable.
 
-Conditioning (`condition` = "3D" or "2D"): the model learns p(pose | c) for keypoints c, the joint positions of
-hp.data.conditions (22 x 3, or 22 x 2). The noising process does not touch c, so the target of the loss is the same
-and only the network sees c: a small MLP (one hidden layer, as the condition MLP of the HuProSO3 paper) maps the
-keypoints and their mask to features that are concatenated to the input of the score network. Sampling and the
-likelihood are the same with score(x, t, c); log_prob is log p(pose | c).
-  - cond [B, 22 * k] are flattened keypoints. A joint with a NaN coordinate is not observed: its keypoint is set to
-    0 and its bit of the mask to 0 (the mask is an input of the condition MLP).
-  - In the loss, cond may be left out: the keypoints are then computed from the poses on the fly.
-  - cond_mask = "random" hides joints at random in the loss, as the paper's training for occlusions: per pose a
-    probability p ~ U(0, 1), and every joint is hidden with probability p. "none": all joints are observed.
-Without `condition`, cond_dim > 0 makes a model with a generic condition vector [B, cond_dim] (no mask, no keypoints
-computed on the fly).
+Conditioning (`condition` = "3D" or "2D", see hp.models.conditioning): the model learns p(pose | c) for keypoints c.
+The noising process does not touch c, so the target of the loss is the same and only the network sees c: the features
+of the condition MLP are concatenated to the input of the score network. Sampling and the likelihood are the same with
+score(x, t, c); log_prob is log p(pose | c). cond_mask = "random" hides joints at random in the loss, "none": all
+joints are observed. Without `condition`, cond_dim > 0 makes a model with a generic condition vector [B, cond_dim].
 """
 import math
 from typing import Optional, Sequence
@@ -39,9 +32,9 @@ import torch
 from torch import nn
 from torch.func import jacfwd, vmap
 
-from hp.data.conditions import NUM_KEYPOINTS, condition_dim, keypoints
-from hp.models import igso3
+from hp.models import conditioning, igso3
 from hp.models.base import PoseModel
+from hp.models.conditioning import move  # noqa: F401  (also imported from here by other models)
 from hp.models.registry import register_model
 
 
@@ -51,14 +44,6 @@ class Sin(nn.Module):
 
 
 ACTIVATIONS = {"sin": Sin, "silu": nn.SiLU, "relu": nn.ReLU}
-
-
-def move(x: torch.Tensor, device, dtype) -> torch.Tensor:
-    """x on `device` as `dtype`, in two steps: on mps, changing device and dtype in one .to() sometimes
-    returns garbage (torch 2.13), so the dtype is changed on the CPU side of the copy."""
-    if torch.device(device).type == "cpu":
-        return x.to("cpu").to(dtype)
-    return x.to(dtype).to(device)
 
 
 def exp_frame(x: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
@@ -93,14 +78,7 @@ class RSGM(PoseModel):
     ):
         if representation != "matrix":
             raise ValueError("RSGM works on rotation matrices directly; use representation='matrix'.")
-        if condition is not None:
-            if cond_dim not in (0, condition_dim(condition)):
-                raise ValueError(f"condition='{condition}' has cond_dim {condition_dim(condition)}, not {cond_dim}.")
-            cond_dim = condition_dim(condition)
-        if cond_mask not in ("none", "random"):
-            raise ValueError(f"Unknown cond_mask '{cond_mask}'. Use 'none' or 'random'.")
-        if cond_mask != "none" and condition is None:
-            raise ValueError("cond_mask hides keypoints: it needs condition='3D' or '2D'.")
+        cond_dim = conditioning.resolve(condition, cond_dim, cond_mask)
         super().__init__(num_joints, "matrix", cond_dim)
         self.condition, self.cond_mask = condition, cond_mask
         self.beta_0, self.beta_f, self.eps, self.loss_t_min = beta_0, beta_f, eps, loss_t_min
@@ -108,10 +86,7 @@ class RSGM(PoseModel):
         if weighting not in ("std", "likelihood"):
             raise ValueError(f"Unknown weighting '{weighting}'. Use 'std' or 'likelihood'.")
         self.weighting = weighting
-        self.cond_net = None
-        if cond_dim:  # keypoints and their mask (or a generic condition vector) -> features
-            inputs = cond_dim + (NUM_KEYPOINTS if condition is not None else 0)
-            self.cond_net = nn.Sequential(nn.Linear(inputs, cond_hidden), nn.ReLU(), nn.Linear(cond_hidden, cond_features))
+        self.cond_net = conditioning.make_net(cond_dim, condition, cond_hidden, cond_features)
         layers, width = [], 9 * num_joints + 1 + (cond_features if cond_dim else 0)
         for h in hidden:
             layers += [nn.Linear(width, h), ACTIVATIONS[activation]()]
@@ -155,15 +130,7 @@ class RSGM(PoseModel):
     def cond_features(self, cond: Optional[torch.Tensor], batch: int) -> torch.Tensor:
         """Features [B, cond_features] of the condition [B, cond_dim] (NaN: joint not observed), on the model's device
         in its dtype; [B, 0] for an unconditional model."""
-        dtype = self.net[0].weight.dtype
-        if self.cond_net is None:
-            return torch.zeros(batch, 0, device=self.device, dtype=dtype)
-        if self.condition is None:  # a generic condition vector
-            return self.cond_net(move(cond, self.device, dtype))
-        c = move(cond, self.device, dtype).reshape(batch, NUM_KEYPOINTS, -1)
-        seen = torch.isfinite(c).all(dim=-1)
-        c = torch.where(seen[..., None], c, torch.zeros_like(c))
-        return self.cond_net(torch.cat([c.reshape(batch, -1), seen.to(dtype)], dim=1))
+        return conditioning.features(self.cond_net, self.condition, cond, batch, self.device, self.net[0].weight.dtype)
 
     def score(self, x: torch.Tensor, t: torch.Tensor, f: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Score of p_t at x [B, J, 3, 3] and times t [B], as coordinates [B, J, 3] in the frame of x; f [B, F] are
@@ -181,14 +148,10 @@ class RSGM(PoseModel):
         of the poses if `cond` is None, and hides joints of it if cond_mask is "random"."""
         generator = None if self.training else torch.Generator().manual_seed(0)
         batch, joints = pose.shape[0], self.num_joints
-        if self.condition is not None and cond is None:
-            with torch.no_grad():
-                cond = keypoints(pose.detach().reshape(batch, joints, 3, 3), self.condition).reshape(batch, -1)
+        cond = conditioning.of_poses(pose, cond, self.condition)
         self.check_cond(cond, batch)
         if self.cond_mask == "random":
-            p = torch.rand(batch, 1, dtype=torch.float64, generator=generator)
-            hidden = (torch.rand(batch, NUM_KEYPOINTS, dtype=torch.float64, generator=generator) < p).to(cond.device)
-            cond = cond.reshape(batch, NUM_KEYPOINTS, -1).masked_fill(hidden[..., None], float("nan")).reshape(batch, -1)
+            cond = conditioning.hide_random(cond, generator)
         t = self.loss_times(torch.rand(batch, dtype=torch.float64, generator=generator))
         s = self.s(t)[:, None].expand(batch, joints)
         omega = self.angles.sample(s, generator)
