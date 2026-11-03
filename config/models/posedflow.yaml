@@ -1,0 +1,21 @@
+# PoseD-Flow trained here (hp/models/posedflow.py, PoseDFlow), with the settings of their configs/train.yaml
+# (github.com/circle-group/PoseDFlow). Conditioning on keypoints: model.args.condition=3D model.args.cond_mask=random.
+name: posedflow
+args:                            # given to build_model
+  d_model: 512                   # their tMLP: 4 layers of 512, ConcatLinear_v2 and TimeDependentSwish
+  num_layers: 4
+  method: midpoint               # 100 midpoint steps, as the paper
+  sample_steps: 100
+  likelihood_steps: 100
+train:                           # changes to the train section of config/train.yaml
+  max_iterations: 50000
+  batch_size: 4096
+  lr: 1.0e-3
+  optimizer: adamw
+  weight_decay: 1.0e-4
+  clip_grad_norm: 1.0
+  ema_decay: 0.99
+  scheduler: step                # they use ReduceLROnPlateau (factor 0.5, patience 3 validations), which the trainer
+                                 # does not have; the step schedule halves the rate once, at 70% of the steps
+  valid_interval: 1000
+  checkpoint_every: 5000

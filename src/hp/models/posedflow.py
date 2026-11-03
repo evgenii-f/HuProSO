@@ -1,0 +1,447 @@
+"""The pretrained prior of PoseD-Flow (Nadar, Foti, Birdal, CVPR 2026; github.com/circle-group/PoseDFlow), as a PoseModel.
+
+Their model is manifm (Chen & Lipman 2024) on SO(3)^21, the SMPL body joints 1 ... 21 (ours are the same without the
+toes, SMPL joints 10 and 11). This file rebuilds its network without their environment and loads the weights of
+their Lightning checkpoint (tensors only, torch.load(weights_only=True)):
+
+    u = tMLP(t, x)                 x: the 21 rotation matrices flattened [B, 189]; 4 layers of 512, ConcatLinear_v2
+                                   (a linear layer plus a bias linear in t) and TimeDependentSwish (x sigmoid(beta(t) x))
+    v = x @ skew(x^T u)            ProjectToTangent of SO3Power: a tangent vector at x, in the ambient R^189
+
+Time runs from the noise (t = 0) to the data (t = 1), as PoseRFM. Note the noise of their code: SO3.random draws
+exp(n), n ~ N(0, I) in axis-angle per joint (a wrapped normal of 1 rad), not the uniform distribution, although their
+log-likelihood uses the uniform base density -21 log(8 pi^2). log_prob here uses the density of the noise they
+actually sampled from (base="wrapped_normal", the right one), or the uniform as their code (base="uniform").
+
+Sampling is theirs (pose_generation.py, ManifoldFMLitModule.sample): Euler or midpoint steps in the ambient space
+from t = 0 to 1, without projection on the way, and a projection onto SO(3) (QR) at the end. Their script defaults to
+Euler with 1000 steps; the paper reports the midpoint solver with 100 steps.
+
+`sample` returns our 19 joints (their joints without the toes). The density of a CNF cannot be marginalized over the
+toes, so the model has no log_prob on 19 joints; `log_prob_21` gives the density of a pose of all 21 joints relative to
+the uniform distribution on SO(3)^21 (comparable only with other models on these 21 joints).
+
+PoseDFlow (registered as "posedflow") is their method trained here, on our joints and data, so that it can be
+conditioned on keypoints like RSGM (hp.models.conditioning) and compared with the conditional models of the zoo:
+- the network, their tMLP with the features of the condition MLP concatenated to x at its input;
+- the loss of their ManifoldFMLitModule.rfm_loss_fn: x_0 their noise exp(N(0, I)), t ~ U(0, 1), the geodesic
+  x_t = x_0 exp(t L) with L = log(x_0^T x_1) and its velocity u_t = x_t L, and ||v(t, x_t) - u_t||^2 in R^(9J) (the
+  Frobenius norm, their SO3.inner) summed over the joints, mean over the batch, divided by 9J;
+- their sampler (ambient Euler or midpoint steps, projx at the end), and log_prob as PoseDFlowPretrained.log_prob_21
+  with the density of their noise as the base (relative to the uniform distribution on SO(3)^J).
+Their optimizer settings are in config/models/posedflow.yaml.
+"""
+import math
+from pathlib import Path
+from typing import Callable, Optional
+
+import roma
+import torch
+from torch import nn
+from torch.func import jacfwd, vmap
+
+from hp.models import conditioning
+from hp.models.base import PoseModel
+from hp.models.conditioning import move
+from hp.models.registry import register_model
+from hp.models.rsgm import exp_frame
+
+NUM_JOINTS = 21  # SMPL joints 1 ... 21
+TOES = (9, 10)  # LeftToeBase (SMPL 10) and RightToeBase (SMPL 11) among the 21
+KEEP = [j for j in range(NUM_JOINTS) if j not in TOES]  # our 19 joints (AmassJoints4Learning)
+
+
+class ConcatLinear(nn.Module):
+    """ConcatLinear_v2 of manifm: W x + b + w t."""
+
+    def __init__(self, dim_in, dim_out):
+        super().__init__()
+        self._layer = nn.Linear(dim_in, dim_out)
+        self._hyper_bias = nn.Linear(1, dim_out, bias=False)
+
+    def forward(self, t, x):
+        return self._layer(x) + self._hyper_bias(t.view(-1, 1))
+
+
+class TimeSwish(nn.Module):
+    """TimeDependentSwish of manifm: x sigmoid(beta(t) x)."""
+
+    def __init__(self, dim):
+        super().__init__()
+        hidden = min(64, dim * 4)
+        self.beta = nn.Sequential(nn.Linear(1, hidden), nn.Softplus(), nn.Linear(hidden, dim), nn.Softplus())
+
+    def forward(self, t, x):
+        return x * torch.sigmoid(x * self.beta(t.reshape(-1, 1)))
+
+
+class Wrapped(nn.Module):
+    """DiffEqWrapper: keeps the key names of their state dict (layers.i.module....)."""
+
+    def __init__(self, module):
+        super().__init__()
+        self.module = module
+
+    def forward(self, t, x):
+        return self.module(t, x)
+
+
+class TMLP(nn.Module):
+    """tMLP of manifm (without Fourier features); dim_cond > 0: features f [B, dim_cond] of a condition are
+    concatenated to x at the input."""
+
+    def __init__(self, dim, d_model=512, num_layers=4, dim_cond=0):
+        super().__init__()
+        layers = [ConcatLinear(dim + dim_cond, d_model)]
+        for _ in range(num_layers - 2):
+            layers += [TimeSwish(d_model), ConcatLinear(d_model, d_model)]
+        layers += [TimeSwish(d_model), ConcatLinear(d_model, dim)]
+        self.layers = nn.ModuleList(Wrapped(layer) for layer in layers)
+
+    def forward(self, t, x, f=None):
+        if f is not None:
+            x = torch.cat([x, f], dim=1)
+        for layer in self.layers:
+            x = layer(t, x)
+        return x
+
+
+def skew(a: torch.Tensor) -> torch.Tensor:
+    return 0.5 * (a - a.transpose(-1, -2))
+
+
+def hat(v: torch.Tensor) -> torch.Tensor:
+    """[..., 3] -> [..., 3, 3] skew-symmetric (hat(v) w = v x w)."""
+    zero = torch.zeros_like(v[..., 0])
+    return torch.stack([torch.stack([zero, -v[..., 2], v[..., 1]], -1),
+                        torch.stack([v[..., 2], zero, -v[..., 0]], -1),
+                        torch.stack([-v[..., 1], v[..., 0], zero], -1)], -2)
+
+
+def vee(a: torch.Tensor) -> torch.Tensor:
+    """[..., 3, 3] skew-symmetric -> [..., 3]."""
+    return torch.stack([a[..., 2, 1], a[..., 0, 2], a[..., 1, 0]], dim=-1)
+
+
+def projx(x: torch.Tensor) -> torch.Tensor:
+    """Their projection onto SO(3) (SO3.projx): the Q of a QR decomposition with the signs of diag(R) taken out."""
+    q, r = torch.linalg.qr(x)
+    s = torch.diagonal(r, dim1=-2, dim2=-1).clone()
+    s[s == 0] = 1
+    return q * (s / s.abs()).unsqueeze(-2)
+
+
+def _trace_cost(x: torch.Tensor, n: int) -> torch.Tensor:
+    """Their running cost of one point of a trajectory x [n, 189]: sum over the joints of 3 - tr, mean over the batch."""
+    xm = x.view(n, NUM_JOINTS, 3, 3)
+    return (3 - xm.diagonal(dim1=-2, dim2=-1).sum(-1)).sum(-1).mean()
+
+
+def wrapped_normal_log_density(rotations: torch.Tensor, terms: int = 2) -> torch.Tensor:
+    """log density [...] of exp(n), n ~ N(0, I_3), relative to the uniform distribution on SO(3), at rotations [..., 3, 3].
+
+    In exponential coordinates the normalized Haar measure is 2 (1 - cos r) / r^2 d^3v / (8 pi^2), r = |v|. The
+    preimages of a rotation by theta about u are v_k = (theta + 2 pi k) u, k in Z, so
+
+        p(R) = 8 pi^2 sum_k N(v_k) (theta + 2 pi k)^2 / (4 sin^2(theta / 2)).
+    """
+    theta = roma.rotmat_to_rotvec(move(rotations, "cpu", torch.float64)).norm(dim=-1).clamp_min(1e-6)  # mps: no float64
+    k = torch.arange(-terms, terms + 1, dtype=theta.dtype, device=theta.device)
+    r = theta[..., None] + 2 * math.pi * k  # signed magnitudes of the preimages
+    log_terms = -0.5 * r**2 - 1.5 * math.log(2 * math.pi) + 2 * torch.log(r.abs().clamp_min(1e-300))
+    log_jac = math.log(8 * math.pi**2) - math.log(4.0) - 2 * torch.log(torch.sin(theta / 2))
+    return move(torch.logsumexp(log_terms, dim=-1) + log_jac, rotations.device, rotations.dtype)
+
+
+class PoseDFlowPretrained(PoseModel):
+    """Their checkpoint as a PoseModel of our 19 joints (sample only; log_prob_21 on their 21 joints)."""
+
+    name = "posedflow_pretrained"  # not in the registry: it is loaded from their checkpoint, not trained here
+    has_log_prob = False  # on our 19 joints: no (see log_prob_21)
+    density_space = "SO(3)^21"
+
+    def __init__(
+        self,
+        checkpoint: str,
+        weights: str = "ema",  # "ema" (the shadow parameters) or "raw" (what their pose_generation.py samples with,
+                               # as it never calls eval(), which would swap in the EMA)
+        method: str = "midpoint",  # their solvers: "euler" or "midpoint"
+        sample_steps: int = 100,
+        likelihood_steps: int = 100,
+        base: str = "wrapped_normal",  # log_prob_21: the density of their noise, or "uniform" as their code
+        d_model: int = 512,
+        num_layers: int = 4,
+    ):
+        if weights not in ("ema", "raw") or method not in ("euler", "midpoint") or base not in ("wrapped_normal", "uniform"):
+            raise ValueError(f"Bad option: weights={weights}, method={method}, base={base}.")
+        super().__init__(len(KEEP), "matrix")
+        self.method, self.sample_steps, self.likelihood_steps, self.base = method, sample_steps, likelihood_steps, base
+        self.net = TMLP(9 * NUM_JOINTS, d_model, num_layers)
+        state = torch.load(Path(checkpoint).expanduser(), map_location="cpu", weights_only=True)["state_dict"]
+        prefix = "model.model.vecfield.vecfield."
+        self.net.load_state_dict({k[len(prefix):]: v for k, v in state.items() if k.startswith(prefix)})
+        if weights == "ema":
+            shadow = [state[f"model.shadow_params.{i}"] for i in range(len(list(self.net.parameters())))]
+            with torch.no_grad():
+                for p, s in zip(self.net.parameters(), shadow, strict=True):
+                    p.copy_(s)
+        self.requires_grad_(False)
+        self.build_args = dict(checkpoint=str(checkpoint), weights=weights, method=method, sample_steps=sample_steps,
+                               likelihood_steps=likelihood_steps, base=base, d_model=d_model, num_layers=num_layers)
+
+    @property
+    def dtype(self) -> torch.dtype:
+        return self.net.layers[0].module._layer.weight.dtype
+
+    def loss(self, pose, cond=None):
+        raise NotImplementedError("The pretrained PoseD-Flow model is not trained here.")
+
+    # ---- the field ----
+
+    def field_ambient(self, t: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+        """Their vector field at x [B, 189] (not necessarily on SO(3)) and t [] or [B], in R^189."""
+        b = x.shape[0]
+        u = self.net(t.expand(b) if t.ndim == 0 else t, x)
+        xm = x.view(b, NUM_JOINTS, 3, 3)
+        return (xm @ skew(xm.transpose(-1, -2) @ u.view(b, NUM_JOINTS, 3, 3))).reshape(b, -1)
+
+    def field_frame(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        """The field at rotations x [B, 21, 3, 3], as coordinates [B, 21, 3] in the frame of x (x @ hat(v))."""
+        b = x.shape[0]
+        u = self.net(t, x.reshape(b, -1)).view(b, NUM_JOINTS, 3, 3)
+        return vee(skew(x.transpose(-1, -2) @ u))
+
+    # ---- sampling, as theirs ----
+
+    def base_sample(self, n: int, generator: Optional[torch.Generator] = None) -> torch.Tensor:
+        """Their noise: exp(N(0, I)) per joint, [n, 21, 3, 3]."""
+        noise = torch.randn(n, NUM_JOINTS, 3, generator=generator, device=self.device, dtype=self.dtype)
+        return roma.rotvec_to_rotmat(noise)
+
+    @torch.no_grad()
+    def sample_21(self, n: int, x0: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """n poses of all 21 joints [n, 21, 3, 3]: their ambient solver from t = 0 to 1, projx at the end."""
+        x = (self.base_sample(n) if x0 is None else x0.to(self.device, self.dtype)).reshape(n, -1)
+        times = torch.linspace(0.0, 1.0, self.sample_steps + 1, device=self.device, dtype=self.dtype)
+        for t0, t1 in zip(times[:-1], times[1:]):
+            dt = t1 - t0
+            v = self.field_ambient(t0, x)
+            if self.method == "euler":
+                x = x + dt * v
+            else:
+                x = x + dt * self.field_ambient(t0 + 0.5 * dt, x + 0.5 * dt * v)
+        return projx(x.view(n, NUM_JOINTS, 3, 3))
+
+    def sample(self, n: int, cond: Optional[torch.Tensor] = None) -> torch.Tensor:
+        self.check_cond(cond, n)
+        return self.sample_21(n)[:, KEEP]
+
+    # ---- guidance at inference: Riemannian D-Flow, as their pose_completion.py ----
+
+    def dflow_21(self, loss_fn: Callable[[torch.Tensor], torch.Tensor], n: int, steps: int = 200, lr: float = 0.1,
+                 ode_steps: int = 100, running_weight: float = 1e-3, x0: Optional[torch.Tensor] = None,
+                 generator: Optional[torch.Generator] = None) -> torch.Tensor:
+        """n poses of all 21 joints [n, 21, 3, 3] that make loss_fn small, without task-specific training.
+
+        D-Flow (Ben-Hamu et al. 2024) on SO(3)^21 as PoseD-Flow uses it: the source x_0 is optimized through the sampling
+        ODE (Euler steps in R^189 without projection, their projx at the end, gradients through all steps) to minimize
+
+            loss_fn(x_1) + running_weight * mean_batch sum_joints mean_t (3 - tr x_t),
+
+        the second term their running cost, which keeps the trajectory away from rotations far from the identity. x_0
+        moves on SO(3) as x_0 exp(hat(delta)) with Adam on delta (their RiemannianAdam on the product manifold, here in
+        the tangent coordinates at the start). loss_fn gets x_1 [n, 21, 3, 3] and returns a scalar (e.g. a mean over the
+        batch: Adam normalizes per coordinate, and every sample has its own coordinates, so the samples are optimized
+        independently). x_0: the start (default their noise, exp(N(0, I))).
+
+        Their pose completion starts from a mix of noise and an inverted guess of the observed rotations; with other
+        observations (e.g. keypoints) there is no such guess, and the start is the noise."""
+        start = (self.base_sample(n, generator) if x0 is None else x0.to(self.device, self.dtype)).detach()
+        delta = torch.zeros(n, NUM_JOINTS, 3, device=self.device, dtype=self.dtype, requires_grad=True)
+        optimizer = torch.optim.Adam([delta], lr=lr)
+        times = torch.linspace(0.0, 1.0, ode_steps + 1, device=self.device, dtype=self.dtype)
+        x1 = None
+        with torch.enable_grad():
+            for _ in range(steps):
+                optimizer.zero_grad()
+                x = exp_frame(start, delta).reshape(n, -1)
+                running = torch.zeros((), device=self.device, dtype=self.dtype)
+                for t0, t1 in zip(times[:-1], times[1:]):
+                    running = running + _trace_cost(x, n)
+                    x = x + (t1 - t0) * self.field_ambient(t0, x)
+                running = (running + _trace_cost(x, n)) / (ode_steps + 1)
+                x1 = projx(x.view(n, NUM_JOINTS, 3, 3))
+                (loss_fn(x1) + running_weight * running).backward()
+                optimizer.step()
+        return x1.detach()
+
+    # ---- the likelihood on SO(3)^21 ----
+
+    def velocity_and_divergence(self, x: torch.Tensor, t: torch.Tensor):
+        def one(delta, xi, ti):
+            v = self.field_frame(exp_frame(xi, delta)[None], ti[None])[0]
+            return v, v
+
+        zeros = torch.zeros(x.shape[0], NUM_JOINTS, 3, device=x.device, dtype=x.dtype)
+        jacobian, v = vmap(jacfwd(one, has_aux=True))(zeros, x, t)
+        n = 3 * NUM_JOINTS
+        return v, jacobian.reshape(x.shape[0], n, n).diagonal(dim1=1, dim2=2).sum(-1)
+
+    @torch.no_grad()
+    def log_prob_21(self, pose: torch.Tensor) -> torch.Tensor:
+        """log p [B] of poses of all 21 joints [B, 21, 3, 3] relative to the uniform distribution on SO(3)^21:
+        the ODE backwards from t = 1 with geodesic midpoint steps and the exact divergence (as PoseRFM)."""
+        x = pose.reshape(-1, NUM_JOINTS, 3, 3).to(self.device, self.dtype)
+        n = x.shape[0]
+        times = torch.linspace(1.0, 0.0, self.likelihood_steps + 1, device=self.device, dtype=self.dtype)
+        integral = torch.zeros(n, device=self.device, dtype=self.dtype)
+        for t, t_next in zip(times[:-1], times[1:]):
+            h = t_next - t
+            x_mid = exp_frame(x, 0.5 * h * self.field_frame(x, t.expand(n)))
+            v_mid, div_mid = self.velocity_and_divergence(x_mid, (t + 0.5 * h).expand(n))
+            x = exp_frame(x, h * v_mid)
+            integral = integral - h * div_mid
+        base = wrapped_normal_log_density(x).sum(-1) if self.base == "wrapped_normal" else torch.zeros_like(integral)
+        return base - integral
+
+
+@register_model("posedflow")
+class PoseDFlow(PoseModel):
+    """Their network, loss, noise and sampler, trained here (see the module doc); optionally conditioned on keypoints."""
+
+    has_log_prob = True
+    supports_cond = True
+    density_space = "SO(3)^J"
+
+    def __init__(
+        self,
+        num_joints: int,
+        d_model: int = 512,  # their tMLP: num_layers linear layers of width d_model
+        num_layers: int = 4,
+        method: str = "midpoint",  # their solvers: "euler" or "midpoint"
+        sample_steps: int = 100,
+        likelihood_steps: int = 100,
+        condition: Optional[str] = None,  # None (unconditional), "3D" or "2D": keypoints of hp.data.conditions
+        cond_hidden: int = 64,  # the hidden layer of the condition MLP
+        cond_features: int = 64,  # its output, concatenated to the input of the network
+        cond_mask: str = "none",  # joints hidden in the loss: "none" or "random" (hp.models.conditioning)
+        representation: str = "matrix",
+        cond_dim: int = 0,  # set by `condition`; without one, a generic condition vector of this length
+    ):
+        if representation != "matrix":
+            raise ValueError("PoseDFlow works on rotation matrices directly; use representation='matrix'.")
+        if method not in ("euler", "midpoint"):
+            raise ValueError(f"Unknown method '{method}'. Use 'euler' or 'midpoint'.")
+        cond_dim = conditioning.resolve(condition, cond_dim, cond_mask)
+        super().__init__(num_joints, "matrix", cond_dim)
+        self.condition, self.cond_mask = condition, cond_mask
+        self.method, self.sample_steps, self.likelihood_steps = method, sample_steps, likelihood_steps
+        self.cond_net = conditioning.make_net(cond_dim, condition, cond_hidden, cond_features)
+        self.net = TMLP(9 * num_joints, d_model, num_layers, cond_features if cond_dim else 0)
+
+    @property
+    def dtype(self) -> torch.dtype:
+        return self.net.layers[0].module._layer.weight.dtype
+
+    def cond_features(self, cond: Optional[torch.Tensor], batch: int) -> torch.Tensor:
+        """Features [B, cond_features] of the condition [B, cond_dim]; [B, 0] for an unconditional model."""
+        return conditioning.features(self.cond_net, self.condition, cond, batch, self.device, self.dtype)
+
+    # ---- the field ----
+
+    def field_ambient(self, t: torch.Tensor, x: torch.Tensor, f: torch.Tensor) -> torch.Tensor:
+        """The field at x [B, 9J] (not necessarily on SO(3)^J), t [] or [B] and features f [B, F], in R^(9J)."""
+        b = x.shape[0]
+        u = self.net(t.expand(b) if t.ndim == 0 else t, x, f)
+        xm = x.view(b, self.num_joints, 3, 3)
+        return (xm @ skew(xm.transpose(-1, -2) @ u.view(b, self.num_joints, 3, 3))).reshape(b, -1)
+
+    def field_frame(self, x: torch.Tensor, t: torch.Tensor, f: torch.Tensor) -> torch.Tensor:
+        """The field at rotations x [B, J, 3, 3], as coordinates [B, J, 3] in the frame of x (x @ hat(v))."""
+        b = x.shape[0]
+        u = self.net(t, x.reshape(b, -1), f).view(b, self.num_joints, 3, 3)
+        return vee(skew(x.transpose(-1, -2) @ u))
+
+    def base_sample(self, n: int, generator: Optional[torch.Generator] = None) -> torch.Tensor:
+        """Their noise: exp(N(0, I)) per joint, [n, J, 3, 3] (on the CPU with a CPU generator)."""
+        device = "cpu" if generator is not None else self.device
+        noise = torch.randn(n, self.num_joints, 3, generator=generator, device=device, dtype=self.dtype)
+        return roma.rotvec_to_rotmat(noise)
+
+    # ---- the loss: their Riemannian flow matching ----
+
+    @staticmethod
+    def geodesic(x0: torch.Tensor, x1: torch.Tensor, t: torch.Tensor):
+        """(x_t, u_t): the point at times t [B] on the geodesic from x0 to x1 [B, J, 3, 3], x_t = x0 exp(t L) with
+        L = log(x0^T x1), and its velocity u_t = x_t L [B, J, 3, 3] in the ambient space."""
+        log = roma.rotmat_to_rotvec(x0.transpose(-1, -2) @ x1)
+        xt = exp_frame(x0, t[:, None, None] * log)
+        return xt, xt @ hat(log)
+
+    def loss(self, pose: torch.Tensor, cond: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """||v(t, x_t) - u_t||^2 / 9J on their geodesic path (module doc). In eval mode the times, the noise and the
+        hidden joints come from a fixed seed, so that a validation loss is the same number every time. A conditional
+        model computes the keypoints of the poses if `cond` is None, and hides joints of it if cond_mask is "random"."""
+        generator = None if self.training else torch.Generator().manual_seed(0)
+        batch, joints = pose.shape[0], self.num_joints
+        cond = conditioning.of_poses(pose, cond, self.condition)
+        self.check_cond(cond, batch)
+        if self.cond_mask == "random":
+            cond = conditioning.hide_random(cond, generator)
+        t = torch.rand(batch, dtype=torch.float64, generator=generator)
+        x0 = roma.rotvec_to_rotmat(torch.randn(batch, joints, 3, dtype=torch.float64, generator=generator))
+        x1 = move(pose.detach().reshape(batch, joints, 3, 3), "cpu", torch.float64)
+        xt, target = self.geodesic(x0, x1, t)
+        xt, target, t = (move(v, self.device, self.dtype) for v in (xt, target, t))
+        v = self.field_ambient(t, xt.reshape(batch, -1), self.cond_features(cond, batch))
+        return ((v - target.reshape(batch, -1)) ** 2).sum(dim=1).mean() / (9 * joints)
+
+    # ---- sampling, as theirs ----
+
+    @torch.no_grad()
+    def sample(self, n: int, cond: Optional[torch.Tensor] = None) -> torch.Tensor:
+        self.check_cond(cond, n)
+        f = self.cond_features(cond, n)
+        x = self.base_sample(n).reshape(n, -1)
+        times = torch.linspace(0.0, 1.0, self.sample_steps + 1, device=self.device, dtype=self.dtype)
+        for t0, t1 in zip(times[:-1], times[1:]):
+            dt = t1 - t0
+            v = self.field_ambient(t0, x, f)
+            if self.method == "euler":
+                x = x + dt * v
+            else:
+                x = x + dt * self.field_ambient(t0 + 0.5 * dt, x + 0.5 * dt * v, f)
+        return projx(x.view(n, self.num_joints, 3, 3))
+
+    # ---- the likelihood ----
+
+    def velocity_and_divergence(self, x: torch.Tensor, t: torch.Tensor, f: torch.Tensor):
+        """The field in the frame of x [B, J, 3, 3] and its Riemannian divergence [B] (as RSGM and PoseRFM)."""
+
+        def one(delta, xi, ti, fi):  # delta [J, 3], xi [J, 3, 3], ti [], fi [F]
+            v = self.field_frame(exp_frame(xi, delta)[None], ti[None], fi[None])[0]
+            return v, v
+
+        zeros = torch.zeros(x.shape[0], self.num_joints, 3, device=x.device, dtype=x.dtype)
+        jacobian, v = vmap(jacfwd(one, has_aux=True))(zeros, x, t, f)
+        n = 3 * self.num_joints
+        return v, jacobian.reshape(x.shape[0], n, n).diagonal(dim1=1, dim2=2).sum(-1)
+
+    @torch.no_grad()
+    def log_prob(self, pose: torch.Tensor, cond: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """log p(pose) [B] (log p(pose | cond) for a conditional model) relative to the uniform distribution on
+        SO(3)^J: the ODE backwards from t = 1 with geodesic midpoint steps and the exact divergence, and the density
+        of their noise at the end."""
+        self.check_cond(cond, len(pose))
+        x = move(pose.reshape(-1, self.num_joints, 3, 3), self.device, self.dtype)
+        n = x.shape[0]
+        f = self.cond_features(cond, n)
+        times = torch.linspace(1.0, 0.0, self.likelihood_steps + 1, device=self.device, dtype=self.dtype)
+        integral = torch.zeros(n, device=self.device, dtype=self.dtype)
+        for t, t_next in zip(times[:-1], times[1:]):
+            h = t_next - t
+            x_mid = exp_frame(x, 0.5 * h * self.field_frame(x, t.expand(n), f))
+            v_mid, div_mid = self.velocity_and_divergence(x_mid, (t + 0.5 * h).expand(n), f)
+            x = exp_frame(x, h * v_mid)
+            integral = integral - h * div_mid
+        return wrapped_normal_log_density(x).sum(-1) - integral
