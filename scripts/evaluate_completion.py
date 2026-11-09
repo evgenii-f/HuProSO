@@ -5,6 +5,11 @@ server:
     python scripts/evaluate_completion.py --device cuda:0
     python scripts/evaluate_completion.py --models "PoseD-Flow: their checkpoint" --occlusions left_leg trunk
     python scripts/evaluate_completion.py --poses 20 --device mps     # a quick check, cached apart
+    python scripts/evaluate_completion.py --device cuda:0 --together --batch 250   # faster: 2500 rows per GPU call
+
+--together runs the 10 hypotheses of --batch poses as one batch: fewer, larger GPU calls, other random draws than
+theirs, the same method. The memory grows with --batch * 10 * the ODE steps (the gradients go through all of them).
+Results of either way are reused by the other.
 
 Every model is completed by D-Flow (hp/models/dflow.py) with their settings: 10 hypotheses, 200 optimizer steps (300
 for the arms), lr 0.1, 100 Euler steps of the ODE, running cost 1e-3. A finished (model, occlusion) is skipped. MODELS
@@ -18,7 +23,7 @@ from pathlib import Path
 # the code of this checkout, before an editable install of another one
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from hp.evaluation.completion import OCCLUSIONS, cached_run, test_poses  # noqa: E402
+from hp.evaluation.completion import BATCH, OCCLUSIONS, cached_run, test_poses  # noqa: E402
 
 ROTATIONS = "~/data/AMASS_rotations_posedflow_c10"  # their test set is complete there
 CACHE = "~/data/experiments/completion/cache"
@@ -37,14 +42,17 @@ def main() -> int:
     parser.add_argument("--device", default="mps")
     parser.add_argument("--rotations", default=ROTATIONS)
     parser.add_argument("--cache", default=CACHE)
+    parser.add_argument("--batch", type=int, default=BATCH, help=f"poses per batch (theirs: {BATCH})")
+    parser.add_argument("--together", action="store_true", help="the hypotheses of a batch in one GPU batch")
     args = parser.parse_args()
+    speed = {"batch": args.batch, "together": True} if args.together else ({"batch": args.batch} if args.batch != BATCH else {})
 
     gt = test_poses(args.rotations, args.poses)
     print(f"{len(gt)} test poses, {len(args.models)} model(s) x {len(args.occlusions)} occlusion(s)", flush=True)
     for name in args.models:
         for occlusion in args.occlusions:
             start = time.perf_counter()
-            cached_run(Path(args.cache), name, MODELS[name], gt, occlusion, args.device, rotations=args.rotations)
+            cached_run(Path(args.cache), name, MODELS[name], gt, occlusion, args.device, rotations=args.rotations, **speed)
             print(f"{name} / {occlusion}: {(time.perf_counter() - start) / 60:.1f} min", flush=True)
     return 0
 

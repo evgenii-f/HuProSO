@@ -37,6 +37,7 @@ SEGMENTS = {  # their BodySegIndices: the parts of smplx_vert_segmentation.json
 }
 STEPS = {"arms": 300}  # their README: 300 optimizer steps for the arms, 200 otherwise
 METHOD = "dflow 1: their start (the sampling ODE run from the observed pose)"  # change it when the method changes
+SPEED = ("batch", "together")  # options of run that change only the random draws and the speed, not the method
 TOES = (9, 10)
 KEEP = [j.value - 1 for j in AmassJoints4Learning]  # our 19 joints among the 21
 PAPER = {  # their Tab. 2: MPVPE mean +- std (mm), APD (cm)
@@ -110,9 +111,12 @@ def summary(m: Dict[str, np.ndarray]) -> Dict[str, float]:
 
 
 def run(model, gt: torch.Tensor, occlusion: str, k: int = 10, steps: Optional[int] = None, ode_steps: int = 100,
-        lr: float = 0.1, running_weight: float = 1e-3, batch: int = BATCH, progress: bool = True) -> torch.Tensor:
+        lr: float = 0.1, running_weight: float = 1e-3, batch: int = BATCH, together: bool = False,
+        progress: bool = True) -> torch.Tensor:
     """Completions [N, K, 21, 3, 3] of the poses gt [N, 21, 3, 3] by D-Flow on `model` (hp.models.dflow); hypothesis
-    k starts from torch.manual_seed(k) in every batch, as theirs."""
+    k starts from torch.manual_seed(k) in every batch, as theirs. together=True: the K hypotheses of `batch` poses in
+    one batch of K * batch (fewer, larger GPU calls; the hypotheses are independent all the same, as Adam works per
+    coordinate), from torch.manual_seed(first pose of the batch): other random draws than theirs."""
     from hp.models.dflow import complete, prior_of
 
     prior = prior_of(model, ode_steps)
@@ -122,6 +126,15 @@ def run(model, gt: torch.Tensor, occlusion: str, k: int = 10, steps: Optional[in
     out = gt[:, None].repeat(1, k, 1, 1, 1)
     for start in range(0, len(gt), batch):
         observed = gt[start:start + batch][:, joints]
+        if together:
+            b = len(observed)
+            torch.manual_seed(start)
+            filled = complete(prior, observed.repeat(k, 1, 1, 1), visible[joints], steps or STEPS.get(occlusion, 200), lr,
+                              running_weight)  # [k * b], hypothesis-major
+            out[start:start + b][:, :, joints] = filled.view(k, b, *filled.shape[1:]).transpose(0, 1).float().cpu()
+            if progress:
+                print(f"\r  {occlusion}: poses {start + b} / {len(gt)}", end="", flush=True)
+            continue
         for h in range(k):
             torch.manual_seed(h)
             filled = complete(prior, observed, visible[joints], steps or STEPS.get(occlusion, 200), lr, running_weight)
@@ -156,16 +169,21 @@ def identity(spec: dict) -> dict:
     return {"spec": spec, "size": file.stat().st_size, "mtime": int(file.stat().st_mtime)}
 
 
+def _results_settings(settings: dict) -> dict:
+    """The settings without SPEED: those that only change how the work is split, not what is computed."""
+    return {key: value for key, value in settings.items() if key not in SPEED}
+
+
 def cached_run(cache: Path, label: str, spec: dict, gt: torch.Tensor, occlusion: str, device: str, k: int = 10,
                rotations: str = "", **options) -> Optional[torch.Tensor]:
-    """The completions of cache/<label>/<occlusion>.pt if they were made with these settings; otherwise made and saved
-    (device=None: only read, None if missing)."""
+    """The completions of cache/<label>/<occlusion>.pt if they were made with these settings (whatever the SPEED
+    settings were); otherwise made and saved (device=None: only read, None if missing)."""
     path = Path(cache).expanduser() / label.replace("/", "_").replace(" ", "_") / f"{occlusion}.pt"
     settings = json.loads(json.dumps({"model": identity(spec), "poses": len(gt), "rotations": rotations, "k": k,
                                       "method": METHOD, **options}))
     if path.is_file():
         saved = torch.load(path, weights_only=True)
-        if json.loads(saved["settings"]) == settings:
+        if _results_settings(json.loads(saved["settings"])) == _results_settings(settings):
             return saved["pred"].float()
         print(f"  {label} / {occlusion}: cached with other settings")
     if device is None:

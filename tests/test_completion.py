@@ -53,6 +53,30 @@ def test_a_19_joint_model_fills_its_joints_and_rests_the_hidden_toes():
     assert torch.allclose(pred[:, :, visible], gt[:, None, visible].expand(2, 2, len(visible), 3, 3))
 
 
+def test_hypotheses_together_keep_the_visible_joints_and_differ():
+    gt = roma.random_rotmat(3 * 21).view(3, 21, 3, 3)
+    pred = run(small_rsgm(), gt, "trunk", k=4, steps=1, ode_steps=2, batch=2, together=True, progress=False)
+    visible = [j for j in range(21) if j not in OCCLUSIONS["trunk"]]
+    assert pred.shape == (3, 4, 21, 3, 3)
+    assert torch.allclose(pred[:, :, visible], gt[:, None, visible].expand(3, 4, len(visible), 3, 3))
+    assert not torch.allclose(pred[:, 0, 2], pred[:, 1, 2])  # the hypotheses of a pose are not copies
+
+
+def test_the_cache_ignores_the_speed_settings(tmp_path, monkeypatch):
+    import hp.evaluation.completion as completion
+
+    file = tmp_path / "weights_ema.pt"
+    file.write_bytes(b"x")
+    calls = []
+    monkeypatch.setattr(completion, "build", lambda spec, device: None)
+    monkeypatch.setattr(completion, "run", lambda *a, **kw: calls.append(kw) or torch.zeros(1, 1, 21, 3, 3))
+    spec, gt = {"run": str(tmp_path)}, torch.zeros(1, 21, 3, 3)
+    completion.cached_run(tmp_path, "m", spec, gt, "trunk", "cpu")
+    assert completion.cached_run(tmp_path, "m", spec, gt, "trunk", None, batch=250, together=True) is not None
+    completion.cached_run(tmp_path, "m", spec, gt, "trunk", "cpu", batch=250, together=True)
+    assert len(calls) == 1
+
+
 def test_the_summary_takes_mean_std_and_min_over_the_hypotheses():
     m = {"mpvpe": torch.tensor([[1.0, 3.0], [5.0, 5.0]]).numpy(), "mpjpe": torch.zeros(2, 2).numpy(),
          "mgeo": torch.zeros(2, 2).numpy(), "apd": torch.tensor([1.0, 3.0]).numpy()}
