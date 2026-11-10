@@ -43,7 +43,6 @@ N_CONTRAST = 100_000
 SETS, SET_SIZE = 20, 500
 CACHE = Path("~/data/experiments/posedflow_comparison/cache").expanduser()
 BATCHES = (4096, 1)  # the n of model.sample(n) timed by default; more can be added to the cache later
-FRONT_BATCH = 4096  # the timed n shown as the throughput in the table and the Pareto plots; n = 1 is the latency
 REPEATS = 3
 
 # The models: the specs (and names, which key the cache) of posedflow_vs_rsgm.ipynb, plus the HuProSO3 flow.
@@ -470,3 +469,36 @@ def measure_runtime(zoo: Zoo, recompute=frozenset(), batches=BATCHES, repeats: i
         runtime[name] = cached_runtime(label, stage, {"model": zoo.identities[label], **settings}, zoo.builders[label],
                                        batches, repeats, zoo.forced(label, recompute), zoo.device, cache, log)
     return runtime
+
+
+def load_runtime(zoo: Zoo, stage: str, cache: Path = CACHE) -> Tuple[dict, dict]:
+    """The times of another machine (or this one) from the cache, without timing: runtime[name] of the models of
+    `zoo` whose <stage>.json is of the same weights, and what the times were measured on and how: chip, device,
+    platform, torch, repeats and the dates of measuring (several values if the files differ)."""
+    runtime, settings, entries = {}, [], []
+    for name, labels in zoo.groups.items():
+        path = cache / slug(labels[0]) / f"{stage}.json"
+        if not path.is_file():
+            continue
+        saved = upgrade_runtime(json.loads(path.read_text()))
+        if portable(saved["settings"].get("model")) != portable(zoo.identities[labels[0]]):
+            continue
+        runtime[name] = saved["result"]
+        settings.append(saved["settings"])
+        entries += saved["result"]["batches"].values()
+
+    def values(get):
+        return sorted({str(v) for v in map(get, settings + entries) if v is not None})
+    dates = values(lambda s: s.get("conditions", {}).get("date"))
+    info = {key: values(lambda s, key=key: s.get(key)) for key in ("chip", "device", "platform", "torch")}
+    info.update(repeats=values(lambda s: s.get("repeats")), dates=[d[:10] for d in dates[:1] + dates[-1:]])
+    return runtime, info
+
+
+def runtime_stages(zoo: Zoo, cache: Path = CACHE) -> Dict[str, Tuple[dict, dict]]:
+    """Every runtime measurement in the cache of the models of `zoo`: {stage: load_runtime(zoo, stage)}, the stages
+    with the most models first. Files set aside (<stage>.<suffix>.json) are not among them."""
+    stages = {p.stem for labels in zoo.groups.values() for p in (cache / slug(labels[0])).glob("runtime_*.json")
+              if "." not in p.stem}
+    found = {stage: load_runtime(zoo, stage, cache) for stage in sorted(stages)}
+    return dict(sorted(((s, v) for s, v in found.items() if v[0]), key=lambda item: -len(item[1][0])))
