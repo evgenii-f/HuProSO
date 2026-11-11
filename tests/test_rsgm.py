@@ -71,6 +71,49 @@ def test_samples_of_the_oracle_follow_its_distribution():
         assert ks_distance(angles[:, joint], model.s0) < 1.63 / math.sqrt(10_000)
 
 
+# The ODE with Euler needs ~1000 steps here (Euler-Maruyama 200), and more with "edm": rho = 7 spends the steps on
+# noise levels far below the scale of the oracle's data (s0 = 0.1), while Heun with "edm" passes with 20.
+@pytest.mark.parametrize("sampler, schedule, steps", [("heun", "uniform", 50), ("heun", "edm", 20), ("euler", "uniform", 1000)])
+def test_the_other_samplers_of_the_oracle_follow_its_distribution(sampler, schedule, steps):
+    model = Oracle(2, beta_f=20.0, sample_steps=steps, sampler=sampler, schedule=schedule)
+    torch.manual_seed(0)
+    angles = log_map(model.mu.transpose(-1, -2) @ model.sample(10_000)).norm(dim=-1)
+    for joint in range(2):
+        assert ks_distance(angles[:, joint], model.s0) < 1.63 / math.sqrt(10_000)
+
+
+def test_heun_is_second_order():
+    """Without noise the error of the end point against a fine solution falls as h^2 for Heun and as h for Euler."""
+    model = Oracle(2, beta_f=20.0)  # one oracle: a new one has another mu
+
+    def end(sampler, steps):
+        model.sampler, model.sample_steps = sampler, steps
+        torch.manual_seed(0)
+        return model.sample(200)
+
+    reference = end("heun", 1000)
+    for sampler, order in (("heun", 2), ("euler", 1)):
+        errors = [(log_map(reference.transpose(-1, -2) @ end(sampler, steps)).norm(dim=-1)).mean() for steps in (20, 40)]
+        assert abs(math.log2(errors[0] / errors[1]) - order) < 0.35
+
+
+def test_the_edm_schedule_runs_from_1_to_eps_with_the_small_steps_at_the_end():
+    model = RSGM(2, hidden=[4], schedule="edm")
+    times = model.sample_times(10)
+    steps = -times.diff()
+    assert times[0] == 1.0 and times[-1] == model.eps and (steps > 0).all() and steps[-1] < steps[0] / 100
+    assert torch.allclose(model.s(model.t_of_s(model.s(times))), model.s(times))
+
+
+def test_the_sampler_settings_are_checked_and_counted():
+    assert RSGM(2, hidden=[4], sampler="heun", sample_steps=10).sample_nfe == 20
+    assert RSGM(2, hidden=[4], sample_steps=10).sample_nfe == 10
+    with pytest.raises(ValueError):
+        RSGM(2, hidden=[4], sampler="rk4")
+    with pytest.raises(ValueError):
+        RSGM(2, hidden=[4], schedule="cosine")
+
+
 def test_the_target_of_the_loss_is_the_riemannian_gradient_of_the_heat_kernel():
     """d log f / d omega * u, in the frame of x_t, against autograd of log f(angle(x0^T x_t exp(hat(delta))))."""
     torch.manual_seed(0)

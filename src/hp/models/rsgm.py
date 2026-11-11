@@ -14,6 +14,13 @@ at x is given by its coordinates v in the frame of x: the vector x @ hat(v). The
 dx = sqrt(beta(t)) dB, so x_t | x_0 is IGSO(3) around x_0 with time s(t) = int_0^t beta. At t = 1 it is close to
 uniform (for beta_f = 6 the l=1 mode is down to exp(-s(1)) = 5%), and the likelihood treats it as uniform.
 
+sample() integrates the time reversal from t = 1 to eps over `sample_steps` steps. `sampler`: "euler_maruyama" (the
+reverse SDE, as the JAX code), "euler" or "heun" (the probability flow ODE, first and second order; Heun calls the
+network twice per step). On SO(3) the velocities are coordinates in the frame of x (left trivialization), and averaging
+them as Heun does is second order without commutator terms (Runge-Kutta-Munthe-Kaas of order 2). `schedule`: the
+times of the steps, "uniform" in t, or "edm" (Karras et al. 2022): uniform in sigma^(1/rho) for the noise scale
+sigma = sqrt(s(t)), which puts the steps where the noise is small and the score changes fast.
+
 log_prob is the probability flow ODE dx/dt = -beta(t)/2 * score(x, t) integrated from eps to 1, plus the integral
 of the exact divergence (torch.func, one forward-mode pass per coordinate). It is a density relative to the
 uniform distribution on SO(3)^J, the same space as so3_flow, so the numbers are comparable.
@@ -44,6 +51,7 @@ class Sin(nn.Module):
 
 
 ACTIVATIONS = {"sin": Sin, "silu": nn.SiLU, "relu": nn.ReLU}
+SAMPLERS = {"euler_maruyama": 1, "euler": 1, "heun": 2}  # and the network calls of a step
 
 
 def exp_frame(x: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
@@ -67,6 +75,9 @@ class RSGM(PoseModel):
         eps: float = 2e-4,  # the time the sampler stops and the likelihood starts at
         loss_t_min: float = 1e-3,  # the smallest time of the training loss (t0 + 1e-3 in the JAX code)
         sample_steps: int = 100,
+        sampler: str = "euler_maruyama",  # "euler_maruyama" (reverse SDE), "euler" or "heun" (probability flow ODE)
+        schedule: str = "uniform",  # the times of the sampler steps: "uniform" in t, or "edm" (see the module doc)
+        schedule_rho: float = 7.0,  # rho of the "edm" schedule
         likelihood_steps: int = 100,
         weighting: str = "std",  # of the loss over time: "std" (std(t)^2, as the JAX code) or "likelihood" (beta(t))
         condition: Optional[str] = None,  # None (unconditional), "3D" or "2D": keypoints of hp.data.conditions
@@ -86,6 +97,8 @@ class RSGM(PoseModel):
         if weighting not in ("std", "likelihood"):
             raise ValueError(f"Unknown weighting '{weighting}'. Use 'std' or 'likelihood'.")
         self.weighting = weighting
+        self.sampler, self.schedule, self.schedule_rho = sampler, schedule, schedule_rho
+        self.check_sampler()
         self.cond_net = conditioning.make_net(cond_dim, condition, cond_hidden, cond_features)
         layers, width = [], 9 * num_joints + 1 + (cond_features if cond_dim else 0)
         for h in hidden:
@@ -109,6 +122,11 @@ class RSGM(PoseModel):
         """The scale of the std trick: sqrt(1 - exp(-s)), as marginal_prob of the JAX code."""
         return torch.sqrt(-torch.expm1(-self.s(t)))
 
+    def t_of_s(self, s: torch.Tensor) -> torch.Tensor:
+        """The time t of the Brownian time s: s = beta_0 t + (beta_f - beta_0) t^2 / 2, solved for t."""
+        a = self.beta_f - self.beta_0
+        return (-self.beta_0 + torch.sqrt(self.beta_0**2 + 2 * a * s)) / a
+
     def loss_times(self, u: torch.Tensor) -> torch.Tensor:
         """Times of the training loss from uniform numbers u in [0, 1] (float64).
 
@@ -121,9 +139,7 @@ class RSGM(PoseModel):
             return self.loss_t_min + (1 - self.loss_t_min) * u
         t_lo = torch.tensor(self.loss_t_min, dtype=torch.float64)
         lo, hi = torch.log(torch.expm1(self.s(t_lo))), torch.log(torch.expm1(self.s(torch.ones_like(t_lo))))
-        s = torch.log1p(torch.exp(lo + u * (hi - lo)))
-        # s = beta_0 t + (beta_f - beta_0) t^2 / 2, solved for t
-        return (-self.beta_0 + torch.sqrt(self.beta_0**2 + 2 * (self.beta_f - self.beta_0) * s)) / (self.beta_f - self.beta_0)
+        return self.t_of_s(torch.log1p(torch.exp(lo + u * (hi - lo))))
 
     # ---- the score ----
 
@@ -164,19 +180,48 @@ class RSGM(PoseModel):
         scaled = self.score(xt, t, self.cond_features(cond, batch)) * self.std(t)[:, None, None]
         return ((scaled - target) ** 2).sum(dim=(1, 2)).mean()
 
-    # ---- sampling: the time reversal, by geodesic Euler-Maruyama ----
+    # ---- sampling: the time reversal, by geodesic Euler-Maruyama or the probability flow ODE ----
+
+    def check_sampler(self) -> None:
+        if self.sampler not in SAMPLERS:
+            raise ValueError(f"Unknown sampler '{self.sampler}'. Use one of {', '.join(SAMPLERS)}.")
+        if self.schedule not in ("uniform", "edm"):
+            raise ValueError(f"Unknown schedule '{self.schedule}'. Use 'uniform' or 'edm'.")
+
+    @property
+    def sample_nfe(self) -> int:
+        """Calls of the score network in one sample()."""
+        return self.sample_steps * SAMPLERS[self.sampler]
+
+    def sample_times(self, steps: int) -> torch.Tensor:
+        """steps + 1 times from 1 down to eps (float64): the grid of `schedule`."""
+        if self.schedule == "uniform":
+            return torch.linspace(1.0, self.eps, steps + 1, dtype=torch.float64)
+        ends = self.s(torch.tensor([1.0, self.eps], dtype=torch.float64)).sqrt() ** (1 / self.schedule_rho)
+        sigma = (ends[0] + torch.linspace(0, 1, steps + 1, dtype=torch.float64) * (ends[1] - ends[0])) ** self.schedule_rho
+        times = self.t_of_s(sigma**2)
+        times[0], times[-1] = 1.0, self.eps  # exactly, not up to rounding
+        return times
 
     @torch.no_grad()
     def sample(self, n: int, cond: Optional[torch.Tensor] = None) -> torch.Tensor:
         self.check_cond(cond, n)
+        self.check_sampler()
         dtype = self.net[0].weight.dtype
         f = self.cond_features(cond, n)
         x = roma.random_rotmat(n * self.num_joints, device=self.device, dtype=dtype).reshape(n, self.num_joints, 3, 3)
-        times = torch.linspace(1.0, self.eps, self.sample_steps + 1, device=self.device, dtype=dtype)
+        times = self.sample_times(self.sample_steps).to(self.device, dtype)
         for t, t_next in zip(times[:-1], times[1:]):
-            dt, beta = t - t_next, self.beta(t)
-            step = beta * self.score(x, t.expand(n), f) * dt + torch.sqrt(beta * dt) * torch.randn(n, self.num_joints, 3, device=self.device, dtype=dtype)
-            x = exp_frame(x, step)
+            h = t_next - t  # negative: the ODE runs backwards in time
+            if self.sampler == "euler_maruyama":
+                dt, beta = -h, self.beta(t)
+                step = beta * self.score(x, t.expand(n), f) * dt + torch.sqrt(beta * dt) * torch.randn(n, self.num_joints, 3, device=self.device, dtype=dtype)
+                x = exp_frame(x, step)
+                continue
+            v = self.velocity(x, t.expand(n), f)
+            if self.sampler == "heun":
+                v = 0.5 * (v + self.velocity(exp_frame(x, h * v), t_next.expand(n), f))
+            x = exp_frame(x, h * v)
         return x
 
     # ---- the likelihood: probability flow ODE with the exact divergence ----
