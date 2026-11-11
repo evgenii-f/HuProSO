@@ -114,6 +114,46 @@ Rounded settings: silu, β_f 7.5, loss_t_min 0.002, lr 2e-3, AdamW wd 1e-5, EMA 
 
 `dposer_posedflow_s10` at the top level is an unfinished attempt and is not compared.
 
+## Samplers
+
+How each model draws a pose, by default. NFE: network calls per sample. The step options are attributes of the model (`sample_steps`, `sampler`, ...), set by the overrides of a model in `hp.evaluation.pareto.MODELS`.
+
+| model | noise | sampler | space of the steps | steps (NFE) by default | the end |
+|---|---|---|---|---|---|
+| HuProSO3 flow | uniform on SO(3)^19 | the inverse of the flow, one pass (exact sample and log p together) | SO(3) per joint, autoregressive over the joints | 1 pass | rotations by construction |
+| RSGM | uniform on SO(3)^19 | Euler–Maruyama on the reverse SDE, t from 1 to `eps` = 2e-4 (as the JAX code) | geodesic steps in the frame of x (`exp_frame`) | 100 (100) | rotations by construction |
+| PoseRFM | uniform on SO(3)^19 | geodesic midpoint on the flow ODE, t from 0 to 1 | the same | 100 (200) | rotations by construction |
+| PoseD-Flow (their checkpoint, `PoseDFlowPretrained`; retrained, `PoseDFlow`) | exp(N(0, I)) per joint in axis-angle (a wrapped normal of 1 rad, their `SO3.random`) | their solver, `method` "midpoint" (paper) or "euler" (their script: Euler 1000, raw weights) | the ambient space R^(9J), no projection on the way | midpoint 100 (200) | `projx`: QR onto orthogonal matrices (see `docs/posedflow_cuda_qr_projection.md`) |
+| DPoser | N(0, I) in normalized axis-angle | Euler–Maruyama on the reverse VP SDE, `sample_steps` times from 1 to `sample_eps` = 1e-3 (their sampler) | R^(3J), Euclidean | 1000 (1000) | the mean of the last step (no noise), denormalized, axis-angle to rotations |
+
+The time grids are uniform, except RSGM with `schedule="edm"`.
+
+### The RSGM samplers
+
+`sampler` and `schedule` of `RSGM` (see the module doc of `hp/models/rsgm.py`):
+
+| `sampler` | equation | order | NFE per step |
+|---|---|---|---|
+| `"euler_maruyama"` (default) | the reverse SDE | 1 (weak) | 1 |
+| `"euler"` | the probability flow ODE, dx/dt = −β(t)/2 · score | 1 | 1 |
+| `"heun"` | the same ODE; the velocities in the frame of x averaged (Runge–Kutta–Munthe-Kaas of order 2) | 2 | 2 |
+
+`schedule`: `"uniform"` in t (default), or `"edm"` (Karras et al. 2022): uniform in σ^(1/ρ) for σ = √s(t), `schedule_rho` = 7, so the steps are dense where the noise is small. The ODE samplers are deterministic given the noise at t = 1. The log-likelihood does not depend on the sampler (it is the probability flow ODE with `likelihood_steps` midpoint steps), so the models with a new sampler are evaluated without it (`likelihood=False` in `MODELS`).
+
+Found in `explore/evaluation/rsgm_samplers.ipynb` (RSGM 512×4 their c10, 10-200 NFE): the ODE beats Euler–Maruyama at every NFE, Euler on the uniform grid is best at 10-20 NFE, Heun with the EDM grid is closest to real poses from 50 NFE; the EDM grid hurts the first-order samplers; Euler–Maruyama contracts the samples (low APD).
+
+### The sampler variants in the Pareto comparison
+
+`hp.evaluation.pareto.MODELS` (`explore/evaluation/pareto_posedflow_vs_rsgm.ipynb`, `scripts/evaluate_pareto.py`):
+
+| family | variants | NFE |
+|---|---|---|
+| RSGM 512×4 their c10 (3 seeds), 512×4 their full, 1536×6 their c10 | own (Euler–Maruyama 100); ODE Euler 50 (uniform); Heun 25 steps with the EDM grid | 100; 50; 50 |
+| RSGM 512×4 their c10 | Euler–Maruyama 300, 1000 | 300, 1000 |
+| PoseD-Flow, their checkpoint | midpoint 100 (paper), 50, 25, 10; Euler 50, 20 | 200, 100, 50, 20; 50, 20 |
+| DPoser their full, their c10 | Euler–Maruyama 1000, 100, 50, 20 | 1000, 100, 50, 20 |
+| HuProSO3 flow (our AMASS) | its inverse pass | 1 |
+
 ## What has been computed on which arena
 
 From the cache files on the Mac (+ result there, − none, empty: not applicable).
@@ -142,4 +182,4 @@ Occlusion: no cache, the results are in the outputs of the notebooks.
 
 ## Not in dev
 
-Uncommitted: motion from the prior (`sequence_sampling.py`, `motion_from_pose_prior.ipynb`, branch `conditions`), tree features and `DPoser.log_prob_so3` (`rsgm-tree-features`), `pareto_posedflow_vs_rsgm.ipynb` (`paretto`). GPU noise: `experimental/igso3_gpu`, not merged.
+Uncommitted: motion from the prior (`sequence_sampling.py`, `motion_from_pose_prior.ipynb`, branch `conditions`), tree features and `DPoser.log_prob_so3` (`rsgm-tree-features`). GPU noise: `experimental/igso3_gpu`, not merged.
