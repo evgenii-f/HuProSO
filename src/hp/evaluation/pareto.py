@@ -48,7 +48,7 @@ REPEATS = 3
 # The models: the specs (and names, which key the cache) of posedflow_vs_rsgm.ipynb, plus the HuProSO3 flow.
 # "short": the label in the plots. posedflow=dict(...) for their checkpoint; run=<folder or list of folders (seeds)>;
 # weights= (default weights_ema) and the overrides sample_steps=, likelihood_steps=, eps=, and of RSGM sampler=,
-# schedule=, schedule_rho=.
+# schedule=, schedule_rho=; likelihood=False: the harness without the log-likelihood.
 MODELS = {
     "PoseD-Flow: their checkpoint, midpoint 100 (paper)": dict(short="PoseD-Flow, mid 100",
         posedflow=dict(weights="ema", method="midpoint", sample_steps=100)),
@@ -99,7 +99,8 @@ RSGM_FRONT = {
 }
 for _base, _spec in RSGM_FRONT.items():
     for _label, _sampler in RSGM_SAMPLERS.items():
-        MODELS[f"{_base}, {_label}"] = {**_spec, "short": f"{_spec['short']}, {_label}", **_sampler}
+        # no log-likelihood: it does not depend on the sampler (that of the base model) and is the slow part of the harness
+        MODELS[f"{_base}, {_label}"] = {**_spec, "short": f"{_spec['short']}, {_label}", **_sampler, "likelihood": False}
 # ---------------------------------------------------------------------------------------------------------------------
 
 
@@ -169,6 +170,8 @@ def resolve(spec, path, device: str):
         model = load_model(run, device=device, weights=weights)
         for k, v in overrides.items():
             setattr(model, k, v)
+        if not spec.get("likelihood", True):
+            model.has_log_prob = False
         return model
     return build, identity
 

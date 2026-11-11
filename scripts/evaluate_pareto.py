@@ -57,6 +57,9 @@ def main():
     parser.add_argument("--skeleton", default=P.SKELETON, help="where the SMPL skeleton is on this machine")
     parser.add_argument("--gt-stats", default=P.GT_STATS, help="where their FID statistics are on this machine")
     parser.add_argument("--ll-chunk", type=int, default=250, help="poses per log_prob call in the harness (memory)")
+    parser.add_argument("--no-likelihood", action="store_true",
+                        help="the harness without the log-likelihood for all chosen models (as likelihood=False in MODELS); "
+                             "not part of the cache settings, so a result cached without it is not computed again")
     parser.add_argument("--smoke", action="store_true", help="tiny settings, to test the script (cached in <cache>_smoke, so the real results stay)")
     parser.add_argument("--list", action="store_true", help="list the models, whether they are here, and stop")
     args = parser.parse_args()
@@ -94,8 +97,14 @@ def main():
         train = load_reference("train", P.ROTATIONS, "posedflow")
         log(f"test {len(test):,}   train {len(train):,}")
         protocol = P.Protocol(train, device, sets, set_size, skeleton=args.skeleton, gt_stats=args.gt_stats)
+
+        def wrap(model):
+            if args.no_likelihood:
+                model.has_log_prob = False
+            return P.chunked_log_prob(model, args.ll_chunk)
+
         h, p = P.evaluate_quality(zoo, test, train, recompute_set(args.recompute), harness, n_contrast, protocol,
-                                  stages=quality, build_wrapper=lambda m: P.chunked_log_prob(m, args.ll_chunk), cache=cache, log=log)
+                                  stages=quality, build_wrapper=wrap, cache=cache, log=log)
         for label in zoo.builders:
             parts = []
             if label in h:
