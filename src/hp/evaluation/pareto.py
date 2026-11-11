@@ -47,7 +47,8 @@ REPEATS = 3
 
 # The models: the specs (and names, which key the cache) of posedflow_vs_rsgm.ipynb, plus the HuProSO3 flow.
 # "short": the label in the plots. posedflow=dict(...) for their checkpoint; run=<folder or list of folders (seeds)>;
-# weights= (default weights_ema) and the overrides sample_steps=, likelihood_steps=, eps=.
+# weights= (default weights_ema) and the overrides sample_steps=, likelihood_steps=, eps=, and of RSGM sampler=,
+# schedule=, schedule_rho=.
 MODELS = {
     "PoseD-Flow: their checkpoint, midpoint 100 (paper)": dict(short="PoseD-Flow, mid 100",
         posedflow=dict(weights="ema", method="midpoint", sample_steps=100)),
@@ -72,6 +73,20 @@ MODELS = {
     # ---- the HuProSO3 flow of the paper's settings, trained on our AMASS (all frames, seed 11), final weights
     "HuProSO3 flow: our AMASS": dict(short="HuProSO3 flow†", run="~/data/experiments/huproso3_full_seed11", weights="weights"),
 }
+# The RSGM models on the Pareto fronts with the samplers chosen in explore/evaluation/rsgm_samplers.ipynb, at 50 network
+# calls: the probability flow ODE on the uniform grid (Euler) and with the EDM schedule (Heun, 2 calls per step).
+RSGM_SAMPLERS = {
+    "ODE Euler 50": dict(sampler="euler", sample_steps=50),
+    "Heun EDM 50 NFE": dict(sampler="heun", schedule="edm", sample_steps=25),
+}
+RSGM_FRONT = {
+    "RSGM 512x4: their c10 (3 seeds)": MODELS["RSGM 512x4: their c10 (3 seeds)"],
+    "RSGM 512x4: their full": MODELS["RSGM 512x4: their full"],
+    "RSGM 1536x6: their c10": MODELS["RSGM 1536x6: their c10"],
+}
+for _base, _spec in RSGM_FRONT.items():
+    for _label, _sampler in RSGM_SAMPLERS.items():
+        MODELS[f"{_base}, {_label}"] = {**_spec, "short": f"{_spec['short']}, {_label}", **_sampler}
 # ---------------------------------------------------------------------------------------------------------------------
 
 
@@ -94,6 +109,9 @@ def select(patterns: Optional[List[str]], models: Dict[str, dict] = MODELS) -> D
 
 
 # ---- the models -----------------------------------------------------------------------------------------------------
+OVERRIDES = ("sample_steps", "likelihood_steps", "eps", "sampler", "schedule", "schedule_rho")
+
+
 def run_folder(path):
     path = Path(path).expanduser()
     if (path / MANIFEST).is_file():
@@ -130,7 +148,7 @@ def resolve(spec, path, device: str):
         return None, None
     weights = spec.get("weights", "weights_ema")
     file = run / f"{weights}.pt"
-    overrides = {k: spec[k] for k in ("sample_steps", "likelihood_steps", "eps") if k in spec}
+    overrides = {k: spec[k] for k in OVERRIDES if k in spec}
     identity = {"kind": "run", "run": str(run), "weights": weights, "size": file.stat().st_size,
                 "mtime": file.stat().st_mtime, "overrides": overrides}
 
@@ -442,6 +460,7 @@ def cached_runtime(label, stage, settings, build, batches=BATCHES, repeats: int 
         model = build().eval()
         result["parameters"] = model.num_parameters()
         result["sample_steps"] = getattr(model, "sample_steps", None)
+        result["sample_nfe"] = getattr(model, "sample_nfe", None)
         for n in todo:
             entry = time_sampling(model, n, device, repeats)
             result["batches"][str(n)] = entry
