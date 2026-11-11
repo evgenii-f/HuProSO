@@ -73,6 +73,19 @@ MODELS = {
     # ---- the HuProSO3 flow of the paper's settings, trained on our AMASS (all frames, seed 11), final weights
     "HuProSO3 flow: our AMASS": dict(short="HuProSO3 flow†", run="~/data/experiments/huproso3_full_seed11", weights="weights"),
 }
+# PoseD-Flow and DPoser with fewer steps of their own samplers, towards the fast end of the fronts. Network calls:
+# midpoint 2 per step, Euler (PoseD-Flow) and Euler-Maruyama (DPoser) 1.
+for _steps in (50, 25, 10):
+    MODELS[f"PoseD-Flow: their checkpoint, midpoint {_steps}"] = dict(
+        short=f"PoseD-Flow, mid {_steps}", posedflow=dict(weights="ema", method="midpoint", sample_steps=_steps))
+for _steps in (50, 20):
+    MODELS[f"PoseD-Flow: their checkpoint, Euler {_steps}"] = dict(
+        short=f"PoseD-Flow, Euler {_steps}", posedflow=dict(weights="ema", method="euler", sample_steps=_steps))
+for _steps in (50, 20):
+    MODELS[f"DPoser: their full, {_steps} steps"] = dict(
+        short=f"DPoser full, {_steps}", run="~/data/experiments/full/dposer_posedflow_s10", sample_steps=_steps)
+    MODELS[f"DPoser: their c10 (RSGM budget), {_steps} steps"] = dict(
+        short=f"DPoser c10, {_steps}", run="~/data/experiments/dposer_posedflow_rsgm_budget_s10", sample_steps=_steps)
 # The RSGM models on the Pareto fronts with the samplers chosen in explore/evaluation/rsgm_samplers.ipynb, at 50 network
 # calls: the probability flow ODE on the uniform grid (Euler) and with the EDM schedule (Heun, 2 calls per step).
 RSGM_SAMPLERS = {
