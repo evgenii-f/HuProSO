@@ -1,7 +1,7 @@
 """What every model of the zoo must do. A new model is added to SMALL and has to pass all of these."""
 import pytest
 import torch
-from conftest import fixed_rotations
+from conftest import TINY_BODY, fixed_rotations
 from test_trainer import Poses
 
 from hp.evaluation.evaluate import EvalConfig, evaluate
@@ -16,6 +16,7 @@ SMALL = {  # arguments that make the model small enough for a test
     "poserfm": {"hidden": [32, 32], "sample_steps": 5, "likelihood_steps": 5},
     "posedflow": {"d_model": 32, "num_layers": 3, "sample_steps": 5, "likelihood_steps": 5},
     "dposer": {"hidden": 32, "embed": 16, "blocks": 1, "sample_steps": 5},
+    "vposer": {"num_neurons": 32, "latent_dim": 4, "extra_terms_steps": 1, "body_model": TINY_BODY, "joints": [1, 2, 3, 4]},
 }
 NAMES = available_models()
 
