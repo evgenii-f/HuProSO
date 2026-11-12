@@ -1,0 +1,30 @@
+# VPoser (hp/models/vposer.py) with the settings of their V02_05 (human_body_prior, train/V02_05/V02_05.yaml).
+# Their training is by epochs: batch 128, Adam lr 1e-3 weight decay 1e-5, ReduceLROnPlateau (x0.1 after 5 epochs without
+# a better validation), early stopping after 10, the geodesic and joint terms for the first 15 epochs. Their log
+# (support_data/dowloads/V02_05/V02_05.log): the rate fell after epoch 14, the training stopped after epoch 18, and the
+# released weights are of epoch 13. Their data (CMU and BMLrub of AMASS SMPL-X at the mocap rate, 0.3 of the middle 80%
+# of every sequence) is about 1.8M poses, 14k steps of 128 an epoch. In steps: 19 epochs ~ 270k, the drop and the end
+# of the extra terms at 15 epochs ~ 216k (lr_step_fraction 0.8).
+name: vposer
+args:                            # given to build_model
+  num_neurons: 512
+  latent_dim: 32
+  loss_kl_wt: 0.005
+  loss_rec_wt: 4.0
+  loss_matrot_wt: 2.0
+  loss_jtr_wt: 2.0
+  extra_terms_steps: 216000      # their keep_extra_loss_terms_until_epoch 15
+  body_model: ~/data/body_models/smplx/SMPLX_NEUTRAL.npz
+train:                           # changes to the train section of config/train.yaml
+  max_iterations: 270000
+  batch_size: 128
+  lr: 1.0e-3
+  optimizer: adam                # torch.optim.Adam, the weight decay an L2 penalty, as theirs
+  weight_decay: 1.0e-5
+  scheduler: step                # their plateau schedule as one step: x0.1 at 80% of the steps
+  lr_step_fraction: 0.8
+  lr_gamma: 0.1
+  clip_grad_norm: null           # no clipping, no EMA (Lightning defaults)
+  ema_decay: null
+  valid_interval: 14000          # about one of their epochs
+  checkpoint_every: 28000

@@ -72,6 +72,17 @@ MODELS = {
     # "RSGM 512x4: their c10, raw weights": dict(short="RSGM 512x4, raw", run="~/data/experiments/rsgm_posedflow_small_s10", weights="weights"),
     # ---- the HuProSO3 flow of the paper's settings, trained on our AMASS (all frames, seed 11), final weights
     "HuProSO3 flow: our AMASS": dict(short="HuProSO3 flow†", run="~/data/experiments/huproso3_full_seed11", weights="weights"),
+    # the same flow and training (20k steps of 2000, no EMA) on their c10; the final weights, as in the HuProSO3 paper
+    "HuProSO3 flow: their c10": dict(short="HuProSO3 flow", run="~/data/experiments/huproso3_posedflow_s10", weights="weights"),
+    # the best validation NLL (step 3k): the training NLL keeps falling, the validation NLL rises after it
+    "HuProSO3 flow: their c10, best (3k)": dict(short="HuProSO3 flow @3k", run="~/data/experiments/huproso3_posedflow_s10/run_0001/checkpoint_003000", weights="weights"),
+    # ---- VPoser (V02_05 network, loss and training), retrained; no EMA. The best checkpoint by their validation v2v,
+    # as their release (epoch 13): after the extra loss terms end (216k steps) the latent space partly collapses.
+    "VPoser: their full, best (196k)": dict(short="VPoser full", run="~/data/experiments/full/vposer_posedflow_s10/run_0001/checkpoint_196000", weights="weights"),
+    "VPoser: their full, final (270k)": dict(short="VPoser full @270k", run="~/data/experiments/full/vposer_posedflow_s10", weights="weights"),
+    "VPoser: their c30, best (168k)": dict(short="VPoser c30", run="~/data/experiments/vposer_posedflow_c30_s10/run_0001/checkpoint_168000", weights="weights"),
+    "VPoser: our AMASS, best (168k)": dict(short="VPoser†", run="~/data/experiments/vposer_amass_s10/run_0001/checkpoint_168000", weights="weights"),
+    "VPoser: our AMASS c30, best (84k)": dict(short="VPoser† c30", run="~/data/experiments/vposer_amass_c30_s10/run_0001/checkpoint_084000", weights="weights"),
 }
 # PoseD-Flow and DPoser with fewer steps of their own samplers, towards the fast end of the fronts. Network calls:
 # midpoint 2 per step, Euler (PoseD-Flow) and Euler-Maruyama (DPoser) 1.
@@ -101,6 +112,17 @@ for _base, _spec in RSGM_FRONT.items():
     for _label, _sampler in RSGM_SAMPLERS.items():
         # no log-likelihood: it does not depend on the sampler (that of the base model) and is the slow part of the harness
         MODELS[f"{_base}, {_label}"] = {**_spec, "short": f"{_spec['short']}, {_label}", **_sampler, "likelihood": False}
+# The baselines (the models other than RSGM) in the settings of their papers: their sampler and steps, their training
+# data, the checkpoint they release. The others are our variants (fewer steps, other data, other checkpoints).
+PUBLISHED = {
+    "PoseD-Flow: their checkpoint, midpoint 100 (paper)",  # their Tab. 1
+    "DPoser: their full, 1000 steps",  # their N = 1000
+    "VPoser: their full, best (196k)",  # the best validation v2v, as their release
+    "VPoser: our AMASS, best (168k)",  # on the data of the released V02_05 (†)
+    "HuProSO3 flow: our AMASS",  # the paper's flow on the paper's data (†)
+    "HuProSO3 flow: their c10",  # the final weights, as in the paper
+}
+assert PUBLISHED <= set(MODELS), sorted(PUBLISHED - set(MODELS))
 # ---------------------------------------------------------------------------------------------------------------------
 
 
