@@ -1,9 +1,10 @@
 """Train VPoser from scratch under the protocols of the two papers (as RSGM and DPoser were trained), on our 19 joints.
-The three runs:
+The four runs:
 
     python scripts/train_vposer.py --paper huproso --protocol full --device cuda:0
     python scripts/train_vposer.py --paper huproso --protocol c30 --device cuda:0
     python scripts/train_vposer.py --paper posedflow --protocol full --device cuda:0
+    python scripts/train_vposer.py --paper posedflow --protocol c30 --device cuda:0
 
     python scripts/train_vposer.py --paper huproso --protocol c30 --dry-run      # print the configuration only
 
@@ -13,7 +14,7 @@ The three runs:
   Transitions, SSM);
 - posedflow: the AMASS of PoseD-Flow and DPoser, as explore/evaluation/pareto_posedflow_vs_rsgm.ipynb (amass_split
   posedflow).
---protocol, how much of the data: full (all training poses) or c30 (every 30th, huproso only). The training is the
+--protocol, how much of the data: full (all training poses) or c30 (every 30th training pose). The training is the
 same for all, that of their V02_05 (config/models/vposer.yaml: batch 128, ~270k steps), so that c30 against full shows
 what the compression costs (as RSGM c30 against RSGM full in rsgm_huproso_comparison.ipynb, also trained alike).
 
@@ -21,6 +22,12 @@ Runs (<seed> e.g. 10):
     huproso   full  ~/data/experiments/vposer_amass_s<seed>             (as rsgm: RSGM full)
     huproso   c30   ~/data/experiments/vposer_amass_c30_s<seed>         (as rsgm_c30: RSGM c30)
     posedflow full  ~/data/experiments/full/vposer_posedflow_s<seed>    (as full/dposer_posedflow_s10)
+    posedflow c30   ~/data/experiments/vposer_posedflow_c30_s<seed>
+
+The c30 data of posedflow (every 30th training pose, every 100th validation pose as their training validates,
+the test whole, as the _c10 folder):
+    python scripts/preprocess/convert_posedflow.py --src ~/data/posedflow_amass --dst ~/data/AMASS_rotations_posedflow_c30 \
+        --train-stride 30 --valid-stride 100
 
 The model and loss are those of V02_05 (hp/models/vposer.py); the loss needs the SMPL-X neutral body model
 (model.args.body_model; both datasets are AMASS SMPL-X fits). Every seed is its own run, <run folder>/run_000N:
@@ -56,6 +63,7 @@ RUNS = {  # (paper, protocol): (data, folder under the run root, run name prefix
     ("huproso", "full"): ("~/data/AMASS_rotations", "", "vposer_amass", []),
     ("huproso", "c30"): ("~/data/AMASS_rotations_c30", "", "vposer_amass_c30", []),
     ("posedflow", "full"): ("~/data/AMASS_rotations_posedflow", "full", "vposer_posedflow", []),
+    ("posedflow", "c30"): ("~/data/AMASS_rotations_posedflow_c30", "", "vposer_posedflow_c30", []),
 }
 # ----------------------------------------------------------------------------------------
 
@@ -99,7 +107,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--paper", choices=sorted(SPLITS), required=True, help="whose data and split")
     parser.add_argument("--protocol", choices=sorted({p for _, p in RUNS}), required=True,
-                        help="full: all poses; c30: every 30th (huproso only)")
+                        help="full: all training poses; c30: every 30th")
     parser.add_argument("--seeds", type=int, nargs="+", default=SEEDS)
     parser.add_argument("--device", default=DEVICE)
     parser.add_argument("--rotations", default=None, help="the data folder (default: that of the protocol)")
