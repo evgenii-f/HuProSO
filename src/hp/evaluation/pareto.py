@@ -72,6 +72,10 @@ MODELS = {
     # "RSGM 512x4: their c10, raw weights": dict(short="RSGM 512x4, raw", run="~/data/experiments/rsgm_posedflow_small_s10", weights="weights"),
     # ---- the HuProSO3 flow of the paper's settings, trained on our AMASS (all frames, seed 11), final weights
     "HuProSO3 flow: our AMASS": dict(short="HuProSO3 flow†", run="~/data/experiments/huproso3_full_seed11", weights="weights"),
+    # the same flow and training (20k steps of 2000, no EMA) on their c10; the final weights, as in the HuProSO3 paper
+    "HuProSO3 flow: their c10": dict(short="HuProSO3 flow", run="~/data/experiments/huproso3_posedflow_s10", weights="weights"),
+    # the best validation NLL (step 3k): the training NLL keeps falling, the validation NLL rises after it
+    "HuProSO3 flow: their c10, best (3k)": dict(short="HuProSO3 flow @3k", run="~/data/experiments/huproso3_posedflow_s10/run_0001/checkpoint_003000", weights="weights"),
     # ---- VPoser (V02_05 network, loss and training), retrained; no EMA. The best checkpoint by their validation v2v,
     # as their release (epoch 13): after the extra loss terms end (216k steps) the latent space partly collapses.
     "VPoser: their full, best (196k)": dict(short="VPoser full", run="~/data/experiments/full/vposer_posedflow_s10/run_0001/checkpoint_196000", weights="weights"),
