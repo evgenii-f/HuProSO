@@ -72,6 +72,13 @@ MODELS = {
     # "RSGM 512x4: their c10, raw weights": dict(short="RSGM 512x4, raw", run="~/data/experiments/rsgm_posedflow_small_s10", weights="weights"),
     # ---- the HuProSO3 flow of the paper's settings, trained on our AMASS (all frames, seed 11), final weights
     "HuProSO3 flow: our AMASS": dict(short="HuProSO3 flow†", run="~/data/experiments/huproso3_full_seed11", weights="weights"),
+    # ---- VPoser (V02_05 network, loss and training), retrained; no EMA. The best checkpoint by their validation v2v,
+    # as their release (epoch 13): after the extra loss terms end (216k steps) the latent space partly collapses.
+    "VPoser: their full, best (196k)": dict(short="VPoser full", run="~/data/experiments/full/vposer_posedflow_s10/run_0001/checkpoint_196000", weights="weights"),
+    "VPoser: their full, final (270k)": dict(short="VPoser full @270k", run="~/data/experiments/full/vposer_posedflow_s10", weights="weights"),
+    "VPoser: their c30, best (168k)": dict(short="VPoser c30", run="~/data/experiments/vposer_posedflow_c30_s10/run_0001/checkpoint_168000", weights="weights"),
+    "VPoser: our AMASS, best (168k)": dict(short="VPoser†", run="~/data/experiments/vposer_amass_s10/run_0001/checkpoint_168000", weights="weights"),
+    "VPoser: our AMASS c30, best (84k)": dict(short="VPoser† c30", run="~/data/experiments/vposer_amass_c30_s10/run_0001/checkpoint_084000", weights="weights"),
 }
 # PoseD-Flow and DPoser with fewer steps of their own samplers, towards the fast end of the fronts. Network calls:
 # midpoint 2 per step, Euler (PoseD-Flow) and Euler-Maruyama (DPoser) 1.
