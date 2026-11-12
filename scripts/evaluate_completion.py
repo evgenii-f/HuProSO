@@ -31,6 +31,14 @@ MODELS = {
     "PoseD-Flow: their checkpoint": dict(posedflow="~/data/posedflow_ckpt/checkpoints/epoch-009_step-0_loss-0.0000.ckpt"),
     "RSGM 512x4: their c10": dict(run="~/data/experiments/rsgm_posedflow_small_s10/run_0001"),
     "RSGM 1536x6: their c10": dict(run="~/data/experiments/rsgm_posedflow_s10/run_0001"),
+    "RSGM 512x4: their c10, seed 11": dict(run="~/data/experiments/rsgm_posedflow_small_s11/run_0001"),
+    "RSGM 512x4: their c10, seed 12": dict(run="~/data/experiments/rsgm_posedflow_small_s12/run_0001"),
+    "RSGM 512x4: their full": dict(run="~/data/experiments/full/rsgm_posedflow_small_s10/run_0001"),
+    # the same network with other ODEs inside D-Flow (the samplers of the Pareto comparison): half the network calls
+    "RSGM 512x4: their c10, ODE Euler 50": dict(run="~/data/experiments/rsgm_posedflow_small_s10/run_0001",
+                                                 prior=dict(ode_steps=50)),
+    "RSGM 512x4: their c10, Heun EDM 50 NFE": dict(run="~/data/experiments/rsgm_posedflow_small_s10/run_0001",
+                                                   prior=dict(sampler="heun", schedule="edm", ode_steps=25)),
 }
 
 
