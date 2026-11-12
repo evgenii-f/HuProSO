@@ -193,9 +193,10 @@ class RSGM(PoseModel):
         """Calls of the score network in one sample()."""
         return self.sample_steps * SAMPLERS[self.sampler]
 
-    def sample_times(self, steps: int) -> torch.Tensor:
-        """steps + 1 times from 1 down to eps (float64): the grid of `schedule`."""
-        if self.schedule == "uniform":
+    def sample_times(self, steps: int, schedule: Optional[str] = None) -> torch.Tensor:
+        """steps + 1 times from 1 down to eps (float64): the grid of `schedule` (default: the model's)."""
+        schedule = schedule or self.schedule
+        if schedule == "uniform":
             return torch.linspace(1.0, self.eps, steps + 1, dtype=torch.float64)
         ends = self.s(torch.tensor([1.0, self.eps], dtype=torch.float64)).sqrt() ** (1 / self.schedule_rho)
         sigma = (ends[0] + torch.linspace(0, 1, steps + 1, dtype=torch.float64) * (ends[1] - ends[0])) ** self.schedule_rho

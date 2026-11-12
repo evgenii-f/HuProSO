@@ -11,7 +11,9 @@ a guess of the latent of the observations, as theirs. A prior wraps the ODE of o
     flow run from the observed pose y_0 (their code does exactly this, from the data side);
   - ScorePrior: RSGM (hp/models/rsgm.py), its 19 joints: the probability flow ODE from t = 1 to eps by geodesic
     Euler steps; the start the same mix with uniform rotations, and as theirs the sampling ODE run from y_0 as if it
-    were noise (invert=True: the latent of y_0 instead, the ODE from eps to 1).
+    were noise (invert=True: the latent of y_0 instead, the ODE from eps to 1). The ODE steps can also be those of
+    the RSGM samplers: sampler="heun" (two network calls per step) and schedule="edm" (the times of RSGM.sample_times);
+    the running cost is taken at the ends of the steps either way.
 The gradients go back through the steps by autograd (no adjoint ODE), so the memory grows with the number of steps.
 Their RiemannianAdam (weight decay 1e-4 on the point) is here Adam on the tangent coordinates at the start.
 """
@@ -57,15 +59,26 @@ class FlowPrior:
 
 
 class ScorePrior:
-    def __init__(self, model: RSGM, ode_steps: int = 100, invert: bool = False):
+    def __init__(self, model: RSGM, ode_steps: int = 100, invert: bool = False, sampler: str = "euler",
+                 schedule: str = "uniform"):
+        if sampler not in ("euler", "heun"):
+            raise ValueError(f"Unknown sampler '{sampler}' for D-Flow. Use 'euler' or 'heun' (an ODE).")
+        if schedule not in ("uniform", "edm"):
+            raise ValueError(f"Unknown schedule '{schedule}'. Use 'uniform' or 'edm'.")
         self.model, self.ode_steps, self.joints, self.invert = model, ode_steps, model.num_joints, invert
+        self.sampler, self.schedule = sampler, schedule
 
     @property
     def dtype(self):
         return self.model.net[0].weight.dtype
 
-    def _times(self, start: float, end: float):
-        return torch.linspace(start, end, self.ode_steps + 1, device=self.model.device, dtype=self.dtype)
+    def _times(self, backwards: bool = True):
+        """ode_steps + 1 times from 1 to eps (backwards, the sampling direction) or from eps to 1."""
+        if self.schedule == "uniform":
+            ends = (1.0, self.model.eps) if backwards else (self.model.eps, 1.0)
+            return torch.linspace(*ends, self.ode_steps + 1, device=self.model.device, dtype=self.dtype)
+        times = self.model.sample_times(self.ode_steps, schedule=self.schedule).to(self.model.device, self.dtype)
+        return times if backwards else times.flip(0)
 
     def noise(self, n: int) -> torch.Tensor:
         return roma.random_rotmat(n * self.joints, device=self.model.device, dtype=self.dtype).view(n, self.joints, 3, 3)
@@ -73,26 +86,32 @@ class ScorePrior:
     def _run(self, x: torch.Tensor, times, running: bool):
         n, cost = x.shape[0], trace_cost(x) if running else None
         for t0, t1 in zip(times[:-1], times[1:]):
-            x = exp_frame(x, (t1 - t0) * self.model.velocity(x, t0.expand(n)))
+            h = t1 - t0
+            v = self.model.velocity(x, t0.expand(n))
+            if self.sampler == "heun":
+                v = 0.5 * (v + self.model.velocity(exp_frame(x, h * v), t1.expand(n)))
+            x = exp_frame(x, h * v)
             if running:
                 cost = cost + trace_cost(x)
         return x, cost
 
     @torch.no_grad()
     def guess(self, y0: torch.Tensor) -> torch.Tensor:
-        times = self._times(self.model.eps, 1.0) if self.invert else self._times(1.0, self.model.eps)
-        return self._run(y0.to(self.model.device, self.dtype), times, False)[0]
+        return self._run(y0.to(self.model.device, self.dtype), self._times(not self.invert), False)[0]
 
     def generate(self, x0: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        x1, cost = self._run(x0, self._times(1.0, self.model.eps), True)
+        x1, cost = self._run(x0, self._times(), True)
         return x1, cost / (self.ode_steps + 1)
 
 
-def prior_of(model, ode_steps: int = 100):
+def prior_of(model, ode_steps: int = 100, **options):
+    """The D-Flow prior of a model; options go to its prior class (ScorePrior: sampler, schedule, invert)."""
     if isinstance(model, PoseDFlowPretrained):
+        if options:
+            raise ValueError(f"The PoseD-Flow prior takes no options, got {sorted(options)}.")
         return FlowPrior(model, ode_steps)
     if isinstance(model, RSGM):
-        return ScorePrior(model, ode_steps)
+        return ScorePrior(model, ode_steps, **options)
     raise TypeError(f"No D-Flow prior for {type(model).__name__}.")
 
 

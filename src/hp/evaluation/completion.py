@@ -112,14 +112,16 @@ def summary(m: Dict[str, np.ndarray]) -> Dict[str, float]:
 
 def run(model, gt: torch.Tensor, occlusion: str, k: int = 10, steps: Optional[int] = None, ode_steps: int = 100,
         lr: float = 0.1, running_weight: float = 1e-3, batch: int = BATCH, together: bool = False,
-        progress: bool = True) -> torch.Tensor:
+        progress: bool = True, prior: Optional[dict] = None) -> torch.Tensor:
     """Completions [N, K, 21, 3, 3] of the poses gt [N, 21, 3, 3] by D-Flow on `model` (hp.models.dflow); hypothesis
     k starts from torch.manual_seed(k) in every batch, as theirs. together=True: the K hypotheses of `batch` poses in
     one batch of K * batch (fewer, larger GPU calls; the hypotheses are independent all the same, as Adam works per
-    coordinate), from torch.manual_seed(first pose of the batch): other random draws than theirs."""
+    coordinate), from torch.manual_seed(first pose of the batch): other random draws than theirs. prior: options of
+    the D-Flow prior (hp.models.dflow.prior_of), e.g. the ODE of RSGM: dict(sampler="heun", schedule="edm", ode_steps=25)."""
     from hp.models.dflow import complete, prior_of
 
-    prior = prior_of(model, ode_steps)
+    prior = dict(prior or {})
+    prior = prior_of(model, prior.pop("ode_steps", ode_steps), **prior)
     joints = list(range(21)) if prior.joints == 21 else KEEP
     visible = torch.ones(21, dtype=torch.bool)
     visible[list(OCCLUSIONS[occlusion])] = False
@@ -151,7 +153,8 @@ def run(model, gt: torch.Tensor, occlusion: str, k: int = 10, steps: Optional[in
 
 def build(spec: dict, device: str):
     """A model of a spec: posedflow=<checkpoint> (their pretrained PoseD-Flow) or run=<run or checkpoint folder>, with
-    optional weights= (default weights_ema)."""
+    optional weights= (default weights_ema). An optional prior= (options of the D-Flow prior, see run) is part of
+    the spec and so of the cache entry; a spec without it is the protocol of PoseD-Flow (100 Euler steps)."""
     from hp.models.io import load_model
     from hp.models.posedflow import PoseDFlowPretrained
 
@@ -188,7 +191,7 @@ def cached_run(cache: Path, label: str, spec: dict, gt: torch.Tensor, occlusion:
         print(f"  {label} / {occlusion}: cached with other settings")
     if device is None:
         return None
-    pred = run(build(spec, device), gt, occlusion, k, **options)
+    pred = run(build(spec, device), gt, occlusion, k, prior=spec.get("prior"), **options)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(".tmp")
     torch.save({"pred": pred.half(), "settings": json.dumps(settings)}, temporary)

@@ -4,7 +4,7 @@ import torch
 
 from hp.evaluation.completion import KEEP, OCCLUSIONS, at_rest, run, summary
 from hp.models.dflow import complete, geodesic_loss, prior_of
-from hp.models.rsgm import RSGM
+from hp.models.rsgm import RSGM, exp_frame
 
 
 def small_rsgm():
@@ -41,6 +41,55 @@ def test_d_flow_lowers_the_loss():
     from hp.models.dflow import dflow
     after = geodesic_loss(dflow(prior, lambda x: geodesic_loss(x, target), start, steps=30, running_weight=0.0), target)
     assert after < before
+
+
+def test_the_default_score_prior_is_the_euler_ode_of_before():
+    model = small_rsgm()
+    torch.manual_seed(2)
+    x0 = roma.random_rotmat(3 * 19).view(3, 19, 3, 3)
+    x1, _ = prior_of(model, ode_steps=5).generate(x0)
+    x, times = x0, torch.linspace(1.0, model.eps, 6)
+    with torch.no_grad():
+        for t0, t1 in zip(times[:-1], times[1:]):
+            x = exp_frame(x, (t1 - t0) * model.velocity(x, t0.expand(3)))
+    assert torch.allclose(x1, x, atol=1e-6)
+
+
+def test_heun_edm_ode_is_close_to_a_fine_euler_ode_and_has_gradients():
+    model = small_rsgm()
+    torch.manual_seed(3)
+    x0 = roma.random_rotmat(2 * 19).view(2, 19, 3, 3)
+    with torch.no_grad():
+        fine, _ = prior_of(model, ode_steps=2000).generate(x0)
+        coarse, _ = prior_of(model, ode_steps=10).generate(x0)
+        heun, _ = prior_of(model, ode_steps=10, sampler="heun", schedule="edm").generate(x0)
+    assert torch.allclose(heun, prior_of(model, ode_steps=10, sampler="heun", schedule="edm").generate(x0)[0])
+    distance = lambda a: roma.rotmat_geodesic_distance(a, fine).max()
+    assert distance(heun) < distance(coarse)
+    delta = torch.zeros(2, 19, 3, requires_grad=True)
+    x1, cost = prior_of(model, ode_steps=3, sampler="heun", schedule="edm").generate(exp_frame(x0, delta))
+    (geodesic_loss(x1, x0) + cost).backward()
+    assert delta.grad.abs().sum() > 0
+
+
+def test_d_flow_refuses_a_stochastic_sampler():
+    import pytest
+
+    with pytest.raises(ValueError):
+        prior_of(small_rsgm(), sampler="euler_maruyama")
+
+
+def test_the_prior_options_of_a_spec_reach_the_prior(tmp_path, monkeypatch):
+    import hp.evaluation.completion as completion
+
+    file = tmp_path / "weights_ema.pt"
+    file.write_bytes(b"x")
+    seen = []
+    monkeypatch.setattr(completion, "build", lambda spec, device: small_rsgm())
+    monkeypatch.setattr("hp.models.dflow.complete", lambda prior, observed, *a: seen.append(prior) or observed)
+    spec = {"run": str(tmp_path), "prior": {"sampler": "heun", "schedule": "edm", "ode_steps": 7}}
+    completion.cached_run(tmp_path, "m", spec, roma.random_rotmat(21).view(1, 21, 3, 3), "trunk", "cpu", k=1)
+    assert (seen[0].sampler, seen[0].schedule, seen[0].ode_steps) == ("heun", "edm", 7)
 
 
 def test_a_19_joint_model_fills_its_joints_and_rests_the_hidden_toes():
