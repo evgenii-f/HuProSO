@@ -112,6 +112,17 @@ for _base, _spec in RSGM_FRONT.items():
     for _label, _sampler in RSGM_SAMPLERS.items():
         # no log-likelihood: it does not depend on the sampler (that of the base model) and is the slow part of the harness
         MODELS[f"{_base}, {_label}"] = {**_spec, "short": f"{_spec['short']}, {_label}", **_sampler, "likelihood": False}
+# The baselines (the models other than RSGM) in the settings of their papers: their sampler and steps, their training
+# data, the checkpoint they release. The others are our variants (fewer steps, other data, other checkpoints).
+PUBLISHED = {
+    "PoseD-Flow: their checkpoint, midpoint 100 (paper)",  # their Tab. 1
+    "DPoser: their full, 1000 steps",  # their N = 1000
+    "VPoser: their full, best (196k)",  # the best validation v2v, as their release
+    "VPoser: our AMASS, best (168k)",  # on the data of the released V02_05 (†)
+    "HuProSO3 flow: our AMASS",  # the paper's flow on the paper's data (†)
+    "HuProSO3 flow: their c10",  # the final weights, as in the paper
+}
+assert PUBLISHED <= set(MODELS), sorted(PUBLISHED - set(MODELS))
 # ---------------------------------------------------------------------------------------------------------------------
 
 
