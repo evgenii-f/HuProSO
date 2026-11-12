@@ -13,10 +13,9 @@ The three runs:
   Transitions, SSM);
 - posedflow: the AMASS of PoseD-Flow and DPoser, as explore/evaluation/pareto_posedflow_vs_rsgm.ipynb (amass_split
   posedflow).
---protocol, how much of it and the training:
-- full: all training poses, the training of their V02_05 (config/models/vposer.yaml: batch 128, ~270k steps);
-- c30 (huproso only): every 30th pose and the budget of the RSGM c30 run (100k steps of 512), their optimizer and
-  schedule otherwise.
+--protocol, how much of the data: full (all training poses) or c30 (every 30th, huproso only). The training is the
+same for all, that of their V02_05 (config/models/vposer.yaml: batch 128, ~270k steps), so that c30 against full shows
+what the compression costs (as RSGM c30 against RSGM full in rsgm_huproso_comparison.ipynb, also trained alike).
 
 Runs (<seed> e.g. 10):
     huproso   full  ~/data/experiments/vposer_amass_s<seed>             (as rsgm: RSGM full)
@@ -53,11 +52,9 @@ N_CHECK = 10_000  # samples of the quick check after training (0: no check)
 RUN_ROOT = "~/data/experiments"
 
 SPLITS = {"huproso": "original", "posedflow": "posedflow"}  # the amass_split of each paper's data
-RSGM_C30_BUDGET = ["train.max_iterations=100000", "train.batch_size=512", "model.args.extra_terms_steps=80000",
-                   "train.valid_interval=2000", "train.checkpoint_every=10000"]
 RUNS = {  # (paper, protocol): (data, folder under the run root, run name prefix, what differs from config/models/vposer.yaml)
     ("huproso", "full"): ("~/data/AMASS_rotations", "", "vposer_amass", []),
-    ("huproso", "c30"): ("~/data/AMASS_rotations_c30", "", "vposer_amass_c30", RSGM_C30_BUDGET),
+    ("huproso", "c30"): ("~/data/AMASS_rotations_c30", "", "vposer_amass_c30", []),
     ("posedflow", "full"): ("~/data/AMASS_rotations_posedflow", "full", "vposer_posedflow", []),
 }
 # ----------------------------------------------------------------------------------------
