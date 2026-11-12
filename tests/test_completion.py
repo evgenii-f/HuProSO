@@ -126,6 +126,33 @@ def test_the_cache_ignores_the_speed_settings(tmp_path, monkeypatch):
     assert len(calls) == 1
 
 
+def test_the_metrics_are_computed_once_and_again_for_new_completions(tmp_path, monkeypatch):
+    import os
+
+    import hp.evaluation.completion as completion
+
+    (tmp_path / "weights_ema.pt").write_bytes(b"x")
+    monkeypatch.setattr(completion, "build", lambda spec, device: None)
+    monkeypatch.setattr(completion, "run", lambda *a, **kw: torch.zeros(2, 3, 21, 3, 3))
+    calls = []
+    fake = lambda pred, gt, occlusion, body: calls.append(1) or {"mpvpe": pred[:, :, 0, 0, 0].double().numpy() + len(calls)}
+    monkeypatch.setattr(completion, "metrics", fake)
+    body = type("FakeBody", (), {"identity": {"model": 1}})()
+    spec, gt = {"run": str(tmp_path)}, torch.zeros(2, 21, 3, 3)
+
+    pred = completion.cached_run(tmp_path, "m", spec, gt, "trunk", "cpu")
+    plain, rest = completion.cached_metrics(tmp_path, "m", "trunk", pred, gt, body)
+    again, again_rest = completion.cached_metrics(tmp_path, "m", "trunk", pred, gt, body)
+    assert len(calls) == 2  # the completions and the toes at rest, once
+    assert (again["mpvpe"] == plain["mpvpe"]).all() and (again_rest["mpvpe"] == rest["mpvpe"]).all()
+
+    os.utime(completion.cache_path(tmp_path, "m", "trunk"), (0, 0))  # other completions: computed again
+    completion.cached_metrics(tmp_path, "m", "trunk", pred, gt, body)
+    body.identity = {"model": 2}  # another body model: computed again
+    completion.cached_metrics(tmp_path, "m", "trunk", pred, gt, body)
+    assert len(calls) == 6
+
+
 def test_the_summary_takes_mean_std_and_min_over_the_hypotheses():
     m = {"mpvpe": torch.tensor([[1.0, 3.0], [5.0, 5.0]]).numpy(), "mpjpe": torch.zeros(2, 2).numpy(),
          "mgeo": torch.zeros(2, 2).numpy(), "apd": torch.tensor([1.0, 3.0]).numpy()}

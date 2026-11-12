@@ -14,7 +14,7 @@ there): the rotations of a body part are hidden, a model fills them, K hypothese
 """
 import json
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 import roma
@@ -36,6 +36,7 @@ SEGMENTS = {  # their BodySegIndices: the parts of smplx_vert_segmentation.json
     "trunk": ("spine1", "spine2", "leftShoulder", "rightShoulder"),
 }
 STEPS = {"arms": 300}  # their README: 300 optimizer steps for the arms, 200 otherwise
+METRICS_VERSION = 1  # of metrics() and at_rest(): change it when what they compute changes, so cached metrics are redone
 METHOD = "dflow 1: their start (the sampling ODE run from the observed pose)"  # change it when the method changes
 SPEED = ("batch", "together")  # options of run that change only the random draws and the speed, not the method
 TOES = (9, 10)
@@ -67,9 +68,12 @@ class Body:
     """SMPL-X neutral, betas = 0: vertices and the 22 body joints of poses [B, 21, 3, 3]."""
 
     def __init__(self, segmentation: str = "~/Documents/PoseDFlow/examples/smplx_vert_segmentation.json"):
+        from hp.utils.paths import get_path
         from hp.visualization.render_tools import load_body_model
 
-        self.model = load_body_model()
+        model_file = Path(get_path("body_models")).expanduser() / "smplx" / "SMPLX_NEUTRAL.npz"
+        self.model = load_body_model(str(model_file))
+        self.identity = {"model": file_identity(model_file), "segmentation": file_identity(segmentation)}  # of the metrics
         parts = json.loads(Path(segmentation).expanduser().read_text())
         self.vertices = {k: sorted(set(sum((parts[p] for p in v), []))) for k, v in SEGMENTS.items()}
 
@@ -163,13 +167,24 @@ def build(spec: dict, device: str):
     return load_model(Path(spec["run"]).expanduser(), device=device, weights=spec.get("weights", "weights_ema")).eval()
 
 
+def file_identity(path) -> dict:
+    """The size and the modification time (whole seconds) of a file: what tells that it is the same file."""
+    stat = Path(path).expanduser().stat()
+    return {"size": stat.st_size, "mtime": int(stat.st_mtime)}
+
+
 def identity(spec: dict) -> dict:
     """What the completions of a spec depend on: the spec and the size and time of its weights file."""
     if "posedflow" in spec:
         file = Path(spec["posedflow"]).expanduser()
     else:
         file = Path(spec["run"]).expanduser() / f"{spec.get('weights', 'weights_ema')}.pt"
-    return {"spec": spec, "size": file.stat().st_size, "mtime": int(file.stat().st_mtime)}
+    return {"spec": spec, **file_identity(file)}
+
+
+def cache_path(cache: Path, label: str, occlusion: str) -> Path:
+    """cache/<label>/<occlusion>.pt, the completions of a model and an occlusion."""
+    return Path(cache).expanduser() / label.replace("/", "_").replace(" ", "_") / f"{occlusion}.pt"
 
 
 def _results_settings(settings: dict) -> dict:
@@ -181,7 +196,7 @@ def cached_run(cache: Path, label: str, spec: dict, gt: torch.Tensor, occlusion:
                rotations: str = "", **options) -> Optional[torch.Tensor]:
     """The completions of cache/<label>/<occlusion>.pt if they were made with these settings (whatever the SPEED
     settings were); otherwise made and saved (device=None: only read, None if missing)."""
-    path = Path(cache).expanduser() / label.replace("/", "_").replace(" ", "_") / f"{occlusion}.pt"
+    path = cache_path(cache, label, occlusion)
     settings = json.loads(json.dumps({"model": identity(spec), "poses": len(gt), "rotations": rotations, "k": k,
                                       "method": METHOD, **options}))
     if path.is_file():
@@ -197,3 +212,26 @@ def cached_run(cache: Path, label: str, spec: dict, gt: torch.Tensor, occlusion:
     torch.save({"pred": pred.half(), "settings": json.dumps(settings)}, temporary)
     temporary.replace(path)
     return pred
+
+
+def cached_metrics(cache: Path, label: str, occlusion: str, pred: torch.Tensor, gt: torch.Tensor,
+                   body: "Body") -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray]]:
+    """The per-pose metrics (metrics()) of the completions pred of cache/<label>/<occlusion>.pt (cached_run), and the
+    same with the toes at rest in the completions and the ground truth. Read from cache/<label>/<occlusion>_metrics.pt
+    if they were computed from this completions file (its size and time), as many test poses, the same body model and
+    segmentation and METRICS_VERSION; otherwise computed and saved there."""
+    completions = cache_path(cache, label, occlusion)
+    path = completions.with_name(f"{occlusion}_metrics.pt")
+    settings = json.loads(json.dumps({"completions": file_identity(completions), "poses": len(gt),
+                                      "body": body.identity, "version": METRICS_VERSION}))
+    if path.is_file():
+        saved = torch.load(path, weights_only=True)
+        if json.loads(saved["settings"]) == settings:
+            return ({k: v.numpy() for k, v in saved["plain"].items()}, {k: v.numpy() for k, v in saved["rest"].items()})
+    plain = metrics(pred, gt, occlusion, body)
+    rest = metrics(at_rest(pred, TOES), at_rest(gt, TOES), occlusion, body)
+    temporary = path.with_suffix(".tmp")
+    torch.save({"settings": json.dumps(settings), "plain": {k: torch.from_numpy(v) for k, v in plain.items()},
+                "rest": {k: torch.from_numpy(v) for k, v in rest.items()}}, temporary)
+    temporary.replace(path)
+    return plain, rest
