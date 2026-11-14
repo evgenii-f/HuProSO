@@ -205,3 +205,44 @@ def test_completion_with_dposer_keeps_the_visible_joints():
     assert pred.shape == (2, 2, 21, 3, 3)
     assert torch.allclose(pred[:, :, visible], gt[:, None, visible].expand(2, 2, len(visible), 3, 3))
     assert (pred.transpose(-1, -2) @ pred - torch.eye(3)).abs().max() < 1e-4
+
+
+def test_dposer_completion_keeps_the_visible_joints_and_moves_the_hidden_ones():
+    from hp.models.score_completion import dposer_complete
+    model = small_dposer()
+    observed = roma.random_rotmat(3 * 19).view(3, 19, 3, 3)
+    visible = torch.ones(19, dtype=torch.bool)
+    visible[[0, 3, 6]] = False
+    init = torch.randn(3, 57)
+    out = dposer_complete(model, observed, visible, init, iterations=2, steps_per_iter=3)
+    assert torch.allclose(out[:, visible], observed[:, visible], atol=1e-5)
+    assert (out.transpose(-1, -2) @ out - torch.eye(3)).abs().max() < 1e-4
+    assert not torch.allclose(model.normalize(out)[:, :3], init[:, :3])  # the hidden entries were optimized
+
+
+def test_dposer_one_step_denoising_is_exact_for_a_perfect_noise_prediction(monkeypatch):
+    from hp.models.score_completion import one_step_denoise
+    model = small_dposer()
+    x0, z, t = torch.randn(4, 57), torch.randn(4, 57), torch.full((4,), 0.1)
+    monkeypatch.setattr(model, "noise_prediction", lambda x, t: z)  # the network sees through the noise
+    alpha, std = model.marginal(t)
+    assert torch.allclose(one_step_denoise(model, alpha[:, None] * x0 + std[:, None] * z, t), x0, atol=1e-5)
+
+
+def test_the_dposer_method_of_a_spec_reaches_the_run(tmp_path, monkeypatch):
+    import hp.evaluation.completion as completion
+
+    (tmp_path / "weights_ema.pt").write_bytes(b"x")
+    monkeypatch.setattr(completion, "build", lambda spec, device: small_dposer())
+    gt = roma.random_rotmat(2 * 21).view(2, 21, 3, 3)
+    pred = completion.cached_run(tmp_path, "m", {"run": str(tmp_path), "method": "dposer"}, gt, "legs", "cpu", k=2)
+    visible = [j for j in range(21) if j not in OCCLUSIONS["legs"]]
+    assert pred.shape == (2, 2, 21, 3, 3)
+    assert torch.allclose(pred[:, :, visible], gt[:, None, visible].expand(2, 2, len(visible), 3, 3), atol=1e-3)
+    assert not torch.allclose(pred[:, 0, 0], pred[:, 1, 0])  # the hypotheses differ
+
+
+def test_the_dposer_method_refuses_other_models():
+    import pytest
+    with pytest.raises(TypeError):
+        run(small_rsgm(), roma.random_rotmat(21).view(1, 21, 3, 3), "legs", k=1, method="dposer", progress=False)

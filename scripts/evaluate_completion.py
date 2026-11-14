@@ -47,6 +47,11 @@ MODELS = {
                                                prior=dict(invert=True)),
     "RSGM 512x4: their c10, inverted start": dict(run="~/data/experiments/rsgm_posedflow_small_s10/run_0001",
                                                   prior=dict(invert=True)),
+    # DPoser's own completion (DPoser-X, the method of the DPoser rows of PoseD-Flow's table), not D-Flow
+    "DPoser: their full, DPoser method": dict(run="~/data/experiments/full/dposer_posedflow_s10/run_0001",
+                                              method="dposer"),
+    "DPoser: their c10, RSGM budget, DPoser method": dict(
+        run="~/data/experiments/dposer_posedflow_rsgm_budget_s10/run_0001", method="dposer"),
 }
 
 

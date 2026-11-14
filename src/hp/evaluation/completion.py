@@ -116,12 +116,18 @@ def summary(m: Dict[str, np.ndarray]) -> Dict[str, float]:
 
 def run(model, gt: torch.Tensor, occlusion: str, k: int = 10, steps: Optional[int] = None, ode_steps: int = 100,
         lr: float = 0.1, running_weight: float = 1e-3, batch: int = BATCH, together: bool = False,
-        progress: bool = True, prior: Optional[dict] = None) -> torch.Tensor:
+        progress: bool = True, prior: Optional[dict] = None, method: str = "dflow") -> torch.Tensor:
     """Completions [N, K, 21, 3, 3] of the poses gt [N, 21, 3, 3] by D-Flow on `model` (hp.models.dflow); hypothesis
     k starts from torch.manual_seed(k) in every batch, as theirs. together=True: the K hypotheses of `batch` poses in
     one batch of K * batch (fewer, larger GPU calls; the hypotheses are independent all the same, as Adam works per
     coordinate), from torch.manual_seed(first pose of the batch): other random draws than theirs. prior: options of
-    the D-Flow prior (hp.models.dflow.prior_of), e.g. the ODE of RSGM: dict(sampler="heun", schedule="edm", ode_steps=25)."""
+    the D-Flow prior (hp.models.dflow.prior_of), e.g. the ODE of RSGM: dict(sampler="heun", schedule="edm", ode_steps=25).
+    method="dposer": DPoser's own optimization (hp.models.score_completion) instead of D-Flow, for a DPoser model
+    (steps, ode_steps, lr, running_weight and prior do not apply)."""
+    if method == "dposer":
+        return _run_dposer(model, gt, occlusion, k, batch, together, progress)
+    if method != "dflow":
+        raise ValueError(f"Unknown completion method '{method}'. Use 'dflow' or 'dposer'.")
     from hp.models.dflow import complete, prior_of
 
     prior = dict(prior or {})
@@ -155,10 +161,47 @@ def run(model, gt: torch.Tensor, occlusion: str, k: int = 10, steps: Optional[in
     return out
 
 
+def _run_dposer(model, gt: torch.Tensor, occlusion: str, k: int, batch: int, together: bool,
+                progress: bool) -> torch.Tensor:
+    """run() with DPoser's optimization. As their test script, the noise of the hidden entries is drawn once per
+    batch (torch.manual_seed(first pose of the batch), on the CPU) and shared by the K hypotheses, which differ by the
+    noise of the optimization: torch.manual_seed(k) for hypothesis k, or the seed of the batch with together=True."""
+    from hp.models.dposer import DPoser
+    from hp.models.score_completion import dposer_complete
+
+    if not isinstance(model, DPoser):
+        raise TypeError(f"method='dposer' needs a DPoser model, got {type(model).__name__}.")
+    joints = list(range(21)) if model.num_joints == 21 else KEEP
+    visible = torch.ones(21, dtype=torch.bool)
+    visible[list(OCCLUSIONS[occlusion])] = False
+    out = gt[:, None].repeat(1, k, 1, 1, 1)
+    for start in range(0, len(gt), batch):
+        observed = gt[start:start + batch][:, joints]
+        b = len(observed)
+        torch.manual_seed(start)
+        init = torch.randn(b, 3 * len(joints))
+        if together:
+            filled = dposer_complete(model, observed.repeat(k, 1, 1, 1), visible[joints], init.repeat(k, 1))
+            out[start:start + b][:, :, joints] = filled.view(k, b, *filled.shape[1:]).transpose(0, 1).float().cpu()
+        else:
+            for h in range(k):
+                torch.manual_seed(h)
+                out[start:start + b, h][:, joints] = dposer_complete(model, observed, visible[joints], init).float().cpu()
+        if progress:
+            print(f"\r  {occlusion}: poses {start + b} / {len(gt)}", end="", flush=True)
+    if len(joints) != 21:  # hidden toes at rest; visible ones stay observed
+        hidden_toes = [t for t in TOES if not visible[t]]
+        out = at_rest(out, hidden_toes) if hidden_toes else out
+    if progress:
+        print(flush=True)
+    return out
+
+
 def build(spec: dict, device: str):
     """A model of a spec: posedflow=<checkpoint> (their pretrained PoseD-Flow) or run=<run or checkpoint folder>, with
     optional weights= (default weights_ema). An optional prior= (options of the D-Flow prior, see run) is part of
-    the spec and so of the cache entry; a spec without it is the protocol of PoseD-Flow (100 Euler steps)."""
+    the spec and so of the cache entry; a spec without it is the protocol of PoseD-Flow (100 Euler steps). An optional
+    method="dposer" completes with DPoser's own optimization instead of D-Flow (see run)."""
     from hp.models.io import load_model
     from hp.models.posedflow import PoseDFlowPretrained
 
@@ -206,7 +249,8 @@ def cached_run(cache: Path, label: str, spec: dict, gt: torch.Tensor, occlusion:
         print(f"  {label} / {occlusion}: cached with other settings")
     if device is None:
         return None
-    pred = run(build(spec, device), gt, occlusion, k, prior=spec.get("prior"), **options)
+    pred = run(build(spec, device), gt, occlusion, k, prior=spec.get("prior"), method=spec.get("method", "dflow"),
+               **options)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(".tmp")
     torch.save({"pred": pred.half(), "settings": json.dumps(settings)}, temporary)
