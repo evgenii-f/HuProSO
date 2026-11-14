@@ -13,6 +13,7 @@ there): the rotations of a body part are hidden, a model fills them, K hypothese
   rest in the ground truth and in the completions of every model, so that 19- and 21-joint models are compared alike.
 """
 import json
+from functools import lru_cache
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
@@ -56,6 +57,25 @@ def test_poses(rotations: str = "~/data/AMASS_rotations_posedflow_c10", n: Optio
     q = torch.load(Path(rotations).expanduser() / "PoseDFlow_test.pt", weights_only=True)
     poses = roma.unitquat_to_rotmat(torch.as_tensor(q)[::INTERVAL, 1:22].double()).float()
     return poses[: (n if n is not None else len(poses) // BATCH * BATCH)]
+
+
+def valid_poses(rotations: str = "~/data/AMASS_rotations_posedflow_c10", n: int = 1000, seed: int = 0) -> torch.Tensor:
+    """n random poses [n, 21, 3, 3] of their validation split (a fixed draw), for choosing settings without the test
+    poses."""
+    q = torch.as_tensor(torch.load(Path(rotations).expanduser() / "PoseDFlow_valid.pt", weights_only=True))
+    pick = torch.randperm(len(q), generator=torch.Generator().manual_seed(seed))[:n]
+    return roma.unitquat_to_rotmat(q[pick, 1:22].double()).float()
+
+
+@lru_cache(maxsize=None)
+def pose_statistics(rotations: str = "~/data/AMASS_rotations_posedflow_c10", n: int = 200_000,
+                    seed: int = 0) -> Tuple[torch.Tensor, torch.Tensor]:
+    """(mean, std) [19, 3] of the axis-angle vectors of our 19 joints over n random training poses: the mean pose and
+    the spread per joint, for the starts and the scale of rsgm_complete (DPoser's normalization, from our data)."""
+    q = torch.as_tensor(torch.load(Path(rotations).expanduser() / "PoseDFlow_train.pt", weights_only=True))
+    pick = torch.randperm(len(q), generator=torch.Generator().manual_seed(seed))[:n]
+    rotvec = roma.rotmat_to_rotvec(roma.unitquat_to_rotmat(q[pick, 1:22].double()))[:, KEEP]
+    return rotvec.mean(0).float(), rotvec.std(0).float()
 
 
 def at_rest(poses: torch.Tensor, joints) -> torch.Tensor:
@@ -122,10 +142,11 @@ def run(model, gt: torch.Tensor, occlusion: str, k: int = 10, steps: Optional[in
     one batch of K * batch (fewer, larger GPU calls; the hypotheses are independent all the same, as Adam works per
     coordinate), from torch.manual_seed(first pose of the batch): other random draws than theirs. prior: options of
     the D-Flow prior (hp.models.dflow.prior_of), e.g. the ODE of RSGM: dict(sampler="heun", schedule="edm", ode_steps=25).
-    method="dposer": DPoser's own optimization (hp.models.score_completion) instead of D-Flow, for a DPoser model
-    (steps, ode_steps, lr, running_weight and prior do not apply)."""
+    method="dposer": DPoser's own optimization (hp.models.score_completion) instead of D-Flow, for DPoser or, on
+    SO(3), for RSGM; prior then holds the options of the optimization (e.g. dict(t_max=0.025, t_min=0.003, lr=0.02)),
+    and steps, ode_steps, lr and running_weight do not apply."""
     if method == "dposer":
-        return _run_dposer(model, gt, occlusion, k, batch, together, progress)
+        return _run_dposer(model, gt, occlusion, k, batch, together, progress, prior or {})
     if method != "dflow":
         raise ValueError(f"Unknown completion method '{method}'. Use 'dflow' or 'dposer'.")
     from hp.models.dflow import complete, prior_of
@@ -161,16 +182,42 @@ def run(model, gt: torch.Tensor, occlusion: str, k: int = 10, steps: Optional[in
     return out
 
 
-def _run_dposer(model, gt: torch.Tensor, occlusion: str, k: int, batch: int, together: bool,
-                progress: bool) -> torch.Tensor:
-    """run() with DPoser's optimization. As their test script, the noise of the hidden entries is drawn once per
-    batch (torch.manual_seed(first pose of the batch), on the CPU) and shared by the K hypotheses, which differ by the
-    noise of the optimization: torch.manual_seed(k) for hypothesis k, or the seed of the batch with together=True."""
+def _run_dposer(model, gt: torch.Tensor, occlusion: str, k: int, batch: int, together: bool, progress: bool,
+                options: dict) -> torch.Tensor:
+    """run() with DPoser's optimization (options: of dposer_complete or rsgm_complete). As their test script, the
+    start of the hidden entries is drawn once per batch (torch.manual_seed(first pose of the batch), on the CPU) and
+    shared by the K hypotheses, which differ by the noise of the optimization: torch.manual_seed(k) for hypothesis k,
+    or the seed of the batch with together=True. DPoser starts the hidden entries at N(0, I) in its normalized space,
+    as theirs. RSGM takes two more options: start="rest" (the identity, default), "mean" (the mean pose of the
+    training data) or "noise" (DPoser's start: axis-angle mean + std * N(0, I)), and scale="std" (rsgm_complete's
+    scale from the spread of the training data; default none); the statistics come from pose_statistics(stats)."""
     from hp.models.dposer import DPoser
-    from hp.models.score_completion import dposer_complete
+    from hp.models.rsgm import RSGM
+    from hp.models.score_completion import dposer_complete, rsgm_complete
 
-    if not isinstance(model, DPoser):
-        raise TypeError(f"method='dposer' needs a DPoser model, got {type(model).__name__}.")
+    options = dict(options)
+    if isinstance(model, DPoser):
+        fill, start_of = dposer_complete, lambda b, j: torch.randn(b, 3 * j)
+    elif isinstance(model, RSGM):
+        kind, scale = options.pop("start", "rest"), options.pop("scale", None)
+        stats = options.pop("stats", "~/data/AMASS_rotations_posedflow_c10")
+        if kind not in ("rest", "mean", "noise") or scale not in (None, "std"):
+            raise ValueError(f"start must be 'rest', 'mean' or 'noise' and scale None or 'std', got {kind}, {scale}.")
+        mean, std = pose_statistics(stats) if kind != "rest" or scale else (None, None)
+        if scale:
+            options["scale"] = std
+        fill = rsgm_complete
+        if kind == "rest":
+            def start_of(b, j):
+                return torch.eye(3).repeat(b, j, 1, 1)
+        elif kind == "mean":
+            def start_of(b, j):
+                return roma.rotvec_to_rotmat(mean).repeat(b, 1, 1, 1)
+        else:
+            def start_of(b, j):
+                return roma.rotvec_to_rotmat(mean + std * torch.randn(b, j, 3))
+    else:
+        raise TypeError(f"method='dposer' needs a DPoser or RSGM model, got {type(model).__name__}.")
     joints = list(range(21)) if model.num_joints == 21 else KEEP
     visible = torch.ones(21, dtype=torch.bool)
     visible[list(OCCLUSIONS[occlusion])] = False
@@ -179,14 +226,15 @@ def _run_dposer(model, gt: torch.Tensor, occlusion: str, k: int, batch: int, tog
         observed = gt[start:start + batch][:, joints]
         b = len(observed)
         torch.manual_seed(start)
-        init = torch.randn(b, 3 * len(joints))
+        init = start_of(b, len(joints))
         if together:
-            filled = dposer_complete(model, observed.repeat(k, 1, 1, 1), visible[joints], init.repeat(k, 1))
+            filled = fill(model, observed.repeat(k, *[1] * (observed.dim() - 1)), visible[joints],
+                          init.repeat(k, *[1] * (init.dim() - 1)), **options)
             out[start:start + b][:, :, joints] = filled.view(k, b, *filled.shape[1:]).transpose(0, 1).float().cpu()
         else:
             for h in range(k):
                 torch.manual_seed(h)
-                out[start:start + b, h][:, joints] = dposer_complete(model, observed, visible[joints], init).float().cpu()
+                out[start:start + b, h][:, joints] = fill(model, observed, visible[joints], init, **options).float().cpu()
         if progress:
             print(f"\r  {occlusion}: poses {start + b} / {len(gt)}", end="", flush=True)
     if len(joints) != 21:  # hidden toes at rest; visible ones stay observed

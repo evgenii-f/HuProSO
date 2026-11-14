@@ -244,5 +244,63 @@ def test_the_dposer_method_of_a_spec_reaches_the_run(tmp_path, monkeypatch):
 
 def test_the_dposer_method_refuses_other_models():
     import pytest
+    from hp.models.posedflow import PoseDFlowPretrained
     with pytest.raises(TypeError):
-        run(small_rsgm(), roma.random_rotmat(21).view(1, 21, 3, 3), "legs", k=1, method="dposer", progress=False)
+        run(object.__new__(PoseDFlowPretrained), roma.random_rotmat(21).view(1, 21, 3, 3), "legs", k=1,
+            method="dposer", progress=False)
+
+
+def test_rsgm_denoising_is_exact_for_the_score_of_a_small_heat_kernel(monkeypatch):
+    from hp.models.score_completion import rsgm_denoise
+    model = small_rsgm()
+    x0 = roma.random_rotmat(2 * 19).view(2, 19, 3, 3)
+    v = 0.01 * torch.randn(2, 19, 3)
+    t = torch.full((2,), 0.01)
+    s = model.s(t)
+    # at small s the score of the heat kernel around x0 is -log(x0^T x_t) / s, in the frame of x_t
+    monkeypatch.setattr(model, "score", lambda x, t: -roma.rotmat_to_rotvec(x0.transpose(-1, -2) @ x) / s[:, None, None])
+    x0_hat = rsgm_denoise(model, exp_frame(x0, v), t)
+    assert roma.rotmat_geodesic_distance(x0_hat, x0).max() < 1e-5
+
+
+def test_rsgm_completion_keeps_the_visible_joints_and_moves_the_hidden_ones():
+    gt = roma.random_rotmat(2 * 21).view(2, 21, 3, 3)
+    pred = run(small_rsgm(), gt, "arms", k=2, method="dposer", progress=False,
+               prior=dict(iterations=1, steps_per_iter=3, t_max=0.02, t_min=0.005))
+    visible = [j for j in range(21) if j not in OCCLUSIONS["arms"]]
+    assert torch.allclose(pred[:, :, visible], gt[:, None, visible].expand(2, 2, len(visible), 3, 3), atol=1e-5)
+    hidden = list(OCCLUSIONS["arms"])
+    assert not torch.allclose(pred[:, :, hidden], torch.eye(3).expand(2, 2, len(hidden), 3, 3))  # left the rest pose
+    assert (pred.transpose(-1, -2) @ pred - torch.eye(3)).abs().max() < 1e-4
+
+
+def test_rsgm_starts_and_scale_of_the_dposer_method(monkeypatch):
+    import hp.evaluation.completion as completion
+    mean, std = 0.3 * torch.randn(19, 3), 0.1 + 0.2 * torch.rand(19, 3)
+    monkeypatch.setattr(completion, "pose_statistics", lambda stats: (mean, std))
+    seen = {}
+
+    def fill(model, observed, visible, init, **options):
+        seen.update(init=init, **options)
+        return observed
+    monkeypatch.setattr("hp.models.score_completion.rsgm_complete", fill)
+    gt = roma.random_rotmat(2 * 21).view(2, 21, 3, 3)
+    run(small_rsgm(), gt, "legs", k=1, method="dposer", progress=False, prior=dict(start="mean", scale="std", lr=0.05))
+    assert torch.allclose(seen["init"], roma.rotvec_to_rotmat(mean).expand(2, 19, 3, 3), atol=1e-6)
+    assert torch.equal(seen["scale"], std) and seen["lr"] == 0.05 and "start" not in seen
+    seen.clear()
+    run(small_rsgm(), gt, "legs", k=1, method="dposer", progress=False, prior=dict(start="noise"))
+    assert not torch.allclose(seen["init"], roma.rotvec_to_rotmat(mean).expand(2, 19, 3, 3))
+    assert "scale" not in seen
+    import pytest
+    with pytest.raises(ValueError):
+        run(small_rsgm(), gt, "legs", k=1, method="dposer", progress=False, prior=dict(start="uniform"))
+
+
+def test_the_validation_poses_are_a_fixed_draw_of_rotations(tmp_path):
+    from hp.evaluation.completion import valid_poses
+    q = roma.random_unitquat(50 * 22).view(50, 22, 4)
+    torch.save(q, tmp_path / "PoseDFlow_valid.pt")
+    a, b = valid_poses(str(tmp_path), n=10), valid_poses(str(tmp_path), n=10)
+    assert a.shape == (10, 21, 3, 3) and torch.equal(a, b)
+    assert (a.transpose(-1, -2) @ a - torch.eye(3)).abs().max() < 1e-5
