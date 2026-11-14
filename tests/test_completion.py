@@ -163,3 +163,45 @@ def test_the_summary_takes_mean_std_and_min_over_the_hypotheses():
 def test_the_occlusions_and_toes_fit_the_joints():
     assert all(max(j) < 21 for j in OCCLUSIONS.values()) and len(KEEP) == 19
     assert torch.equal(at_rest(torch.zeros(1, 21, 3, 3), (9, 10))[0, 9], torch.eye(3))
+
+
+def small_dposer():
+    from hp.models.dposer import DPoser
+    torch.manual_seed(0)
+    return DPoser(19, hidden=64, embed=32, blocks=1, dropout=0.0).eval()
+
+
+def test_the_dposer_prior_is_the_euler_ode_of_its_probability_flow():
+    model = small_dposer()
+    prior = prior_of(model, ode_steps=5)
+    torch.manual_seed(4)
+    x0 = prior.noise(3)
+    with torch.no_grad():
+        pose, _ = prior.generate(x0)
+        x, times = x0, torch.linspace(1.0, model.sample_eps, 6)
+        for t0, t1 in zip(times[:-1], times[1:]):
+            t = t0.expand(3)
+            v = -0.5 * model.beta(t)[:, None] * x - 0.5 * model.diffusion(t)[:, None] ** 2 * model.score(x, t)
+            x = x + (t1 - t0) * v
+    assert torch.allclose(pose, model.denormalize(x), atol=1e-5)
+
+
+def test_d_flow_with_dposer_lowers_the_loss_in_its_euclidean_latent():
+    from hp.models.dflow import dflow
+    prior = prior_of(small_dposer(), ode_steps=4)
+    target = roma.random_rotmat(4 * 19).view(4, 19, 3, 3)
+    torch.manual_seed(5)
+    start = prior.noise(4)
+    with torch.no_grad():
+        before = geodesic_loss(prior.generate(start)[0], target)
+    after = geodesic_loss(dflow(prior, lambda x: geodesic_loss(x, target), start, steps=30, running_weight=0.0), target)
+    assert after < before
+
+
+def test_completion_with_dposer_keeps_the_visible_joints():
+    gt = roma.random_rotmat(2 * 21).view(2, 21, 3, 3)
+    pred = run(small_dposer(), gt, "arms", k=2, steps=1, ode_steps=2, progress=False)
+    visible = [j for j in range(21) if j not in OCCLUSIONS["arms"]]
+    assert pred.shape == (2, 2, 21, 3, 3)
+    assert torch.allclose(pred[:, :, visible], gt[:, None, visible].expand(2, 2, len(visible), 3, 3))
+    assert (pred.transpose(-1, -2) @ pred - torch.eye(3)).abs().max() < 1e-4

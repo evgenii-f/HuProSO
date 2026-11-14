@@ -13,9 +13,15 @@ a guess of the latent of the observations, as theirs. A prior wraps the ODE of o
     Euler steps; the start the same mix with uniform rotations, and as theirs the sampling ODE run from y_0 as if it
     were noise (invert=True: the latent of y_0 instead, the ODE from eps to 1). The ODE steps can also be those of
     the RSGM samplers: sampler="heun" (two network calls per step) and schedule="edm" (the times of RSGM.sample_times);
-    the running cost is taken at the ends of the steps either way.
+    the running cost is taken at the ends of the steps either way;
+  - DPoserPrior: DPoser (hp/models/dposer.py), a Euclidean prior: the probability flow ODE of its sub-VP SDE on the
+    z-scored axis-angle vectors R^(3J), from t = 1 to sample_eps by Euler steps. The latent lives in R^(3J): x_0 =
+    start + delta, N(0, I) noise, and the start sqrt(1/4) guess + sqrt(3/4) noise without a projection (the mix of
+    D-Flow, which keeps a standard normal); the guess is the sampling ODE run from the normalized y_0
+    (invert=True: the latent of y_0). The loss and the running cost see the trajectory decoded to rotations.
 The gradients go back through the steps by autograd (no adjoint ODE), so the memory grows with the number of steps.
-Their RiemannianAdam (weight decay 1e-4 on the point) is here Adam on the tangent coordinates at the start.
+Their RiemannianAdam (weight decay 1e-4 on the point) is here Adam on the tangent coordinates at the start (on delta in
+R^(3J) for DPoser).
 """
 import math
 from typing import Callable, Tuple
@@ -23,6 +29,7 @@ from typing import Callable, Tuple
 import roma
 import torch
 
+from hp.models.dposer import DPoser
 from hp.models.posedflow import PoseDFlowPretrained, projx
 from hp.models.rsgm import RSGM, exp_frame
 
@@ -32,7 +39,22 @@ def trace_cost(x: torch.Tensor) -> torch.Tensor:
     return (3 - x.diagonal(dim1=-2, dim2=-1).sum(-1)).sum(-1).mean()
 
 
-class FlowPrior:
+class _RotationLatent:
+    """The latent of the priors on SO(3)^J: their start projx(sqrt(1/4) guess + sqrt(3/4) noise), steps x exp(delta)."""
+
+    def start(self, y0: torch.Tensor) -> torch.Tensor:
+        return projx(math.sqrt(0.25) * self.guess(y0) + math.sqrt(0.75) * self.noise(y0.shape[0]))
+
+    @staticmethod
+    def zero_delta(start: torch.Tensor) -> torch.Tensor:
+        return start.new_zeros(*start.shape[:2], 3)
+
+    @staticmethod
+    def shift(start: torch.Tensor, delta: torch.Tensor) -> torch.Tensor:
+        return exp_frame(start, delta)
+
+
+class FlowPrior(_RotationLatent):
     def __init__(self, model: PoseDFlowPretrained, ode_steps: int = 100):
         self.model, self.ode_steps, self.joints = model, ode_steps, 21
 
@@ -58,7 +80,7 @@ class FlowPrior:
         return projx(x.view(n, 21, 3, 3)), running / (self.ode_steps + 1)
 
 
-class ScorePrior:
+class ScorePrior(_RotationLatent):
     def __init__(self, model: RSGM, ode_steps: int = 100, invert: bool = False, sampler: str = "euler",
                  schedule: str = "uniform"):
         if sampler not in ("euler", "heun"):
@@ -104,14 +126,67 @@ class ScorePrior:
         return x1, cost / (self.ode_steps + 1)
 
 
+class DPoserPrior:
+    def __init__(self, model: DPoser, ode_steps: int = 100, invert: bool = False):
+        self.model, self.ode_steps, self.joints, self.invert = model, ode_steps, model.num_joints, invert
+
+    @property
+    def dtype(self):
+        return self.model.dtype
+
+    def _times(self, backwards: bool = True):
+        ends = (1.0, self.model.sample_eps) if backwards else (self.model.sample_eps, 1.0)
+        return torch.linspace(*ends, self.ode_steps + 1, device=self.model.device, dtype=self.dtype)
+
+    def _velocity(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        """The probability flow dx/dt = -beta x / 2 - g^2 score / 2 of the sub-VP SDE."""
+        m = self.model
+        return -0.5 * m.beta(t)[:, None] * x - 0.5 * m.diffusion(t)[:, None] ** 2 * m.score(x, t)
+
+    def noise(self, n: int) -> torch.Tensor:
+        return torch.randn(n, 3 * self.joints, device=self.model.device, dtype=self.dtype)
+
+    def _run(self, x: torch.Tensor, times, running: bool):
+        n = x.shape[0]
+        cost = trace_cost(self.model.denormalize(x)) if running else None
+        for t0, t1 in zip(times[:-1], times[1:]):
+            x = x + (t1 - t0) * self._velocity(x, t0.expand(n))
+            if running:
+                cost = cost + trace_cost(self.model.denormalize(x))
+        return x, cost
+
+    @torch.no_grad()
+    def guess(self, y0: torch.Tensor) -> torch.Tensor:
+        x = self.model.normalize(y0.to(self.model.device, self.dtype))
+        return self._run(x, self._times(not self.invert), False)[0]
+
+    def start(self, y0: torch.Tensor) -> torch.Tensor:
+        return math.sqrt(0.25) * self.guess(y0) + math.sqrt(0.75) * self.noise(y0.shape[0])
+
+    @staticmethod
+    def zero_delta(start: torch.Tensor) -> torch.Tensor:
+        return torch.zeros_like(start)
+
+    @staticmethod
+    def shift(start: torch.Tensor, delta: torch.Tensor) -> torch.Tensor:
+        return start + delta
+
+    def generate(self, x0: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        x1, cost = self._run(x0, self._times(), True)
+        return self.model.denormalize(x1), cost / (self.ode_steps + 1)
+
+
 def prior_of(model, ode_steps: int = 100, **options):
-    """The D-Flow prior of a model; options go to its prior class (ScorePrior: sampler, schedule, invert)."""
+    """The D-Flow prior of a model; options go to its prior class (ScorePrior: sampler, schedule, invert;
+    DPoserPrior: invert)."""
     if isinstance(model, PoseDFlowPretrained):
         if options:
             raise ValueError(f"The PoseD-Flow prior takes no options, got {sorted(options)}.")
         return FlowPrior(model, ode_steps)
     if isinstance(model, RSGM):
         return ScorePrior(model, ode_steps, **options)
+    if isinstance(model, DPoser):
+        return DPoserPrior(model, ode_steps, **options)
     raise TypeError(f"No D-Flow prior for {type(model).__name__}.")
 
 
@@ -125,13 +200,13 @@ def dflow(prior, loss_fn: Callable[[torch.Tensor], torch.Tensor], start: torch.T
           lr: float = 0.1, running_weight: float = 1e-3) -> torch.Tensor:
     """x_1 [B, J, 3, 3] of the last forward pass (as theirs, before the last step of the optimizer)."""
     start = start.detach()
-    delta = torch.zeros(*start.shape[:2], 3, device=start.device, dtype=start.dtype, requires_grad=True)
+    delta = prior.zero_delta(start).requires_grad_(True)
     optimizer = torch.optim.Adam([delta], lr=lr)
     x1 = None
     with torch.enable_grad():
         for _ in range(steps):
             optimizer.zero_grad()
-            x1, running = prior.generate(exp_frame(start, delta))
+            x1, running = prior.generate(prior.shift(start, delta))
             (loss_fn(x1) + running_weight * running).backward()
             optimizer.step()
     return x1.detach()
@@ -142,10 +217,10 @@ def complete(prior, observed: torch.Tensor, visible: torch.Tensor, steps: int = 
     """Poses [B, J, 3, 3] that keep the visible joints (bool [J]) of `observed` [B, J, 3, 3] (in the joints of the
     prior) and fill the others, as their pose completion: the start from the observed joints with the others at rest,
     the geodesic loss of the visible joints, the visible joints of the result replaced by the observed ones."""
-    n, device = observed.shape[0], prior.model.device
+    device = prior.model.device
     observed = observed.to(device, prior.noise(1).dtype)
     eye = torch.eye(3, device=device, dtype=observed.dtype).expand_as(observed)
     y0 = torch.where(visible.to(device)[None, :, None, None], observed, eye)
-    start = projx(math.sqrt(0.25) * prior.guess(y0) + math.sqrt(0.75) * prior.noise(n))
+    start = prior.start(y0)
     x1 = dflow(prior, lambda x: geodesic_loss(x[:, visible], observed[:, visible]), start, steps, lr, running_weight)
     return torch.where(visible.to(device)[None, :, None, None], observed, x1)

@@ -39,6 +39,14 @@ MODELS = {
                                                  prior=dict(ode_steps=50)),
     "RSGM 512x4: their c10, Heun EDM 50 NFE": dict(run="~/data/experiments/rsgm_posedflow_small_s10/run_0001",
                                                    prior=dict(sampler="heun", schedule="edm", ode_steps=25)),
+    # DPoser (Euclidean diffusion on axis-angle) through the same D-Flow: separates the prior from their own completion
+    "DPoser: their full": dict(run="~/data/experiments/full/dposer_posedflow_s10/run_0001"),
+    "DPoser: their c10, RSGM budget": dict(run="~/data/experiments/dposer_posedflow_rsgm_budget_s10/run_0001"),
+    # their start pushes the observation forward through the ODE; in R^n that leaves the typical set of N(0, I)
+    "DPoser: their full, inverted start": dict(run="~/data/experiments/full/dposer_posedflow_s10/run_0001",
+                                               prior=dict(invert=True)),
+    "RSGM 512x4: their c10, inverted start": dict(run="~/data/experiments/rsgm_posedflow_small_s10/run_0001",
+                                                  prior=dict(invert=True)),
 }
 
 
