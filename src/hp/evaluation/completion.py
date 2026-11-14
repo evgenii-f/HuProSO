@@ -89,10 +89,10 @@ class Body:
 
     def __init__(self, segmentation: str = "~/Documents/PoseDFlow/examples/smplx_vert_segmentation.json"):
         from hp.utils.paths import get_path
-        from hp.visualization.render_tools import load_body_model
+        from human_body_prior.body_model.body_model import BodyModel  # not render_tools: no rendering libraries
 
         model_file = Path(get_path("body_models")).expanduser() / "smplx" / "SMPLX_NEUTRAL.npz"
-        self.model = load_body_model(str(model_file))
+        self.model = BodyModel(bm_fname=str(model_file))
         self.identity = {"model": file_identity(model_file), "segmentation": file_identity(segmentation)}  # of the metrics
         parts = json.loads(Path(segmentation).expanduser().read_text())
         self.vertices = {k: sorted(set(sum((parts[p] for p in v), []))) for k, v in SEGMENTS.items()}
