@@ -116,12 +116,20 @@ class RSGM(PoseModel):
         net_width: int = 1024,  # of net="timeres": the width,
         net_blocks: int = 2,  # its residual blocks (of two layers),
         net_embed: int = 256,  # the size of its embedding of the noise level,
-        dropout: float = 0.0,  # and its dropout
+        dropout: float = 0.0,  # and its dropout;
+        net_level: str = "log_s",  # its noise level: "log_s" (log of the Brownian time, / 4) or "t"
+        net_time_in: str = "layers",  # the ablation switches of score_nets.TimeResNet: time_in,
+        net_time_embed: str = "sinusoidal",  # time_embed,
+        net_residual: bool = True,  # residual,
+        net_norm: bool = True,  # norm,
+        net_zero_init: bool = True,  # zero_init
     ):
         if representation != "matrix":
             raise ValueError("RSGM works on rotation matrices directly; use representation='matrix'.")
         if net not in ("mlp", "timeres"):
             raise ValueError(f"Unknown net '{net}'. Use 'mlp' or 'timeres'.")
+        if net_level not in ("log_s", "t"):
+            raise ValueError(f"Unknown net_level '{net_level}'. Use 'log_s' or 't'.")
         if net == "timeres" and time_features:
             raise ValueError("net='timeres' embeds the noise level itself; use time_features=0.")
         if inputs not in ("local", "local+global"):
@@ -141,10 +149,11 @@ class RSGM(PoseModel):
         self.inputs, self.time_features = inputs, time_features
         self.cond_net = conditioning.make_net(cond_dim, condition, cond_hidden, cond_features)
         rotations = 9 * num_joints * (2 if inputs == "local+global" else 1)
-        self.net_kind = net
+        self.net_kind, self.net_level = net, net_level
         if net == "timeres":
             self.net = TimeResNet(rotations + (cond_features if cond_dim else 0), 3 * num_joints, net_width, net_blocks,
-                                  net_embed, dropout)
+                                  net_embed, dropout, net_time_in, net_time_embed, net_residual, net_norm,
+                                  net_zero_init)
         else:
             layers, width = [], rotations + 1 + 2 * time_features + (cond_features if cond_dim else 0)
             for h in hidden:
@@ -208,7 +217,10 @@ class RSGM(PoseModel):
             inputs.append(global_rotations(x).reshape(b, -1))
         if self.net_kind == "timeres":  # the time goes to every layer, as the noise level log(s) / 4
             features = torch.cat(inputs + ([] if f is None else [f]), dim=1)
-            level = torch.log(self.s(t.to(x.dtype))) / 4  # s(t) >= beta_0 eps ~ 2e-7: fine in float32
+            if self.net_level == "log_s":
+                level = torch.log(self.s(t.to(x.dtype))) / 4  # s(t) >= beta_0 eps ~ 2e-7: fine in float32
+            else:
+                level = t.to(x.dtype)
             out = self.net(features, level) / self.std(t)[:, None].to(x.dtype)
             return out.reshape(b, self.num_joints, 3)
         inputs.append(t_col)

@@ -81,6 +81,30 @@ CONFIGS = {  # the network, and what differs from COMMON
     "timeres_lik": ["model.args.net=timeres", "model.args.net_width=1024", "model.args.net_blocks=2",
                     "model.args.dropout=0.1", "train.lr=1e-3", "model.args.weighting=likelihood"],
 }
+# The ablation of timeres_small (docs/score_network_architectures.md): abl_base has every component off (a plain MLP of
+# 5 layers of 512 with t at the input, lr 2e-3 as the MLPs); every other abl_<component> turns on exactly one component
+# of timeres_small. All of them on is timeres_small itself.
+ABL_BASE = ["model.args.net=timeres", "model.args.net_width=512", "model.args.net_blocks=2", "model.args.dropout=0.0",
+            "model.args.net_level=t", "model.args.net_time_in=input", "model.args.net_time_embed=scalar",
+            "model.args.net_residual=false", "model.args.net_norm=false", "model.args.net_zero_init=false",
+            "train.lr=2e-3"]
+ABLATION = {
+    "base": [],
+    "time_layers": ["model.args.net_time_in=layers"],  # the time in every layer (as a scalar, as PoseRFM's ConcatLinear)
+    "sinusoidal": ["model.args.net_time_embed=sinusoidal"],  # the sinusoidal embedding of the time (at the input)
+    "log_s": ["model.args.net_level=log_s"],  # log s(t) / 4 instead of t (at the input)
+    "residual": ["model.args.net_residual=true"],  # the skip connections of the blocks
+    "norm": ["model.args.net_norm=true"],  # LayerNorm in every layer
+    "dropout": ["model.args.dropout=0.1"],  # dropout 0.1 in every layer
+    "zero_init": ["model.args.net_zero_init=true"],  # the last layer starts at zero
+    "lr": ["train.lr=1e-3"],  # the learning rate of the timeres configs
+}
+CONFIGS.update({f"abl_{name}": ABL_BASE + extra for name, extra in ABLATION.items()})
+# Depth instead of width: 256 x 8 blocks (17 layers, 2.3M parameters, as many as timeres_small's 1.9M), with and
+# without the skip connections, which deep plain networks need to train
+CONFIGS["deep"] = ["model.args.net=timeres", "model.args.net_width=256", "model.args.net_blocks=8",
+                   "model.args.dropout=0.1", "train.lr=1e-3"]
+CONFIGS["deep_nores"] = CONFIGS["deep"] + ["model.args.net_residual=false"]
 # ----------------------------------------------------------------------------------------
 
 

@@ -380,3 +380,36 @@ def test_the_timeres_net_refuses_time_features():
         RSGM(19, net="timeres", time_features=4)
     with pytest.raises(ValueError):
         RSGM(19, net="transformer")
+
+
+def test_timeres_with_every_component_off_is_a_plain_mlp_with_the_level_at_the_input():
+    from hp.models.score_nets import TimeResNet
+    torch.manual_seed(0)
+    net = TimeResNet(20, 6, width=16, blocks=2, time_in="input", time_embed="scalar", residual=False, norm=False,
+                     zero_init=False, dropout=0.0)
+    layers = [net.first] + [layer for block in net.blocks for layer in block]
+    assert all(layer.dense_t is None and isinstance(layer.norm, torch.nn.Identity) for layer in layers)
+    mlp = []
+    for layer in layers:
+        mlp += [layer.dense, torch.nn.SiLU()]
+    mlp = torch.nn.Sequential(*mlp, net.last)
+    x, level = torch.randn(5, 20), torch.rand(5)
+    assert torch.allclose(net(x, level), mlp(torch.cat([x, level[:, None]], 1)), atol=1e-6)
+
+
+def test_timeres_switches_change_only_their_component():
+    from hp.models.score_nets import TimeResNet
+    full = TimeResNet(20, 6, width=16, blocks=1)
+    assert full.first.dense_t is not None and isinstance(full.first.norm, torch.nn.LayerNorm) and full.residual
+    assert torch.equal(full.last.weight, torch.zeros_like(full.last.weight))
+    assert TimeResNet(20, 6, width=16, blocks=1, time_in="input").first.dense.in_features == 20 + 256
+    assert TimeResNet(20, 6, width=16, blocks=1, time_embed="scalar").first.dense_t.in_features == 1
+    assert TimeResNet(20, 6, width=16, blocks=1, zero_init=False).last.weight.abs().sum() > 0
+    model = RSGM(19, net="timeres", net_width=16, net_blocks=1, net_level="t")
+    x = __import__("roma").random_rotmat(2 * 19).view(2, 19, 3, 3)
+    assert model.score(x, torch.tensor([0.01, 0.5])).shape == (2, 19, 3)
+    import pytest
+    with pytest.raises(ValueError):
+        RSGM(19, net="timeres", net_level="sigma")
+    with pytest.raises(ValueError):
+        TimeResNet(20, 6, time_in="everywhere")
