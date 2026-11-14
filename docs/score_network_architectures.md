@@ -129,3 +129,36 @@ then D-Flow and score distillation on the test set with the settings chosen on v
 
 Training budget as RSGM (30k x 4096) for A and C, so that a change is the network's; DPoser trains 200k steps, so a
 longer run is the next question if A helps.
+
+## 5. Results (c10, std weighting, 30k x 4096)
+
+Hybrid on 500 validation poses (DPoser's optimization, the denoiser swapped), MPVPE mean / APD / best of 10 (mm, cm):
+
+| denoiser | params | left_leg | legs | arms | trunk | valid loss (best) |
+|---|---|---|---|---|---|---|
+| DPoser | 7.2M | **79.4** / 6.31 / **39.7** | **103.3** / 7.16 / **66.2** | **110.6** / 5.61 / **74.1** | **43.5** / 1.96 / **24.0** | – |
+| RSGM MLP small | 0.9M | 123.7 / 10.15 / 60.3 | 143.7 / 11.74 / 85.3 | 137.1 / 8.03 / 88.1 | 49.1 / 2.30 / 25.9 | 5.871 |
+| RSGM MLP small, likelihood | 0.9M | 108.0 / 8.97 / 52.2 | 132.6 / 10.57 / 78.5 | 128.3 / 7.58 / 82.8 | 46.4 / 2.10 / 26.1 | (other scale) |
+| RSGM MLP large | 12.2M | 98.3 / 8.04 / 49.5 | 122.4 / 9.19 / 74.5 | 130.3 / 7.45 / 83.8 | 46.1 / 1.80 / 27.3 | 5.861 |
+| RSGM timeres 512 x 2 | 1.9M | 97.9 / 7.96 / 49.9 | 123.2 / 8.98 / 77.0 | 121.2 / 5.78 / 84.7 | 44.5 / 1.83 / 26.0 | 5.936 |
+| RSGM timeres 1024 x 2 | 5.8M | 98.7 / 7.65 / 50.6 | 121.3 / 8.71 / 76.6 | 121.1 / 6.26 / 80.9 | 44.2 / 1.76 / 26.1 | **5.854** |
+
+Hidden-joint error along the 200 steps (deg; step 100 -> 199):
+
+| denoiser | left_leg | arms |
+|---|---|---|
+| DPoser | 10.8 -> 11.5 | 21.7 -> 22.1 |
+| RSGM MLP small | 13.8 -> 17.0 | 24.1 -> 29.1 |
+| RSGM MLP large | 13.1 -> 13.8 | 23.8 -> 26.6 |
+| RSGM timeres 512 x 2 | 13.4 -> 13.9 | 23.1 -> 24.1 |
+| RSGM timeres 1024 x 2 | 13.4 -> 13.7 | 23.3 -> 24.6 |
+
+- **The time in every layer works**: 1.9M parameters match the 12.2M MLP (better on the arms by 9 mm), the drift at
+  the smallest noise is gone (as DPoser), the spread of the hypotheses is DPoser's.
+- **Size does not help further**: 5.8M is the same as 1.9M in completion, but it has the best validation loss of all
+  RSGMs (the density does not suffer from the new network; the small one is slightly worse).
+- **The slow first phase stays** (about 2.6 deg on the left leg at step 100): the rest of the gap to DPoser
+  (18-20 mm on the legs, 10 mm on the arms, 1 mm on the trunk). Neither the time conditioning nor the size moves it.
+  Candidates: the hybrid is DPoser's own optimization in its own coordinates (its schedule, lr and weights are tuned
+  for DPoser, and the start of the hidden joints is a typical input of DPoser at large t but an unusual one for RSGM
+  at small t); the input (rotation matrices against z-scored axis-angle).
