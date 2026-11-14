@@ -1,154 +1,238 @@
 """Choose the settings of a pose completion method with Optuna, on their VALIDATION poses (never the test poses).
 
-    python scripts/tune_completion.py --device cuda:0                         # DPoser's method on RSGM 512x4 c10
-    python scripts/tune_completion.py --method dflow --device cuda:0          # D-Flow on the same model, same budget
-    python scripts/tune_completion.py --summary                               # only the table of the trials so far
+    python scripts/tune_completion.py config/completion_tuning/rsgm_sds_pareto.yaml --device cuda:0
+    python scripts/tune_completion.py config/completion_tuning/rsgm_sds_pareto.yaml --summary
+    python scripts/tune_completion.py --study rsgm_sds_pareto --summary          # by name, without the file
 
-The objective of a trial is the mean over the four occlusions of MPVPE mean (mm, the main number of their table) on
-POSES fixed random validation poses with K hypotheses, the same draw and the same seeds in every trial (common random
-numbers), so trials differ only by their settings. Per-occlusion MPVPE mean, best of K and APD are kept as user
-attributes. One set of settings for all occlusions.
+A study is described by a YAML file in config/completion_tuning, and its name is the name of the file:
 
-Spaces:
-  - dposer (rsgm_complete through run(method="dposer")): t_max (the first time of the schedule), t_min as a fraction
-    of t_max, lr, start (rest / mean / noise), scale (none / std), prior_weight (data_weight fixed at their 100);
-    200 steps as theirs. The first trials are their settings and the best of our exploration.
-  - dflow (their D-Flow): lr, invert (their start or the latent of the observation), running_weight; the steps and
-    the ODE of their protocol. The first trial is their protocol.
+    model: ~/data/experiments/rsgm_posedflow_small_s10/run_0001     # a run folder
+    method: dposer          # DPoser's optimization (run(method="dposer")), or dflow (D-Flow)
+    objective: mean         # mean: the mean over the occlusions of MPVPE mean; pareto: that and of MPVPE best of K
+    poses: 1000             # fixed random validation poses
+    n_trials: 80            # finished trials of the study (may be raised later)
+    params:                 # searched: {low, high, log} a float, {low, high, int: true} an integer, [a, b] a choice
+      lr: {low: 0.01, high: 0.15, log: true}
+      start: [noise, mean]
+    fixed: {scale: std}     # the same in every trial
+    first: [{lr: 0.05, start: noise}]                                # trials enqueued into a new study
 
-Every study lives in its own SQLite file (STUDY_DIR / <study>.db) and can be stopped and run again; it continues. The best settings
-are written to <study>.json next to it, to be copied into MODELS of evaluate_completion.py for the test.
+The values of a trial (fixed and searched) are options of run(): for dposer all of them go to the optimization
+(dposer_complete or rsgm_complete, and start / scale / stats of run's RSGM starts); for dflow, lr, running_weight,
+steps and ode_steps go to run() and the others to the D-Flow prior (e.g. invert). t_min_fraction stands for
+t_min = t_max * t_min_fraction, and scale "none" for no scale.
+
+Every trial runs on the same validation poses with the same seeds (common random numbers), so trials differ only by
+their settings; per occlusion MPVPE mean, best of K and APD are kept as user attributes. One set of settings for all
+occlusions. A single mean rewards hypotheses that collapse onto one pose (the mean error of K hypotheses is smallest
+when they agree), the best of K rewards covering the plausible completions; objective "pareto" keeps the front of the
+two, and a setting is chosen from it by a rule fixed before the test.
+
+The study lives in STUDY_DIR / <name>.db and keeps its configuration, K and the git commit of its creation as user
+attributes; every trial keeps the commit it ran on. Run again, it continues; it refuses to continue if the file now
+says something else (other than n_trials) than the study was made with. The best settings (the Pareto front) are
+written to <name>.json next to it, to be copied into MODELS of evaluate_completion.py for the test.
 """
 import argparse
 import json
+import subprocess
 import time
 from pathlib import Path
 
 import numpy as np
 import optuna
 import torch
+from omegaconf import OmegaConf
 
 from hp.evaluation.completion import OCCLUSIONS, Body, build, metrics, run, summary, valid_poses
 
-# ---- settings --------------------------------------------------------------------------
-MODEL = "~/data/experiments/rsgm_posedflow_small_s10/run_0001"  # RSGM 512x4, their c10, seed 10
-ROTATIONS = "~/data/AMASS_rotations_posedflow_c10"               # their data: the validation split and the statistics
 STUDY_DIR = "~/data/experiments/completion/optuna"
-POSES = 1000                                                      # validation poses (a fixed draw)
-K = 10                                                            # hypotheses per pose
-N_TRIALS = {"dposer": 80, "dflow": 25}                            # finished trials of a study
+ROTATIONS = "~/data/AMASS_rotations_posedflow_c10"  # their data: the validation split and the statistics of the starts
+K = 10                                               # hypotheses per pose
 BATCH = 500
 SEED = 10
-# ----------------------------------------------------------------------------------------
-
-FIRST = {  # enqueued before the sampler takes over
-    "dposer": [dict(t_max=0.15, t_min_fraction=1 / 3, lr=0.1, start="rest", scale="none", prior_weight=0.1),  # theirs
-               dict(t_max=0.05, t_min_fraction=0.1, lr=0.02, start="rest", scale="none", prior_weight=0.1)],  # explored
-    "dflow": [dict(lr=0.1, invert=False, running_weight=1e-3)],  # their protocol
-}
+METHODS, OBJECTIVES = ("dposer", "dflow"), ("mean", "pareto")
+RUN_KEYS = ("lr", "running_weight", "steps", "ode_steps")  # dflow: arguments of run(), the others go to the prior
+KEYS = ("model", "method", "objective", "poses", "n_trials", "params", "fixed", "first")
 
 
-def options_of(method: str, trial) -> dict:
-    """The options of run() (its `prior`) of a trial."""
-    if method == "dposer":
-        t_max = trial.suggest_float("t_max", 0.003, 0.3, log=True)
-        options = dict(t_max=t_max, t_min=t_max * trial.suggest_float("t_min_fraction", 0.02, 0.9),
-                       lr=trial.suggest_float("lr", 0.003, 0.3, log=True),
-                       start=trial.suggest_categorical("start", ["rest", "mean", "noise"]),
-                       prior_weight=trial.suggest_float("prior_weight", 0.01, 10.0, log=True), stats=ROTATIONS)
-        if trial.suggest_categorical("scale", ["none", "std"]) == "std":
-            options["scale"] = "std"
-        return options
-    return dict(invert=trial.suggest_categorical("invert", [False, True]),
-                lr=trial.suggest_float("lr", 0.01, 0.3, log=True),
-                running_weight=trial.suggest_float("running_weight", 1e-5, 1e-1, log=True))
+def load_config(path: Path) -> dict:
+    config = OmegaConf.to_container(OmegaConf.load(path), resolve=True)
+    missing = set(KEYS[:6]) - set(config)
+    if missing:
+        raise ValueError(f"{path}: missing {sorted(missing)}.")
+    unknown = set(config) - set(KEYS)
+    if unknown:
+        raise ValueError(f"{path}: unknown keys {sorted(unknown)}.")
+    if config["method"] not in METHODS or config["objective"] not in OBJECTIVES:
+        raise ValueError(f"{path}: method must be one of {METHODS} and objective one of {OBJECTIVES}.")
+    config.setdefault("fixed", {})
+    config.setdefault("first", [])
+    for name, spec in config["params"].items():
+        if not (isinstance(spec, list) or (isinstance(spec, dict) and {"low", "high"} <= set(spec))):
+            raise ValueError(f"{path}: param '{name}' must be [choices] or {{low, high[, log][, int]}}, got {spec}.")
+    return config
 
 
-def objective_of(args, model, gt, body):
+def suggest(trial, name: str, spec):
+    if isinstance(spec, list):
+        return trial.suggest_categorical(name, spec)
+    if spec.get("int"):
+        return trial.suggest_int(name, spec["low"], spec["high"], log=spec.get("log", False))
+    return trial.suggest_float(name, spec["low"], spec["high"], log=spec.get("log", False))
+
+
+def values_of(config: dict, trial) -> dict:
+    """The options of a trial: the fixed values and the suggested ones, with t_min_fraction and scale resolved."""
+    values = dict(config["fixed"])
+    values.update({name: suggest(trial, name, spec) for name, spec in config["params"].items()})
+    if "t_min_fraction" in values:
+        values["t_min"] = values["t_max"] * values.pop("t_min_fraction")
+    if values.get("scale") == "none":
+        values.pop("scale")
+    return values
+
+
+def objective_of(config: dict, model, gt, body, commit: str):
+    pareto = config["objective"] == "pareto"
+
     def objective(trial):
-        options = options_of(args.method, trial)
-        start, means = time.perf_counter(), []
+        values = values_of(config, trial)
+        trial.set_user_attr("git", commit)
+        start, means, bests = time.perf_counter(), [], []
         for occlusion in OCCLUSIONS:
-            if args.method == "dposer":
+            if config["method"] == "dposer":
+                options = dict(values)
+                if options.get("start", "rest") != "rest" or "scale" in options:
+                    options.setdefault("stats", ROTATIONS)
                 pred = run(model, gt, occlusion, K, batch=BATCH, together=True, progress=False, method="dposer",
                            prior=options)
             else:
-                lr, weight = options.pop("lr"), options.pop("running_weight")
-                pred = run(model, gt, occlusion, K, lr=lr, running_weight=weight, batch=BATCH, together=True,
-                           progress=False, prior=options)
-                options.update(lr=lr, running_weight=weight)
+                kwargs = {key: values[key] for key in RUN_KEYS if key in values}
+                prior = {key: value for key, value in values.items() if key not in RUN_KEYS}
+                pred = run(model, gt, occlusion, K, batch=BATCH, together=True, progress=False, prior=prior, **kwargs)
             s = summary(metrics(pred, gt, occlusion, body))
             for key in ("mpvpe_mean", "mpvpe_min", "apd"):
                 trial.set_user_attr(f"{occlusion}_{key}", s[key])
             means.append(s["mpvpe_mean"])
-            trial.report(float(np.mean(means)), len(means) - 1)
+            bests.append(s["mpvpe_min"])
+            if not pareto:  # intermediate values: single-objective studies only
+                trial.report(float(np.mean(means)), len(means) - 1)
         trial.set_user_attr("minutes", (time.perf_counter() - start) / 60)
-        return float(np.mean(means))
+        return (float(np.mean(means)), float(np.mean(bests))) if pareto else float(np.mean(means))
     return objective
 
 
-def study_of(args, attempts: int = 5):
-    """The study in its own SQLite file, STUDY_DIR / <study>.db. Two processes that create the same file at the same
-    time race on Optuna's tables; the loser waits and tries again (the tables are there then)."""
-    study_dir = Path(args.study_dir).expanduser()
+def git_commit() -> str:
+    """The commit of the repository of this script, with "+dirty" if it has uncommitted changes."""
+    root = Path(__file__).resolve().parent.parent
+    try:
+        commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout.strip()
+        dirty = subprocess.run(["git", "status", "--porcelain"], cwd=root, capture_output=True, text=True).stdout.strip()
+    except OSError:
+        return "unknown"
+    return (commit or "unknown") + ("+dirty" if dirty else "")
+
+
+def open_study(name: str, study_dir: Path, directions=None, attempts: int = 5):
+    """The study in its own SQLite file, study_dir / <name>.db; created with `directions` if new (None: it must
+    exist). Two processes that create the same file at the same time race on Optuna's tables; the loser waits and
+    tries again (the tables are there then)."""
     study_dir.mkdir(parents=True, exist_ok=True)
     for attempt in range(attempts):
         try:
-            storage = optuna.storages.RDBStorage(f"sqlite:///{study_dir / f'{args.study}.db'}",
+            storage = optuna.storages.RDBStorage(f"sqlite:///{study_dir / f'{name}.db'}",
                                                  engine_kwargs={"connect_args": {"timeout": 120}})
-            return optuna.create_study(
-                study_name=args.study, storage=storage, load_if_exists=True, direction="minimize",
-                sampler=optuna.samplers.TPESampler(seed=SEED, multivariate=True, n_startup_trials=15))
+            if directions is None:
+                return optuna.load_study(study_name=name, storage=storage)
+            return optuna.create_study(study_name=name, storage=storage, load_if_exists=True, directions=directions)
         except Exception as error:  # sqlalchemy's OperationalError ("table ... already exists") of the race
             if attempt == attempts - 1 or "already exists" not in str(error):
                 raise
             time.sleep(2 + attempt)
 
 
+def check_or_record(study, config: dict, commit: str) -> None:
+    """Record the configuration in a new study; refuse to continue a study made with another one (n_trials aside)."""
+    made = {key: value for key, value in config.items() if key != "n_trials"}
+    made.update(k=K, batch=BATCH, rotations=ROTATIONS)
+    if "config" not in study.user_attrs:
+        if study.trials:
+            raise SystemExit(f"study {study.study_name} has trials but no recorded configuration (made by an older "
+                             "version of this script): continue it with that version, or name the file differently.")
+        study.set_user_attr("config", made)
+        study.set_user_attr("git", commit)
+        return
+    recorded = study.user_attrs["config"]
+    if json.dumps(recorded, sort_keys=True) != json.dumps(made, sort_keys=True):
+        changed = sorted(key for key in set(recorded) | set(made) if recorded.get(key) != made.get(key))
+        raise SystemExit(f"study {study.study_name} was made with another configuration (differs in {changed}):\n"
+                         f"  recorded: {json.dumps({k: recorded.get(k) for k in changed})}\n"
+                         f"  file:     {json.dumps({k: made.get(k) for k in changed})}\n"
+                         "Name the file differently for a new study.")
+
+
 def report(study, study_dir: Path) -> None:
-    frame = study.trials_dataframe(attrs=("number", "value", "params", "state"))
+    pareto = len(study.directions) > 1
+    frame = study.trials_dataframe(attrs=("number", "values" if pareto else "value", "params", "state"))
     if frame.empty:
         print("no trials yet")
         return
-    print(frame.sort_values("value").head(15).to_string(index=False))
+    print(frame.sort_values("values_0" if pareto else "value").head(15).to_string(index=False))
     done = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
-    if done:
+    if not done:
+        return
+    out = {"study": study.study_name, "trials": len(done), "config": study.user_attrs.get("config"),
+           "git": study.user_attrs.get("git")}
+    if pareto:
+        front = sorted(study.best_trials, key=lambda t: t.values[0])
+        out["front"] = [{"number": t.number, "mean": t.values[0], "best_of_k": t.values[1], "params": t.params,
+                         "attrs": t.user_attrs} for t in front]
+        print("\nPareto front (mean MPVPE, best of K):")
+        for t in front:
+            print(f"  trial {t.number}: {t.values[0]:.2f} / {t.values[1]:.2f} mm, {t.params}")
+    else:
         best = study.best_trial
-        out = {"study": study.study_name, "value": best.value, "params": best.params, "attrs": best.user_attrs,
-               "trials": len(done)}
-        (study_dir / f"{study.study_name}.json").write_text(json.dumps(out, indent=1))
+        out.update(value=best.value, params=best.params, attrs=best.user_attrs)
         print(f"\nbest: trial {best.number}, {best.value:.2f} mm, {best.params}")
+    (study_dir / f"{study.study_name}.json").write_text(json.dumps(out, indent=1))
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--method", choices=["dposer", "dflow"], default="dposer")
-    parser.add_argument("--model", default=MODEL)
-    parser.add_argument("--study", default=None, help="default: completion_<method>_<run folder>")
+    parser.add_argument("config", nargs="?", help="the YAML file of the study (config/completion_tuning/*.yaml)")
+    parser.add_argument("--study", default=None, help="with --summary: a study by name, without its file")
     parser.add_argument("--study-dir", default=STUDY_DIR)
-    parser.add_argument("--n-trials", type=int, default=None)
-    parser.add_argument("--poses", type=int, default=POSES)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--summary", action="store_true", help="only print the trials so far")
     args = parser.parse_args()
-    run_name = Path(args.model).expanduser().parent.name
-    args.study = args.study or f"completion_{args.method}_{run_name}_v{args.poses}"
-    study = study_of(args)
+    study_dir = Path(args.study_dir).expanduser()
+    if args.config is None:
+        if not (args.summary and args.study):
+            parser.error("give the YAML file of the study, or --summary --study <name>")
+        report(open_study(args.study, study_dir), study_dir)
+        return 0
+    path = Path(args.config)
+    config, name, commit = load_config(path), path.stem, git_commit()
+    study = open_study(name, study_dir, ["minimize"] * (2 if config["objective"] == "pareto" else 1))
+    check_or_record(study, config, commit)
     if args.summary:
-        report(study, Path(args.study_dir).expanduser())
+        report(study, study_dir)
         return 0
     if not study.trials:
-        for params in FIRST[args.method]:
+        for params in config["first"]:
             study.enqueue_trial(params)
-    n_trials = args.n_trials or N_TRIALS[args.method]
+    # seeded by the trials so far: a restarted study does not draw the random trials of its first start again
+    study.sampler = optuna.samplers.TPESampler(seed=SEED + len(study.trials), multivariate=True, n_startup_trials=15)
     finished = sum(t.state.is_finished() for t in study.trials)
-    if finished < n_trials:
+    if finished < config["n_trials"]:
         torch.manual_seed(SEED)
-        gt, body = valid_poses(ROTATIONS, args.poses), Body()
-        model = build({"run": args.model}, args.device)
-        print(f"study {args.study}: {finished} of {n_trials} trials done, {len(gt)} validation poses", flush=True)
-        study.optimize(objective_of(args, model, gt, body), n_trials=n_trials - finished)
-    report(study, Path(args.study_dir).expanduser())
+        gt, body = valid_poses(ROTATIONS, config["poses"]), Body()
+        model = build({"run": config["model"]}, args.device)
+        print(f"study {name} ({commit}): {finished} of {config['n_trials']} trials done, {len(gt)} validation poses",
+              flush=True)
+        study.optimize(objective_of(config, model, gt, body, commit), n_trials=config["n_trials"] - finished)
+    report(study, study_dir)
     return 0
 
 

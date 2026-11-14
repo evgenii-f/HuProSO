@@ -1,0 +1,12 @@
+# D-Flow on RSGM 512x4 c10, the same budget per parameter as score distillation; the steps and the ODE are theirs.
+model: ~/data/experiments/rsgm_posedflow_small_s10/run_0001
+method: dflow
+objective: mean
+poses: 1000
+n_trials: 25
+params:
+  invert: [false, true]
+  lr: {low: 0.01, high: 0.3, log: true}
+  running_weight: {low: 1.0e-5, high: 0.1, log: true}
+first:
+  - {invert: false, lr: 0.1, running_weight: 0.001}  # their protocol
