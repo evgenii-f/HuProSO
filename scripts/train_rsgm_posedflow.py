@@ -72,6 +72,14 @@ CONFIGS = {  # the network, and what differs from COMMON
     # and the network of "search": does the sharper score at small noise need more capacity?
     "search_lik": ["model.args.hidden=[1536, 1536, 1536, 1536, 1536, 1536]", "model.args.weighting=likelihood"],
     "large": ["model.args.hidden=[4096, 4096, 4096, 4096, 4096, 4096]", "train.lr=1e-3"],  # 84.8M parameters
+    # the time in every layer (hp.models.score_nets, docs/score_network_architectures.md): a residual network as
+    # DPoser's, 5.8M parameters at 1024 x 2 blocks, 1.9M at 512 x 2; lr 1e-3 for the wider residual network
+    "timeres": ["model.args.net=timeres", "model.args.net_width=1024", "model.args.net_blocks=2",
+                "model.args.dropout=0.1", "train.lr=1e-3"],
+    "timeres_small": ["model.args.net=timeres", "model.args.net_width=512", "model.args.net_blocks=2",
+                      "model.args.dropout=0.1", "train.lr=1e-3"],
+    "timeres_lik": ["model.args.net=timeres", "model.args.net_width=1024", "model.args.net_blocks=2",
+                    "model.args.dropout=0.1", "train.lr=1e-3", "model.args.weighting=likelihood"],
 }
 # ----------------------------------------------------------------------------------------
 
@@ -169,7 +177,10 @@ def main() -> int:
         resuming = bool(stopped) and not args.retrain
         cfg = load_config(argv)
         t = cfg.train
-        plan = (f"hidden {list(cfg.model.args.hidden)}, lr {t.lr}, {t.max_iterations:,} steps x batch {t.batch_size} = "
+        args_ = cfg.model.args
+        net = (f"timeres {args_.net_width} x {args_.net_blocks} blocks" if args_.get("net", "mlp") == "timeres"
+               else f"hidden {list(args_.hidden)}")
+        plan = (f"{net}, weighting {args_.weighting}, lr {t.lr}, {t.max_iterations:,} steps x batch {t.batch_size} = "
                 f"{t.max_iterations * t.batch_size / frames:.1f} epochs")
         if resuming:
             # resuming takes the settings the run began with; only the resumable ones (e.g. the time limit) may change

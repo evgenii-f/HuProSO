@@ -330,3 +330,53 @@ def test_a_conditional_model_is_saved_and_loaded(tmp_path):
     assert loaded.condition == "3D" and loaded.cond_mask == "random"
     c = keypoints(poses19(2)).reshape(2, -1)
     assert torch.equal(model.cond_features(c, 2), loaded.cond_features(c, 2))
+
+
+def test_the_timeres_net_starts_at_a_zero_score_and_keeps_the_shapes():
+    import roma
+    model = RSGM(19, net="timeres", net_width=64, net_blocks=2, net_embed=32).eval()
+    x = roma.random_rotmat(3 * 19).view(3, 19, 3, 3)
+    t = torch.tensor([0.003, 0.1, 0.9])
+    assert model.score(x, t).shape == (3, 19, 3)
+    assert torch.equal(model.score(x, t), torch.zeros(3, 19, 3))  # the last layer is zero at the start
+    assert model.dtype == torch.float32
+
+
+def test_the_timeres_net_learns_and_samples_and_has_a_likelihood():
+    import roma
+    torch.manual_seed(0)
+    model = RSGM(19, net="timeres", net_width=64, net_blocks=1, net_embed=32, dropout=0.1, sample_steps=5,
+                 likelihood_steps=5, inputs="local+global")
+    poses = roma.random_rotmat(64 * 19).view(64, 19, 3, 3)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    model.train()
+    first = None
+    for _ in range(30):
+        loss = model.loss(poses)
+        first = first if first is not None else float(loss)
+        optimizer.zero_grad(); loss.backward(); optimizer.step()
+    assert float(loss) < first
+    model.eval()
+    samples = model.sample(4)
+    assert samples.shape == (4, 19, 3, 3) and torch.isfinite(samples).all()
+    assert torch.isfinite(model.log_prob(poses[:3])).all()
+
+
+def test_the_timeres_net_is_saved_and_loaded(tmp_path):
+    from hp.models import build_model
+    from hp.models.io import load_model, save_model
+    import roma
+    model = build_model("rsgm", num_joints=19, net="timeres", net_width=32, net_blocks=1, net_embed=16).eval()
+    torch.nn.init.normal_(model.net.last.weight)  # a non-trivial score
+    save_model(model, tmp_path)
+    loaded = load_model(tmp_path)
+    x, t = roma.random_rotmat(2 * 19).view(2, 19, 3, 3), torch.tensor([0.01, 0.5])
+    assert loaded.net_kind == "timeres" and torch.allclose(loaded.score(x, t), model.score(x, t))
+
+
+def test_the_timeres_net_refuses_time_features():
+    import pytest
+    with pytest.raises(ValueError):
+        RSGM(19, net="timeres", time_features=4)
+    with pytest.raises(ValueError):
+        RSGM(19, net="transformer")

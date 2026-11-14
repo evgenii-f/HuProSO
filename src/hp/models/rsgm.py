@@ -47,6 +47,7 @@ from torch.func import jacfwd, vmap
 
 from hp.data.amass_cfg import AmassJoints4Learning
 from hp.models import conditioning, igso3
+from hp.models.score_nets import TimeResNet
 from hp.models.base import PoseModel
 from hp.models.conditioning import move  # noqa: F401  (also imported from here by other models)
 from hp.models.registry import register_model
@@ -111,9 +112,18 @@ class RSGM(PoseModel):
         cond_dim: int = 0,  # set by `condition`; without one, a generic condition vector of this length
         inputs: str = "local",  # of the score network: "local" (the rotations) or "local+global" (see the module doc)
         time_features: int = 0,  # sin and cos of t at this many frequencies, next to t itself; 0: t alone
+        net: str = "mlp",  # "mlp": Linear-activation layers of `hidden`, t at the input; "timeres": score_nets.TimeResNet
+        net_width: int = 1024,  # of net="timeres": the width,
+        net_blocks: int = 2,  # its residual blocks (of two layers),
+        net_embed: int = 256,  # the size of its embedding of the noise level,
+        dropout: float = 0.0,  # and its dropout
     ):
         if representation != "matrix":
             raise ValueError("RSGM works on rotation matrices directly; use representation='matrix'.")
+        if net not in ("mlp", "timeres"):
+            raise ValueError(f"Unknown net '{net}'. Use 'mlp' or 'timeres'.")
+        if net == "timeres" and time_features:
+            raise ValueError("net='timeres' embeds the noise level itself; use time_features=0.")
         if inputs not in ("local", "local+global"):
             raise ValueError(f"Unknown inputs '{inputs}'. Use 'local' or 'local+global'.")
         if inputs == "local+global" and num_joints != len(PARENTS19):
@@ -131,14 +141,24 @@ class RSGM(PoseModel):
         self.inputs, self.time_features = inputs, time_features
         self.cond_net = conditioning.make_net(cond_dim, condition, cond_hidden, cond_features)
         rotations = 9 * num_joints * (2 if inputs == "local+global" else 1)
-        layers, width = [], rotations + 1 + 2 * time_features + (cond_features if cond_dim else 0)
-        for h in hidden:
-            layers += [nn.Linear(width, h), ACTIVATIONS[activation]()]
-            width = h
-        layers.append(nn.Linear(width, 3 * num_joints))
-        self.net = nn.Sequential(*layers)
+        self.net_kind = net
+        if net == "timeres":
+            self.net = TimeResNet(rotations + (cond_features if cond_dim else 0), 3 * num_joints, net_width, net_blocks,
+                                  net_embed, dropout)
+        else:
+            layers, width = [], rotations + 1 + 2 * time_features + (cond_features if cond_dim else 0)
+            for h in hidden:
+                layers += [nn.Linear(width, h), ACTIVATIONS[activation]()]
+                width = h
+            layers.append(nn.Linear(width, 3 * num_joints))
+            self.net = nn.Sequential(*layers)
         s_lo, s_hi = self.s(torch.tensor(min(eps, loss_t_min))), self.s(torch.tensor(1.0))
         self.angles = igso3.AngleSampler(float(s_lo) * 0.999, float(s_hi) * 1.001)
+
+    @property
+    def dtype(self) -> torch.dtype:
+        """The dtype of the score network's parameters."""
+        return next(self.net.parameters()).dtype
 
     # ---- the noising process ----
 
@@ -177,7 +197,7 @@ class RSGM(PoseModel):
     def cond_features(self, cond: Optional[torch.Tensor], batch: int) -> torch.Tensor:
         """Features [B, cond_features] of the condition [B, cond_dim] (NaN: joint not observed), on the model's device
         in its dtype; [B, 0] for an unconditional model."""
-        return conditioning.features(self.cond_net, self.condition, cond, batch, self.device, self.net[0].weight.dtype)
+        return conditioning.features(self.cond_net, self.condition, cond, batch, self.device, self.dtype)
 
     def score(self, x: torch.Tensor, t: torch.Tensor, f: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Score of p_t at x [B, J, 3, 3] and times t [B], as coordinates [B, J, 3] in the frame of x; f [B, F] are
@@ -186,6 +206,11 @@ class RSGM(PoseModel):
         inputs = [x.reshape(b, -1)]
         if self.inputs == "local+global":
             inputs.append(global_rotations(x).reshape(b, -1))
+        if self.net_kind == "timeres":  # the time goes to every layer, as the noise level log(s) / 4
+            features = torch.cat(inputs + ([] if f is None else [f]), dim=1)
+            level = torch.log(self.s(t.to(x.dtype))) / 4  # s(t) >= beta_0 eps ~ 2e-7: fine in float32
+            out = self.net(features, level) / self.std(t)[:, None].to(x.dtype)
+            return out.reshape(b, self.num_joints, 3)
         inputs.append(t_col)
         if self.time_features:  # frequencies pi, 2 pi, 4 pi, ...: periods from 2 down to 2^(2 - K) in t
             angles = t_col * (math.pi * 2.0 ** torch.arange(self.time_features, device=x.device, dtype=x.dtype))
@@ -213,7 +238,7 @@ class RSGM(PoseModel):
         x0 = move(pose.detach().reshape(batch, joints, 3, 3), "cpu", torch.float64)
         xt = exp_frame(x0, omega[..., None] * axis)
         target = (self.std(t)[:, None, None] * igso3.d_log_density(omega, s)[..., None] * axis)
-        dtype = self.net[0].weight.dtype
+        dtype = self.dtype
         xt, target, t = (move(v, self.device, dtype) for v in (xt, target, t))
         scaled = self.score(xt, t, self.cond_features(cond, batch)) * self.std(t)[:, None, None]
         return ((scaled - target) ** 2).sum(dim=(1, 2)).mean()
@@ -246,7 +271,7 @@ class RSGM(PoseModel):
     def sample(self, n: int, cond: Optional[torch.Tensor] = None) -> torch.Tensor:
         self.check_cond(cond, n)
         self.check_sampler()
-        dtype = self.net[0].weight.dtype
+        dtype = self.dtype
         f = self.cond_features(cond, n)
         x = roma.random_rotmat(n * self.num_joints, device=self.device, dtype=dtype).reshape(n, self.num_joints, 3, 3)
         times = self.sample_times(self.sample_steps).to(self.device, dtype)
@@ -270,7 +295,7 @@ class RSGM(PoseModel):
         sample(), but a deterministic, continuous map of the start [n, J, 3, 3] (uniform rotations if None) and of
         the condition. So the same start with slowly changing conditions gives slowly changing poses."""
         self.check_cond(cond, n)
-        dtype = self.net[0].weight.dtype
+        dtype = self.dtype
         f = self.cond_features(cond, n)
         if start is None:
             start = roma.random_rotmat(n * self.num_joints, device=self.device, dtype=dtype)
@@ -309,7 +334,7 @@ class RSGM(PoseModel):
         midpoint steps of the ODE from eps to 1, log p_eps(x) = log p_1(x_1) + int div, with p_1 taken as uniform
         (log p_1 = 0)."""
         self.check_cond(cond, len(pose))
-        dtype = self.net[0].weight.dtype
+        dtype = self.dtype
         x = move(pose.reshape(-1, self.num_joints, 3, 3), self.device, dtype)
         n = x.shape[0]
         with torch.no_grad():

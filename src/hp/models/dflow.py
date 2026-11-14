@@ -92,7 +92,7 @@ class ScorePrior(_RotationLatent):
 
     @property
     def dtype(self):
-        return self.model.net[0].weight.dtype
+        return self.model.dtype
 
     def _times(self, backwards: bool = True):
         """ode_steps + 1 times from 1 to eps (backwards, the sampling direction) or from eps to 1."""

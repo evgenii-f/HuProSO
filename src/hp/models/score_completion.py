@@ -85,7 +85,7 @@ def rsgm_complete(model: RSGM, observed: torch.Tensor, visible: torch.Tensor, in
     d the geodesic distance (the angle), so both terms are squared angles, as theirs are squared normalized
     coordinates; their weight 0.5 sqrt(1 + alpha / sigma) with alpha ~ 1 at small t and RSGM's std. The times t
     are RSGM's (their scale differs from DPoser's), linear from t_max down to t_min over the steps."""
-    device, dtype = model.device, model.net[0].weight.dtype
+    device, dtype = model.device, model.dtype
     n, joints = observed.shape[:2]
     y = observed.to(device, dtype)
     seen = visible.to(device)[None, :, None, None]
