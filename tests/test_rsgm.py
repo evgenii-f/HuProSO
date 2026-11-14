@@ -114,6 +114,17 @@ def test_the_sampler_settings_are_checked_and_counted():
         RSGM(2, hidden=[4], schedule="cosine")
 
 
+def test_ode_samples_of_the_oracle_follow_its_distribution_and_are_a_map_of_the_start():
+    model = Oracle(2, beta_f=20.0, sample_steps=100)
+    torch.manual_seed(0)
+    start = roma.random_rotmat(10_000 * 2).double().reshape(10_000, 2, 3, 3)
+    poses = model.sample_ode(10_000, start=start)
+    angles = log_map(model.mu.transpose(-1, -2) @ poses).norm(dim=-1)
+    for joint in range(2):
+        assert ks_distance(angles[:, joint], model.s0) < 1.63 / math.sqrt(10_000)
+    assert torch.equal(model.sample_ode(5, start=start[:5]), poses[:5])  # deterministic
+
+
 def test_the_target_of_the_loss_is_the_riemannian_gradient_of_the_heat_kernel():
     """d log f / d omega * u, in the frame of x_t, against autograd of log f(angle(x0^T x_t exp(hat(delta))))."""
     torch.manual_seed(0)
@@ -265,6 +276,50 @@ def test_the_conditional_divergence_is_the_one_of_finite_differences():
                 e[:, joint, i] = 1e-5
                 numeric += (model.velocity(exp_frame(x, e), t, f) - model.velocity(exp_frame(x, -e), t, f))[:, joint, i] / 2e-5
     assert torch.allclose(divergence, numeric, atol=1e-6)
+
+
+def test_the_parents_are_those_of_the_skeleton_file():
+    from hp.data.conditions import _skeleton
+    from hp.models.rsgm import SMPL_PARENTS
+    try:
+        parents, _ = _skeleton()
+    except FileNotFoundError:
+        pytest.skip("needs body_models/smpl_skeleton.npz")
+    assert parents[1:] == SMPL_PARENTS[1:]
+
+
+def test_a_global_rotation_is_the_product_along_the_chain_to_the_root():
+    from hp.models.rsgm import global_rotations
+    pose = poses19(5, dtype=torch.float64)
+    names = [joint.name for joint in AmassJoints4Learning]
+    g = global_rotations(pose)
+    # LeftHand <- LeftElbow <- LeftArm <- LeftShoulder <- Spine2 <- Spine1 <- Spine0 <- root
+    chain = ["Spine0", "Spine1", "Spine2", "LeftShoulder", "LeftArm", "LeftElbow", "LeftHand"]
+    product = pose[:, names.index(chain[0])]
+    for name in chain[1:]:
+        product = product @ pose[:, names.index(name)]
+    assert torch.allclose(g[:, names.index("LeftHand")], product)
+    assert torch.equal(g[:, names.index("LeftUpLeg")], pose[:, names.index("LeftUpLeg")])  # a child of the root
+
+
+def test_global_inputs_and_time_features_keep_the_divergence_exact():
+    torch.manual_seed(0)
+    model = build_model("rsgm", num_joints=J19, hidden=[32], inputs="local+global", time_features=4).double()
+    assert model.net[0].in_features == 2 * 9 * J19 + 1 + 8
+    x, t = poses19(3, dtype=torch.float64), torch.rand(3, dtype=torch.float64)
+    with torch.no_grad():
+        _, divergence = model.velocity_and_divergence(x, t)
+        numeric = torch.zeros(3, dtype=torch.float64)
+        for joint in range(J19):
+            for i in range(3):
+                e = torch.zeros(3, J19, 3, dtype=torch.float64)
+                e[:, joint, i] = 1e-5
+                numeric += (model.velocity(exp_frame(x, e), t) - model.velocity(exp_frame(x, -e), t))[:, joint, i] / 2e-5
+    assert torch.allclose(divergence, numeric, atol=1e-6)
+    with pytest.raises(ValueError, match="inputs"):
+        build_model("rsgm", num_joints=3, inputs="local+global")
+    with pytest.raises(ValueError, match="inputs"):
+        build_model("rsgm", num_joints=J19, inputs="global")
 
 
 def test_a_conditional_model_is_saved_and_loaded(tmp_path):

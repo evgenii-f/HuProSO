@@ -20,14 +20,16 @@ The model of DPoser-body (configs/body/subvp/timefc.py there), rebuilt without t
                linspace(1, sample_eps, sample_steps) with dt = -1 / sample_steps (as theirs, although the grid spacing is
                (1 - sample_eps) / (sample_steps - 1)), from N(0, I), returning the mean of the last step (noise_removal)
 
-The model has no exact log-likelihood here (its probability flow ODE gives a density on R^(3J) of the normalized vectors,
-not on SO(3)^J), so has_log_prob is False.
+The model has no log_prob in the sense of the zoo, so has_log_prob is False: its probability flow ODE gives a density
+on R^(3J) of the normalized vectors (log_prob_normalized), which log_prob_so3 carries over to SO(3)^J (relative to the
+uniform distribution, as RSGM) by the z-scoring and the volume of the axis-angle chart, up to the mass outside it.
 """
 import math
 from typing import Optional, Sequence
 
 import torch
 from torch import nn
+from torch.func import jacfwd, vmap
 
 from hp.models.base import PoseModel
 from hp.models.registry import register_model
@@ -197,6 +199,59 @@ class DPoser(PoseModel):
             x_mean = x + drift * dt
             x = x_mean + g * math.sqrt(-dt) * torch.randn_like(x)
         return self.denormalize(x_mean)
+
+    # ---- the likelihood: probability flow ODE with the exact divergence ----
+
+    def ode_velocity(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        """The probability flow dx/dt = -beta x / 2 - g^2 score / 2 at x [B, 3J] and times t [B]."""
+        return -0.5 * self.beta(t)[:, None] * x - 0.5 * self.diffusion(t)[:, None] ** 2 * self.score(x, t)
+
+    def velocity_and_divergence(self, x: torch.Tensor, t: torch.Tensor):
+        """The velocity [B, 3J] and its divergence [B], the trace of the Jacobian (one forward pass per coordinate)."""
+
+        def one(xi, ti):
+            v = self.ode_velocity(xi[None], ti[None])[0]
+            return v, v
+
+        jacobian, v = vmap(jacfwd(one, has_aux=True))(x, t)
+        return v, jacobian.diagonal(dim1=1, dim2=2).sum(-1)
+
+    @torch.no_grad()
+    def log_prob_normalized(self, x: torch.Tensor, steps: int = 100, eps: Optional[float] = None) -> torch.Tensor:
+        """log p [B] of z-scored axis-angle vectors x [B, 3J] (a density on R^(3J)): midpoint steps of the ODE from eps
+        (default sample_eps) to 1, log p_eps(x) = log N(x_1; 0, I) + int div; at t = 1 the sub-VP marginal is
+        N(alpha x_0, std^2) with alpha < 0.01 and std > 0.9999, taken as N(0, I)."""
+        x = move(x, self.device, self.dtype)
+        n = x.shape[0]
+        times = torch.linspace(self.sample_eps if eps is None else eps, 1.0, steps + 1, device=self.device, dtype=self.dtype)
+        integral = torch.zeros(n, device=self.device, dtype=self.dtype)
+        for t, t_next in zip(times[:-1], times[1:]):
+            h = t_next - t
+            x_mid = x + 0.5 * h * self.ode_velocity(x, t.expand(n))
+            v_mid, div_mid = self.velocity_and_divergence(x_mid, (t + 0.5 * h).expand(n))
+            x = x + h * v_mid
+            integral = integral + h * div_mid
+        base = -0.5 * (x ** 2).sum(-1) - 0.5 * x.shape[1] * math.log(2 * math.pi)
+        return base + integral
+
+    @torch.no_grad()
+    def log_prob_so3(self, pose: torch.Tensor, steps: int = 100, eps: Optional[float] = None) -> torch.Tensor:
+        """log p [B] of poses [B, J, 3, 3] relative to the uniform distribution on SO(3)^J, as RSGM's log_prob: the
+        density of the normalized vectors, the z-scoring (- sum log std) and per joint the volume of the axis-angle
+        chart. The uniform distribution has the density (1 - cos a) / (4 pi^2 a^2) in axis-angle v (a = |v| <= pi),
+        so p_SO(3)(R) = p_v(v) 4 pi^2 a^2 / (1 - cos a) = p_v(v) 2 pi^2 a^2 / sin^2(a / 2) per joint.
+
+        The model's density on R^(3J) also has some mass outside the ball |v| <= pi of every joint, which this
+        ignores: the result is a slight underestimate, the same for all poses up to that leakage. Not log_prob, so
+        that the harness of the zoo keeps DPoser as a model without a density (has_log_prob is False)."""
+        pose = move(pose.reshape(-1, self.num_joints, 3, 3), self.device, self.dtype)
+        v = self.encode(pose)
+        log_p = self.log_prob_normalized((v - self.data_mean) / self.data_std, steps, eps) - torch.log(self.data_std).sum()
+        a = v.reshape(-1, self.num_joints, 3).norm(dim=-1)
+        half = torch.sin(a / 2)
+        # a^2 / sin^2(a / 2) -> 4 at a = 0
+        ratio = torch.where(a > 1e-4, a ** 2 / half.clamp(min=1e-12) ** 2, torch.full_like(a, 4.0))
+        return log_p + torch.log(2 * math.pi ** 2 * ratio).sum(-1)
 
 
 def normalization(poses: torch.Tensor, chunk: int = 1_000_000):

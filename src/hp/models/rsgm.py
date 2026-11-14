@@ -30,6 +30,12 @@ The noising process does not touch c, so the target of the loss is the same and 
 of the condition MLP are concatenated to the input of the score network. Sampling and the likelihood are the same with
 score(x, t, c); log_prob is log p(pose | c). cond_mask = "random" hides joints at random in the loss, "none": all
 joints are observed. Without `condition`, cond_dim > 0 makes a model with a generic condition vector [B, cond_dim].
+
+Inputs of the score network. The rotations of a pose are relative to the parent joints, so the orientation of a
+hand is a product along the chain root-spine-shoulder-arm-elbow-hand, which a plain MLP has to learn to multiply.
+inputs = "local+global" also gives it these products (the forward kinematics along the SMPL tree, no root rotation),
+19 x 9 numbers more; time_features adds sin and cos of t at several frequencies. Both are functions of x and t only,
+so the sampler, the loss and the exact divergence of log_prob are unchanged.
 """
 import math
 from typing import Optional, Sequence
@@ -39,6 +45,7 @@ import torch
 from torch import nn
 from torch.func import jacfwd, vmap
 
+from hp.data.amass_cfg import AmassJoints4Learning
 from hp.models import conditioning, igso3
 from hp.models.base import PoseModel
 from hp.models.conditioning import move  # noqa: F401  (also imported from here by other models)
@@ -57,6 +64,22 @@ SAMPLERS = {"euler_maruyama": 1, "euler": 1, "heun": 2}  # and the network calls
 def exp_frame(x: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
     """Move the rotations x [..., 3, 3] along the tangent vectors with coordinates v [..., 3]: x @ exp(hat(v))."""
     return x @ roma.rotvec_to_rotmat(v)
+
+
+# parents of the 22 body joints of SMPL (AmassJoints order; -1: none), as body_models/smpl_skeleton.npz
+SMPL_PARENTS = (-1, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 9, 12, 13, 14, 16, 17, 18, 19)
+# for each joint of AmassJoints4Learning, the index of its parent among them; -1: the parent is the root (identity)
+_LEARNED = [joint.value for joint in AmassJoints4Learning]
+PARENTS19 = tuple(_LEARNED.index(SMPL_PARENTS[j]) if SMPL_PARENTS[j] in _LEARNED else -1 for j in _LEARNED)
+
+
+def global_rotations(x: torch.Tensor) -> torch.Tensor:
+    """Rotations of the joints relative to the root [..., 19, 3, 3] from the poses x [..., 19, 3, 3] (each joint
+    relative to its parent, AmassJoints4Learning): the forward kinematics G_j = G_parent(j) @ x_j along the tree."""
+    out = []
+    for j, p in enumerate(PARENTS19):  # a parent comes before its children
+        out.append(x[..., j, :, :] if p < 0 else out[p] @ x[..., j, :, :])
+    return torch.stack(out, dim=-3)
 
 
 @register_model("rsgm")
@@ -86,9 +109,15 @@ class RSGM(PoseModel):
         cond_mask: str = "none",  # joints hidden in the loss: "none" or "random" (see the module doc)
         representation: str = "matrix",
         cond_dim: int = 0,  # set by `condition`; without one, a generic condition vector of this length
+        inputs: str = "local",  # of the score network: "local" (the rotations) or "local+global" (see the module doc)
+        time_features: int = 0,  # sin and cos of t at this many frequencies, next to t itself; 0: t alone
     ):
         if representation != "matrix":
             raise ValueError("RSGM works on rotation matrices directly; use representation='matrix'.")
+        if inputs not in ("local", "local+global"):
+            raise ValueError(f"Unknown inputs '{inputs}'. Use 'local' or 'local+global'.")
+        if inputs == "local+global" and num_joints != len(PARENTS19):
+            raise ValueError(f"inputs='local+global' needs the {len(PARENTS19)} joints of AmassJoints4Learning, got {num_joints}.")
         cond_dim = conditioning.resolve(condition, cond_dim, cond_mask)
         super().__init__(num_joints, "matrix", cond_dim)
         self.condition, self.cond_mask = condition, cond_mask
@@ -99,8 +128,10 @@ class RSGM(PoseModel):
         self.weighting = weighting
         self.sampler, self.schedule, self.schedule_rho = sampler, schedule, schedule_rho
         self.check_sampler()
+        self.inputs, self.time_features = inputs, time_features
         self.cond_net = conditioning.make_net(cond_dim, condition, cond_hidden, cond_features)
-        layers, width = [], 9 * num_joints + 1 + (cond_features if cond_dim else 0)
+        rotations = 9 * num_joints * (2 if inputs == "local+global" else 1)
+        layers, width = [], rotations + 1 + 2 * time_features + (cond_features if cond_dim else 0)
         for h in hidden:
             layers += [nn.Linear(width, h), ACTIVATIONS[activation]()]
             width = h
@@ -151,8 +182,15 @@ class RSGM(PoseModel):
     def score(self, x: torch.Tensor, t: torch.Tensor, f: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Score of p_t at x [B, J, 3, 3] and times t [B], as coordinates [B, J, 3] in the frame of x; f [B, F] are
         the features of the condition (cond_features; None or [B, 0] for an unconditional model)."""
-        inputs = [x.reshape(x.shape[0], -1), t[:, None].to(x.dtype)] + ([] if f is None else [f])
-        features = torch.cat(inputs, dim=1)
+        b, t_col = x.shape[0], t[:, None].to(x.dtype)
+        inputs = [x.reshape(b, -1)]
+        if self.inputs == "local+global":
+            inputs.append(global_rotations(x).reshape(b, -1))
+        inputs.append(t_col)
+        if self.time_features:  # frequencies pi, 2 pi, 4 pi, ...: periods from 2 down to 2^(2 - K) in t
+            angles = t_col * (math.pi * 2.0 ** torch.arange(self.time_features, device=x.device, dtype=x.dtype))
+            inputs += [torch.sin(angles), torch.cos(angles)]
+        features = torch.cat(inputs + ([] if f is None else [f]), dim=1)
         out = self.net(features) / self.std(t)[:, None].to(x.dtype)
         return out.reshape(x.shape[0], self.num_joints, 3)
 
@@ -223,6 +261,25 @@ class RSGM(PoseModel):
             if self.sampler == "heun":
                 v = 0.5 * (v + self.velocity(exp_frame(x, h * v), t_next.expand(n), f))
             x = exp_frame(x, h * v)
+        return x
+
+    @torch.no_grad()
+    def sample_ode(self, n: int, cond: Optional[torch.Tensor] = None, start: Optional[torch.Tensor] = None,
+                   steps: Optional[int] = None) -> torch.Tensor:
+        """n poses by the probability flow ODE from t = 1 to eps (geodesic midpoint steps): the same distribution as
+        sample(), but a deterministic, continuous map of the start [n, J, 3, 3] (uniform rotations if None) and of
+        the condition. So the same start with slowly changing conditions gives slowly changing poses."""
+        self.check_cond(cond, n)
+        dtype = self.net[0].weight.dtype
+        f = self.cond_features(cond, n)
+        if start is None:
+            start = roma.random_rotmat(n * self.num_joints, device=self.device, dtype=dtype)
+        x = move(start.reshape(n, self.num_joints, 3, 3), self.device, dtype)
+        times = torch.linspace(1.0, self.eps, (steps or self.sample_steps) + 1, device=self.device, dtype=dtype)
+        for t, t_next in zip(times[:-1], times[1:]):
+            h = t_next - t  # < 0: backwards in time
+            x_mid = exp_frame(x, 0.5 * h * self.velocity(x, t.expand(n), f))
+            x = exp_frame(x, h * self.velocity(x_mid, (t + 0.5 * h).expand(n), f))
         return x
 
     # ---- the likelihood: probability flow ODE with the exact divergence ----

@@ -106,3 +106,52 @@ def test_wrong_arguments_are_refused():
     with pytest.raises(ValueError, match="axis-angle"):
         model(representation="matrix")
     assert isinstance(model(), DPoser)
+
+
+def test_the_divergence_is_the_one_of_finite_differences():
+    m = model(joints=3, hidden=64).double()  # a group of GroupNorm needs 2+ channels for one pose
+    x, t = torch.randn(4, 9, dtype=torch.float64), torch.rand(4, dtype=torch.float64) * 0.9 + 0.05
+    with torch.no_grad():
+        _, divergence = m.velocity_and_divergence(x, t)
+        numeric = torch.zeros(4, dtype=torch.float64)
+        for i in range(9):
+            e = torch.zeros(4, 9, dtype=torch.float64)
+            e[:, i] = 1e-5
+            numeric += (m.ode_velocity(x + e, t) - m.ode_velocity(x - e, t))[:, i] / 2e-5
+    assert torch.allclose(divergence, numeric, atol=1e-6)
+
+
+def test_the_likelihood_of_the_oracle_is_the_gaussian_density(monkeypatch):
+    """Data N(0, s0^2 I) in the normalized space: p_t is N(0, alpha^2 s0^2 + std^2), with a known noise prediction."""
+    m, s0, eps = model(joints=2).double(), 0.5, 1e-3
+
+    def variance(t):
+        alpha, std = m.marginal(t)
+        return alpha ** 2 * s0 ** 2 + std ** 2
+
+    monkeypatch.setattr(m, "noise_prediction", lambda x, t: x * (m.marginal(t)[1] / variance(t))[:, None])
+    x = torch.randn(64, 6, dtype=torch.float64, generator=torch.Generator().manual_seed(0)) * s0
+    var = variance(torch.tensor([eps], dtype=torch.float64))
+    expected = -0.5 * (x ** 2).sum(-1) / var - 0.5 * 6 * torch.log(2 * math.pi * var)
+    assert torch.allclose(m.log_prob_normalized(x, steps=200, eps=eps), expected, atol=2e-3)
+
+
+def test_the_axis_angle_chart_of_the_uniform_distribution():
+    """The density (1 - cos a) / (4 pi^2 a^2) of uniform rotations in axis-angle, which log_prob_so3 divides by,
+    integrates to 1 and gives the angle CDF (a - sin a) / pi."""
+    a = torch.linspace(0, math.pi, 100_001, dtype=torch.float64)[1:]
+    radial = 4 * math.pi * a ** 2 * (1 - torch.cos(a)) / (4 * math.pi ** 2 * a ** 2)
+    assert abs(torch.trapezoid(radial, a).item() - 1) < 1e-6
+    angles = roma.rotmat_to_rotvec(roma.random_rotmat(20_000, generator=torch.Generator().manual_seed(0)).double()).norm(dim=-1).sort().values
+    cdf = (angles - torch.sin(angles)) / math.pi
+    assert (cdf - torch.arange(1, 20_001, dtype=torch.float64) / 20_000).abs().max() < 1.63 / math.sqrt(20_000)
+
+
+def test_log_prob_so3_adds_the_normalization_and_the_chart_to_the_normalized_density():
+    m = model(joints=2, hidden=64, mean=[0.1] * 6, std=[0.5, 0.6, 0.7, 0.8, 0.9, 1.0]).double()
+    pose = roma.random_rotmat(3 * 2, generator=torch.Generator().manual_seed(1)).double().reshape(3, 2, 3, 3)
+    v = m.encode(pose)
+    a = v.reshape(3, 2, 3).norm(dim=-1)
+    chart = torch.log(4 * math.pi ** 2 * a ** 2 / (1 - torch.cos(a))).sum(-1)
+    expected = m.log_prob_normalized((v - m.data_mean) / m.data_std, steps=5) - torch.log(m.data_std).sum() + chart
+    assert torch.allclose(m.log_prob_so3(pose, steps=5), expected)
