@@ -66,6 +66,11 @@ COMMON = [  # rounded from the plateau of the search
 CONFIGS = {  # the network, and what differs from COMMON
     "search": ["model.args.hidden=[1536, 1536, 1536, 1536, 1536, 1536]"],  # 12.2M parameters
     "small": ["model.args.hidden=[512, 512, 512, 512]"],  # the size of PoseD-Flow's network
+    # the same with the times of the loss drawn as the likelihood weighting (about 34% at t <= 0.025 instead of 2%):
+    # the small noise where the score distillation of DPoser's completion works
+    "small_lik": ["model.args.hidden=[512, 512, 512, 512]", "model.args.weighting=likelihood"],
+    # and the network of "search": does the sharper score at small noise need more capacity?
+    "search_lik": ["model.args.hidden=[1536, 1536, 1536, 1536, 1536, 1536]", "model.args.weighting=likelihood"],
     "large": ["model.args.hidden=[4096, 4096, 4096, 4096, 4096, 4096]", "train.lr=1e-3"],  # 84.8M parameters
 }
 # ----------------------------------------------------------------------------------------
