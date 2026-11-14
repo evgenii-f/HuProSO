@@ -16,7 +16,7 @@ Spaces:
   - dflow (their D-Flow): lr, invert (their start or the latent of the observation), running_weight; the steps and
     the ODE of their protocol. The first trial is their protocol.
 
-The study lives in SQLite (STUDY_DIR / optuna.db) and can be stopped and run again; it continues. The best settings
+Every study lives in its own SQLite file (STUDY_DIR / <study>.db) and can be stopped and run again; it continues. The best settings
 are written to <study>.json next to it, to be copied into MODELS of evaluate_completion.py for the test.
 """
 import argparse
@@ -87,13 +87,22 @@ def objective_of(args, model, gt, body):
     return objective
 
 
-def study_of(args):
+def study_of(args, attempts: int = 5):
+    """The study in its own SQLite file, STUDY_DIR / <study>.db. Two processes that create the same file at the same
+    time race on Optuna's tables; the loser waits and tries again (the tables are there then)."""
     study_dir = Path(args.study_dir).expanduser()
     study_dir.mkdir(parents=True, exist_ok=True)
-    storage = optuna.storages.RDBStorage(f"sqlite:///{study_dir / 'optuna.db'}",
-                                         engine_kwargs={"connect_args": {"timeout": 120}})
-    return optuna.create_study(study_name=args.study, storage=storage, load_if_exists=True, direction="minimize",
-                               sampler=optuna.samplers.TPESampler(seed=SEED, multivariate=True, n_startup_trials=15))
+    for attempt in range(attempts):
+        try:
+            storage = optuna.storages.RDBStorage(f"sqlite:///{study_dir / f'{args.study}.db'}",
+                                                 engine_kwargs={"connect_args": {"timeout": 120}})
+            return optuna.create_study(
+                study_name=args.study, storage=storage, load_if_exists=True, direction="minimize",
+                sampler=optuna.samplers.TPESampler(seed=SEED, multivariate=True, n_startup_trials=15))
+        except Exception as error:  # sqlalchemy's OperationalError ("table ... already exists") of the race
+            if attempt == attempts - 1 or "already exists" not in str(error):
+                raise
+            time.sleep(2 + attempt)
 
 
 def report(study, study_dir: Path) -> None:
