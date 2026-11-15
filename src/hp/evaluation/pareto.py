@@ -74,6 +74,7 @@ MODELS = {
     "HuProSO3 flow: our AMASS": dict(short="HuProSO3 flow†", run="~/data/experiments/huproso3_full_seed11", weights="weights"),
     # the same flow and training (20k steps of 2000, no EMA) on their c10; the final weights, as in the HuProSO3 paper
     "HuProSO3 flow: their c10": dict(short="HuProSO3 flow", run="~/data/experiments/huproso3_posedflow_s10", weights="weights"),
+    "HuProSO3 flow: their full": dict(short="HuProSO3 flow full", run="~/data/experiments/full/huproso3_posedflow_s10", weights="weights"),
     # the best validation NLL (step 3k): the training NLL keeps falling, the validation NLL rises after it
     "HuProSO3 flow: their c10, best (3k)": dict(short="HuProSO3 flow @3k", run="~/data/experiments/huproso3_posedflow_s10/run_0001/checkpoint_003000", weights="weights"),
     # ---- VPoser (V02_05 network, loss and training), retrained; no EMA. The best checkpoint by their validation v2v,
