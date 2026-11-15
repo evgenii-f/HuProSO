@@ -1,0 +1,27 @@
+# Inpainting with the reverse process of RSGM (run(method="inpaint"), hp.models.inpainting), network abl norm,
+# with two objectives: mean MPVPE (minimized) and APD (maximized), the trade-off of accuracy and diversity. One of the
+# three best of nine RSGM networks in the smoke test on 100 validation poses (replacement, guidance 0.2, r = 5:
+# deep 88.2 / APD 5.05, abl residual 90.1 / 4.70, abl norm 90.4 / 4.82; small std c10 94.9 / 5.32). The same search
+# space as rsgm_inpaint_pareto.
+# Rule for the test, fixed before it: among the points of the front with APD not lower than that of D-Flow with Heun
+# EDM 50 of small std c10 on the same 1000 validation poses (6.40 cm, 93.33 / 52.43 mm; dflow_valid.py on
+# workstation2), take the one with the lowest mean; if there is none, report that, and take the point with the highest
+# APD of the front.
+model: ~/data/experiments/rsgm_posedflow_abl_norm_s10/run_0001
+method: inpaint
+objective: mean_apd
+poses: 1000
+n_trials: 60
+params:
+  steps: [100, 200, 400]
+  guidance: {low: 0.01, high: 0.5, log: true}
+  resample: [1, 2, 3, 5]
+  replace: [true, false]
+fixed:
+  schedule: edm
+first:  # the best points of the smoke test
+  - {steps: 200, guidance: 0.1, resample: 1, replace: false}
+  - {steps: 200, guidance: 0.2, resample: 1, replace: false}
+  - {steps: 200, guidance: 0.2, resample: 5, replace: false}
+  - {steps: 200, guidance: 0.2, resample: 5, replace: true}
+  - {steps: 200, guidance: 0.05, resample: 1, replace: true}
