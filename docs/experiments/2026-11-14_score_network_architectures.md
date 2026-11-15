@@ -6,6 +6,28 @@ see below). The heat kernel, the noise geometry and the noise of a single step a
 network behaves off the data at small noise, which training does not pin down and the architecture does. This note
 puts the three networks side by side and proposes the one to try.
 
+## Summary
+
+Updated 2026-11-15 (sections 6-8). Validation numbers only; no test was run for this line of work.
+
+- **Skip connections or LayerNorm in the score network remove the drift of SDS at the smallest noise** and improve the
+  hybrid (DPoser's optimization with the RSGM denoiser) by 15-17 mm on the legs and 10-14 mm on the arms over a plain
+  MLP of the same size (section 6). Which of the two is needed, and whether they add up, one training seed does not
+  resolve: both together were not better than either alone.
+- **The time in every layer, a sinusoidal time embedding, log s as the time input and a zero-initialized last layer
+  have no measurable effect** (within about ±5 mm, the size of the differences between nearly identical runs). The
+  claim of section 5 that the time conditioning is what helps is wrong: timeres helped through its residual blocks and
+  LayerNorm.
+- **The slow first phase of SDS does not move** with any network: 13.2-14.3 deg on the left leg at step 100 for every
+  RSGM, 10.8 deg for DPoser.
+- **DPoser's size and training budget do not close the gap** (section 7): a 7.3M network trained 200k steps x 5120 on
+  all frames is in the hybrid where the 1.2M networks with residual or LayerNorm are (94.8 / 124.0 / 125.5 / 42.6 mm
+  against DPoser's 79.4 / 103.3 / 110.6 / 43.5), and in D-Flow it is not better than the 512x4 MLP (94.35 / 52.46 mm
+  against 93.33 / 52.43, section 8).
+- Decision: the remaining gap of score distillation to DPoser is not the network, its capacity or its training budget.
+  Next: completion that uses the whole reverse process (inpainting on SO(3)), where the pull from implausible poses
+  happens at large noise, inside the training range.
+
 ## 1. The three networks
 
 ### RSGM (ours, `hp/models/rsgm.py`)
@@ -153,8 +175,9 @@ Hidden-joint error along the 200 steps (deg; step 100 -> 199):
 | RSGM timeres 512 x 2 | 13.4 -> 13.9 | 23.1 -> 24.1 |
 | RSGM timeres 1024 x 2 | 13.4 -> 13.7 | 23.3 -> 24.6 |
 
-- **The time in every layer works**: 1.9M parameters match the 12.2M MLP (better on the arms by 9 mm), the drift at
-  the smallest noise is gone (as DPoser), the spread of the hypotheses is DPoser's.
+- **timeres works** (the attribution to the time in every layer is wrong, see section 6: it is the residual blocks or
+  LayerNorm): 1.9M parameters match the 12.2M MLP (better on the arms by 9 mm), the drift at the smallest noise is
+  gone (as DPoser), the spread of the hypotheses is DPoser's.
 - **Size does not help further**: 5.8M is the same as 1.9M in completion, but it has the best validation loss of all
   RSGMs (the density does not suffer from the new network; the small one is slightly worse).
 - **The slow first phase stays** (about 2.6 deg on the left leg at step 100): the rest of the gap to DPoser
@@ -162,3 +185,110 @@ Hidden-joint error along the 200 steps (deg; step 100 -> 199):
   Candidates: the hybrid is DPoser's own optimization in its own coordinates (its schedule, lr and weights are tuned
   for DPoser, and the start of the hidden joints is a typical input of DPoser at large t but an unusual one for RSGM
   at small t); the input (rotation matrices against z-scored axis-angle).
+
+## 6. 2026-11-15: Ablation of the network
+
+Which component of timeres helps? Every component can be switched off (`hp.models.score_nets.TimeResNet`, RSGM's
+`net_*` options). `abl_base` has all of them off: a plain MLP of 1 + 2 x 2 layers of 512 with t as one number at the
+input, lr 2e-3 as the MLPs (about 1.2M parameters). Every `abl_<component>` turns on exactly one component of
+timeres_small; `res_norm` turns on two. Configs in `scripts/train_rsgm_posedflow.py` (`ABL_BASE`, `ABLATION`,
+`deep`, `deep_nores`, `res_norm`); all c10, weighting std, 30k steps x 4096, seed 10, trained on workstation1
+(about 17 min each on an RTX 4090).
+
+Hybrid on 500 validation poses (MPVPE mean, mm), validation loss of the run, and the hidden-joint error of the
+trajectory at steps 100 and 199 (deg, 300 validation poses):
+
+| run | left_leg | legs | arms | trunk | valid loss best / last | left_leg 100 -> 199 | arms 100 -> 199 |
+|---|---|---|---|---|---|---|---|
+| DPoser (control) | **79.4** | **103.3** | **110.6** | **43.5** | – | 10.8 -> 11.5 | 21.7 -> 22.1 |
+| abl_base | 112.2 | 138.7 | 133.6 | 48.2 | 5.884 / 5.885 | 13.6 -> 15.8 | 24.1 -> 28.2 |
+| + time in every layer | 117.7 | 136.2 | 132.9 | 47.2 | 5.894 / 5.905 | 14.3 -> 16.6 | 24.0 -> 27.9 |
+| + sinusoidal embedding | 114.6 | 140.0 | 136.0 | 47.0 | 5.902 / 5.905 | 13.6 -> 16.0 | 24.2 -> 28.9 |
+| + log s instead of t | 117.3 | 143.8 | 134.2 | 47.7 | 5.890 / 5.897 | 13.9 -> 16.4 | 24.1 -> 28.4 |
+| + zero init | 114.0 | 139.6 | 134.9 | 47.7 | 5.884 / 5.888 | 13.8 -> 15.7 | 24.5 -> 29.1 |
+| + lr 1e-3 | 129.7 | 151.0 | 141.2 | 51.6 | 5.927 / 5.927 | 13.8 -> 18.2 | 24.0 -> 29.1 |
+| + dropout 0.1 | 108.9 | 125.4 | 127.5 | 48.5 | 6.027 / 6.027 | 13.7 -> 14.8 | 23.3 -> 24.8 |
+| + residual | 96.6 | 121.7 | 123.3 | 45.4 | 5.906 / 5.913 | 13.2 -> 14.1 | 23.4 -> 24.8 |
+| + LayerNorm | 97.4 | 121.4 | 119.5 | 44.4 | 5.903 / 5.903 | 13.2 -> 13.6 | 23.4 -> 24.5 |
+| + residual + LayerNorm (`res_norm`) | 102.8 | 130.0 | 128.2 | 46.7 | 5.908 / 5.927 | 14.0 -> 14.6 | 24.0 -> 26.2 |
+| timeres_small (all on, dropout 0.1, lr 1e-3) | 97.9 | 123.2 | 121.2 | 44.5 | 5.936 | 13.4 -> 13.9 | 23.1 -> 24.1 |
+| deep: 256 x 8 blocks, all on | 99.6 | 121.8 | 120.4 | 45.0 | 5.945 / 5.951 | 13.6 -> 14.3 | 23.1 -> 24.3 |
+| deep without residual | 248.4 | 261.2 | 192.2 | 93.7 | 20.996 / 20.996 | 27.2 -> 30.6 | 35.5 -> 40.4 |
+
+- Two groups: every network with residual and/or LayerNorm (5 runs) is at 97-103 mm on the left leg and drifts by
+  0.4-1 deg in the second phase; every network without them (6 runs) is at 109-130 mm and drifts by 2-2.4 deg. This
+  gap of 10-20 mm is larger than any difference inside a group.
+- Inside a group the differences are of the size of the noise of one training seed: `abl_base` and `+ zero init`
+  are nearly the same network and differ by 1-2 mm; `res_norm` is 5-9 mm worse than each of its components alone,
+  which an additive effect cannot explain. The validation loss of `res_norm` rises at the end (5.908 -> 5.927).
+- The validation loss does not predict completion: residual and LayerNorm are slightly worse in it than `abl_base`
+  (5.90 against 5.88) and much better in completion. Dropout helps completion a little and costs density (6.03).
+- Depth (256 x 8) adds nothing to 512 x 2; without skip connections the 17-layer network does not train.
+- The first phase (step 100) is 13.2-14.3 deg for every network.
+
+## 7. 2026-11-15: DPoser's size and training budget (`dposer_like`)
+
+Config `dposer_like`: timeres with DPoser's TimeFC size (1024 x 2 blocks, a 512-dim time embedding, dropout 0.1,
+7.3M parameters; DPoser 7.2M) and DPoser's training (200k steps x 5120, lr 2e-4, cosine with 5k warm-up, EMA
+0.9999) on all frames (`--rotations ~/data/AMASS_rotations_posedflow`), as DPoser's full run; LayerNorm instead of
+GroupNorm, rotation matrices and IGSO(3) as every RSGM. Trained on workstation1 (about 4.2 h on an RTX 4090).
+
+| denoiser | left_leg | legs | arms | trunk | valid loss best / last | left_leg 100 -> 199 | arms 100 -> 199 |
+|---|---|---|---|---|---|---|---|
+| DPoser (control) | **79.4** | **103.3** | **110.6** | 43.5 | – | 10.8 -> 11.5 | 21.7 -> 22.1 |
+| RSGM dposer_like | 94.8 | 124.0 | 125.5 | **42.6** | 5.986 / 6.010 | 13.4 -> 13.6 | 24.0 -> 25.5 |
+
+The same hybrid and trajectory as section 6: `dposer_like` is in the group of the networks with residual or
+LayerNorm, the first phase is unchanged. Eight times the training samples, ten times the data and DPoser's size do
+not close the gap. Its validation loss is worse than the c10 runs', as with dropout in section 6.
+
+## 8. 2026-11-15: D-Flow on validation (partial)
+
+D-Flow (PoseD-Flow's lr 0.1 and running weight 1e-3, Heun on the EDM times with 50 network calls, the best RSGM
+setting of [the completion report](2026-11-13_pose_completion_rsgm_vs_dposer.md)) on 1000 validation poses, K = 10,
+MPVPE mean (mm) / APD (cm) / best of 10 (mm), `dflow_valid.py` on workstation2 (RTX 6000 Ada):
+
+| model | left_leg | legs | arms | trunk | mean / best of 10 |
+|---|---|---|---|---|---|
+| RSGM 512x4 MLP, c10, 30k | 95.2 / 7.65 / 46.2 | 113.0 / 8.76 / 67.1 | 117.8 / 7.12 / 69.4 | 47.4 / 2.06 / 27.0 | **93.33** / 52.43 |
+| RSGM dposer_like, full, 200k | 94.7 / 7.56 / 46.3 | 116.1 / 9.24 / 67.9 | 119.8 / 7.33 / 69.1 | 46.8 / 2.03 / 26.6 | 94.35 / 52.46 |
+
+In D-Flow, too, DPoser's size and budget give nothing over the 512x4 MLP. The validation numbers are higher than the
+test numbers of the completion report (512x4, Heun EDM 50: 88.32 / 49.92 on the test): other poses; compare rows
+within a table only. The other rows of the plan (PoseD-Flow on validation, the 512x4 seeds 11 and 12, the networks of
+section 6) were not run to the end; the plan and its rule for the test are below.
+
+## Conclusions
+
+1. Residual connections or LayerNorm are what a score network on SO(3) needs for score distillation at small noise:
+   they stop the drift of the second phase. The time conditioning is not the reason.
+2. The slow first phase, and with it 15-20 mm of the gap to DPoser in the hybrid, is not a matter of the network, its
+   capacity, the training budget or the amount of data. What remains differs between RSGM and DPoser by design: the
+   representation (rotation matrices against z-scored axis-angle), isotropic IGSO(3) noise against noise proportional
+   to every joint's spread, score against noise prediction, and the hybrid's schedule, which is DPoser's.
+3. In D-Flow the network does not matter either (512x4 MLP = dposer_like).
+4. Next: completion with the whole reverse process of RSGM (inpainting on SO(3)), where the hidden joints are pulled
+   at large noise, which training covers, instead of extrapolating the score at small noise.
+
+## What it does not show
+
+- One training seed per network; the noise between seeds is estimated only from near-identical runs (1-2 mm) and
+  from `res_norm` (up to 9 mm). A 2^4 factorial study with 3 seeds was planned and dropped as polishing a secondary
+  question.
+- The hybrid is DPoser's optimization; SDS settings were not tuned for the new networks.
+- D-Flow on validation: two rows only. Planned and not finished: `dflow_valid.py 1000 arch --ode heun-edm50` (the
+  networks of section 6, the seeds of 512x4 and PoseD-Flow), then the test of the best network by the rule fixed
+  before it: the lowest validation mean among the networks not worse than 512x4 in best of 10 by more than 1 mm, and
+  only if its gain exceeds the spread of the three 512x4 seeds.
+- The likelihood weighting with the new networks.
+
+## Where things are
+
+- Runs: `~/data/experiments/rsgm_posedflow_{abl_*,deep,deep_nores,res_norm,timeres,timeres_small}_s10`,
+  `~/data/experiments/full/rsgm_posedflow_dposer_like_s10` (on the Mac and on workstation1).
+- The output lines behind the tables of sections 6-8: [2026-11-14_score_network_architectures_eval.txt](2026-11-14_score_network_architectures_eval.txt).
+- Scripts (from the root of the repository): `explore/evaluation/completion_diagnostics/eval_runs.sh` (valid loss,
+  hybrid, trajectory for a list of runs), `hybrid.py`, `trajectory.py`, `dflow_valid.py`; training configs in
+  `scripts/train_rsgm_posedflow.py`.
+- D-Flow rows: `~/data/experiments/completion/dflow_valid_arch_ws2.jsonl` and the log
+  `~/data/experiments/dflow_valid_ws2.log` on workstation2.

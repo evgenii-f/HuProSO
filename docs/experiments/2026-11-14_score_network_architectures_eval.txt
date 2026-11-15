@@ -1,0 +1,21 @@
+# Output of explore/evaluation/completion_diagnostics/eval_runs.sh on the Mac (2026-11-15), one line per run:
+# validation loss; hybrid on 500 validation poses, MPVPE mean (mm) / APD (cm) / best of 10 (mm) per occlusion;
+# RSGM hidden-joint error (deg) at steps 100 and 199 for left_leg, then arms (trajectory.py, 300 validation poses).
+rsgm_posedflow_abl_base_s10 | valid best 5.884 last 5.885 | hybrid: left_leg 112.2/9.52/54.8 | legs 138.7/11.52/80.0 | arms 133.6/8.09/84.2 | trunk 48.2/2.22/26.1 | RSGM err at steps 100,199 (left_leg, arms): 13.60 15.81 24.11 28.21
+rsgm_posedflow_abl_time_layers_s10 | valid best 5.894 last 5.905 | hybrid: left_leg 117.7/9.54/58.9 | legs 136.2/10.95/80.9 | arms 132.9/7.68/86.0 | trunk 47.2/2.16/25.7 | RSGM err at steps 100,199 (left_leg, arms): 14.31 16.62 23.99 27.87
+rsgm_posedflow_abl_sinusoidal_s10 | valid best 5.902 last 5.905 | hybrid: left_leg 114.6/9.68/55.1 | legs 140.0/11.31/81.9 | arms 136.0/8.18/86.9 | trunk 47.0/2.13/26.0 | RSGM err at steps 100,199 (left_leg, arms): 13.55 15.97 24.24 28.86
+rsgm_posedflow_abl_log_s_s10 | valid best 5.890 last 5.897 | hybrid: left_leg 117.3/9.90/56.2 | legs 143.8/12.02/83.8 | arms 134.2/7.96/88.3 | trunk 47.7/2.21/26.0 | RSGM err at steps 100,199 (left_leg, arms): 13.85 16.38 24.14 28.41
+rsgm_posedflow_abl_residual_s10 | valid best 5.906 last 5.913 | hybrid: left_leg 96.6/7.27/50.9 | legs 121.7/8.72/76.6 | arms 123.3/6.37/83.0 | trunk 45.4/1.86/26.2 | RSGM err at steps 100,199 (left_leg, arms): 13.23 14.09 23.40 24.76
+rsgm_posedflow_abl_norm_s10 | valid best 5.903 last 5.903 | hybrid: left_leg 97.4/7.89/47.8 | legs 121.4/9.10/74.6 | arms 119.5/6.04/81.8 | trunk 44.4/1.79/26.0 | RSGM err at steps 100,199 (left_leg, arms): 13.20 13.59 23.42 24.47
+rsgm_posedflow_abl_dropout_s10 | valid best 6.027 last 6.027 | hybrid: left_leg 108.9/9.96/50.5 | legs 125.4/10.46/75.7 | arms 127.5/6.45/88.2 | trunk 48.5/2.37/25.7 | RSGM err at steps 100,199 (left_leg, arms): 13.69 14.79 23.33 24.82
+rsgm_posedflow_abl_zero_init_s10 | valid best 5.884 last 5.888 | hybrid: left_leg 114.0/9.65/53.9 | legs 139.6/11.36/82.2 | arms 134.9/8.17/85.0 | trunk 47.7/2.12/25.9 | RSGM err at steps 100,199 (left_leg, arms): 13.75 15.67 24.50 29.06
+rsgm_posedflow_abl_lr_s10 | valid best 5.927 last 5.927 | hybrid: left_leg 129.7/11.03/62.5 | legs 151.0/13.02/88.0 | arms 141.2/8.25/90.6 | trunk 51.6/2.42/27.3 | RSGM err at steps 100,199 (left_leg, arms): 13.83 18.17 23.97 29.07
+rsgm_posedflow_deep_s10 | valid best 5.945 last 5.951 | hybrid: left_leg 99.6/8.82/47.8 | legs 121.8/9.39/74.8 | arms 120.4/6.26/81.8 | trunk 45.0/1.95/25.3 | RSGM err at steps 100,199 (left_leg, arms): 13.64 14.27 23.11 24.34
+rsgm_posedflow_deep_nores_s10 | valid best 20.996 last 20.996 | hybrid: left_leg 248.4/25.08/110.8 | legs 261.2/26.14/151.3 | arms 192.2/13.19/123.0 | trunk 93.7/5.66/38.2 | RSGM err at steps 100,199 (left_leg, arms): 27.24 30.61 35.48 40.36
+rsgm_posedflow_res_norm_s10 | valid best 5.908 last 5.927 | hybrid: left_leg 102.8/7.48/54.1 | legs 130.0/9.26/80.4 | arms 128.2/6.65/86.5 | trunk 46.7/1.63/28.8 | RSGM err at steps 100,199 (left_leg, arms): 13.98 14.58 24.03 26.15
+full/rsgm_posedflow_dposer_like_s10 | valid best 5.986 last 6.010 | hybrid: left_leg 94.8/7.30/49.3 | legs 124.0/8.75/78.3 | arms 125.5/6.74/83.0 | trunk 42.6/1.69/25.3 | RSGM err at steps 100,199 (left_leg, arms): 13.35 13.56 24.01 25.48
+
+# D-Flow, Heun EDM 50 NFE, PoseD-Flow's lr / running weight, 1000 validation poses, K = 10 (dflow_valid.py on workstation2,
+# log ~/data/experiments/dflow_valid_ws2.log, rows in ~/data/experiments/completion/dflow_valid_arch_ws2.jsonl there):
+heun-edm50 | dposer like full    |  94.7/ 7.56/ 46.3 | 116.1/ 9.24/ 67.9 | 119.8/ 7.33/ 69.1 |  46.8/ 2.03/ 26.6 | mean 94.35 best 52.46 | 1366s
+heun-edm50 | small std c10       |  95.2/ 7.65/ 46.2 | 113.0/ 8.76/ 67.1 | 117.8/ 7.12/ 69.4 |  47.4/ 2.06/ 27.0 | mean 93.33 best 52.43 | 400s
