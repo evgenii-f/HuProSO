@@ -105,6 +105,17 @@ CONFIGS.update({f"abl_{name}": ABL_BASE + extra for name, extra in ABLATION.item
 CONFIGS["deep"] = ["model.args.net=timeres", "model.args.net_width=256", "model.args.net_blocks=8",
                    "model.args.dropout=0.1", "train.lr=1e-3"]
 CONFIGS["deep_nores"] = CONFIGS["deep"] + ["model.args.net_residual=false"]
+# The two components that carry the ablation, together and alone: a plain MLP with the skip connections and LayerNorm
+# (the time a scalar t at the input, no dropout, no zero init, lr 2e-3 as abl_base)
+CONFIGS["res_norm"] = ABL_BASE + ["model.args.net_residual=true", "model.args.net_norm=true"]
+# DPoser's network and training on RSGM: TimeFC's size (1024 x 2 blocks, a 512-dim embedding, dropout 0.1) and
+# DPoser's schedule (200k steps x 5120, lr 2e-4, cosine with 5k warm-up, EMA 0.9999). For the full data, as DPoser's
+# full run: --rotations ~/data/AMASS_rotations_posedflow --run-root ~/data/experiments/full
+CONFIGS["dposer_like"] = ["model.args.net=timeres", "model.args.net_width=1024", "model.args.net_blocks=2",
+                          "model.args.net_embed=512", "model.args.dropout=0.1", "train.lr=2e-4",
+                          "train.batch_size=5120", "train.max_iterations=200000", "train.scheduler=cosine",
+                          "train.warmup_steps=5000", "train.ema_decay=0.9999", "train.valid_interval=5000",
+                          "train.checkpoint_every=10000"]
 # ----------------------------------------------------------------------------------------
 
 
