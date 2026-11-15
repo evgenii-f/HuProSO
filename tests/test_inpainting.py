@@ -3,6 +3,7 @@ import pytest
 import roma
 import torch
 
+from hp.evaluation.completion import OCCLUSIONS, run
 from hp.models.inpainting import _guidance, rsgm_inpaint
 from hp.models.rsgm import RSGM, exp_frame
 
@@ -14,6 +15,17 @@ def small_rsgm():
 
 def angle(a, b):
     return roma.rotmat_geodesic_distance(a, b)
+
+
+def test_inpainting_keeps_the_visible_joints_and_gives_rotations():
+    gt = roma.random_rotmat(2 * 21).view(2, 21, 3, 3)
+    pred = run(small_rsgm(), gt, "arms", k=2, method="inpaint", progress=False,
+               prior=dict(steps=5, resample=2, guidance=0.1))
+    visible = [j for j in range(21) if j not in OCCLUSIONS["arms"]]
+    assert torch.allclose(pred[:, :, visible], gt[:, None, visible].expand(2, 2, len(visible), 3, 3), atol=1e-5)
+    assert (pred.transpose(-1, -2) @ pred - torch.eye(3)).abs().max() < 1e-4
+    hidden = list(OCCLUSIONS["arms"])
+    assert angle(pred[:, 0, hidden], pred[:, 1, hidden]).mean() > 1e-3  # the hypotheses differ
 
 
 def test_with_the_score_of_a_point_mass_the_hidden_joints_reach_it(monkeypatch):
@@ -60,10 +72,13 @@ def test_the_guidance_step_lowers_the_error_of_the_visible_joints(monkeypatch):
     assert (angle(moved[:, vis], y[:, vis]).sum() < angle(x[:, vis], y[:, vis]).sum())
 
 
-def test_inpainting_needs_replacement_or_guidance():
+def test_inpainting_needs_replacement_or_guidance_and_an_rsgm():
     observed = roma.random_rotmat(19).view(1, 19, 3, 3)
     with pytest.raises(ValueError):
         rsgm_inpaint(small_rsgm(), observed, torch.arange(19) < 5, steps=2, replace=False)
+    from hp.models.dposer import DPoser
+    with pytest.raises(TypeError):
+        run(DPoser(), roma.random_rotmat(21).view(1, 21, 3, 3), "arms", k=1, method="inpaint", progress=False)
 
 
 def test_without_visible_joints_inpainting_is_sampling():
