@@ -9,7 +9,8 @@ Pose priors on SO(3)^J and their evaluation: the HuProSO3 flow, RSGM, PoseRFM, D
 
 - **Commits, merges and pushes only after the user's explicit yes** for that action: first say which files and which
   message, then wait. Messages start with `feat:`, `fix:`, `docs:`, `test:`, `refactor:` or `chore:` (no scope) and
-  have no `Co-Authored-By` line.
+  have no `Co-Authored-By` line. Git's format: a subject of at most 50 characters (never over 72), a blank line, a
+  body wrapped at 72 columns (check: `git log -1 --format=%B | awk 'length > 72'` prints nothing).
 - **New plans are discussed before they are carried out.** Small fixes inside an agreed task need no extra round.
 - **The servers are run by the user.** For workstation1 / workstation2, give copy-paste commands (one per block; say
   whether a copy overwrites), and ask for a few lines of output (`tail -n 5 <log>`), not whole screens.
