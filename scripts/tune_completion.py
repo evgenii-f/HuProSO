@@ -7,7 +7,7 @@
 A study is described by a YAML file in config/completion_tuning, and its name is the name of the file:
 
     model: ~/data/experiments/rsgm_posedflow_small_s10/run_0001     # a run folder
-    method: dposer          # DPoser's optimization (run(method="dposer")), or dflow (D-Flow)
+    method: dposer          # DPoser's optimization (run(method="dposer")), dflow (D-Flow) or inpaint (RSGM)
     objective: mean         # mean: the mean over the occlusions of MPVPE mean; pareto: that and of MPVPE best of K
     poses: 1000             # fixed random validation poses
     n_trials: 80            # finished trials of the study (may be raised later)
@@ -18,7 +18,8 @@ A study is described by a YAML file in config/completion_tuning, and its name is
     first: [{lr: 0.05, start: noise}]                                # trials enqueued into a new study
 
 The values of a trial (fixed and searched) are options of run(): for dposer all of them go to the optimization
-(dposer_complete or rsgm_complete, and start / scale / stats of run's RSGM starts); for dflow, lr, running_weight,
+(dposer_complete or rsgm_complete, and start / scale / stats of run's RSGM starts); for inpaint, to rsgm_inpaint
+(steps, schedule, resample, guidance, replace); for dflow, lr, running_weight,
 steps and ode_steps go to run() and the others to the D-Flow prior (e.g. invert). t_min_fraction stands for
 t_min = t_max * t_min_fraction, and scale "none" for no scale.
 
@@ -51,7 +52,7 @@ ROTATIONS = "~/data/AMASS_rotations_posedflow_c10"  # their data: the validation
 K = 10                                               # hypotheses per pose
 BATCH = 500
 SEED = 10
-METHODS, OBJECTIVES = ("dposer", "dflow"), ("mean", "pareto")
+METHODS, OBJECTIVES = ("dposer", "dflow", "inpaint"), ("mean", "pareto")
 RUN_KEYS = ("lr", "running_weight", "steps", "ode_steps")  # dflow: arguments of run(), the others go to the prior
 KEYS = ("model", "method", "objective", "poses", "n_trials", "params", "fixed", "first")
 
@@ -101,12 +102,12 @@ def objective_of(config: dict, model, gt, body, commit: str):
         trial.set_user_attr("git", commit)
         start, means, bests = time.perf_counter(), [], []
         for occlusion in OCCLUSIONS:
-            if config["method"] == "dposer":
+            if config["method"] in ("dposer", "inpaint"):
                 options = dict(values)
-                if options.get("start", "rest") != "rest" or "scale" in options:
+                if config["method"] == "dposer" and (options.get("start", "rest") != "rest" or "scale" in options):
                     options.setdefault("stats", ROTATIONS)
-                pred = run(model, gt, occlusion, K, batch=BATCH, together=True, progress=False, method="dposer",
-                           prior=options)
+                pred = run(model, gt, occlusion, K, batch=BATCH, together=True, progress=False,
+                           method=config["method"], prior=options)
             else:
                 kwargs = {key: values[key] for key in RUN_KEYS if key in values}
                 prior = {key: value for key, value in values.items() if key not in RUN_KEYS}
