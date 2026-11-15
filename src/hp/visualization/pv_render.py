@@ -58,6 +58,7 @@ def render_overlay(
     point_color="red",
     point_opacity=0.5,
     point_radius=0.05,
+    colors=None,
 ) -> np.ndarray:
     """Render several meshes of the same body in one scene, each with its own opacity (as Fig. 3 of the HuProSO3
     paper: the samples on top of each other, the less likely ones more transparent).
@@ -67,6 +68,8 @@ def render_overlay(
     same center and radius has the same scale. points: [P, 3] positions (in the frame of the vertices, e.g. joints)
     drawn as dots (spheres of point_radius, meters) on top of the meshes with point_opacity, e.g. to mark joints: they
     are rendered alone with the same camera and blended over the picture, so a joint inside the body is seen too.
+    colors: per-vertex RGB in [0, 1], [V, 3] for every mesh or [M, V, 3] one per mesh (None: `color`), e.g. to mark
+    a body part.
     Returns uint8 images [len(azimuths_deg), height, width, 3].
     """
     vertices = np.asarray(vertices, dtype=np.float64)
@@ -75,6 +78,11 @@ def render_overlay(
     opacities = np.ones(len(vertices)) if opacities is None else np.asarray(opacities, dtype=np.float64)
     if len(opacities) != len(vertices):
         raise ValueError(f"{len(vertices)} meshes but {len(opacities)} opacities.")
+    if colors is not None:
+        colors = np.asarray(colors, dtype=np.float64)
+        colors = np.broadcast_to(colors, vertices.shape) if colors.ndim == 2 else colors
+        if colors.shape != vertices.shape:
+            raise ValueError(f"colors {colors.shape} do not match the vertices {vertices.shape}.")
     pv_faces = np.hstack([np.full((len(faces), 1), 3), np.asarray(faces)]).ravel()
     lo, hi = vertices.reshape(-1, 3).min(0), vertices.reshape(-1, 3).max(0)
     center = (hi + lo) / 2 if center is None else np.asarray(center, dtype=np.float64)
@@ -87,8 +95,13 @@ def render_overlay(
         pl = pv.Plotter(off_screen=True, window_size=(width, height))
         pl.set_background(background)
         pl.enable_depth_peeling()  # correct order of the translucent surfaces
-        for v, opacity in zip(vertices, opacities):
-            pl.add_mesh(pv.PolyData((v - center) @ rot_y.T, pv_faces), color=color, smooth_shading=True, opacity=float(opacity))
+        for m, (v, opacity) in enumerate(zip(vertices, opacities)):
+            mesh = pv.PolyData((v - center) @ rot_y.T, pv_faces)
+            if colors is None:
+                pl.add_mesh(mesh, color=color, smooth_shading=True, opacity=float(opacity))
+            else:
+                mesh.point_data["rgb"] = (colors[m] * 255).astype(np.uint8)
+                pl.add_mesh(mesh, scalars="rgb", rgb=True, smooth_shading=True, opacity=float(opacity))
         camera = [(0, 0, 4.6 * radius), (0, 0, 0), (0, 1, 0)]
         pl.camera_position = camera
         image = pl.screenshot(return_img=True)
