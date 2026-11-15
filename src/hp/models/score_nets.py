@@ -1,4 +1,4 @@
-"""Score networks with the time in every layer (docs/score_network_architectures.md, section 3).
+"""Score networks with the time in every layer (docs/experiments/2026-11-14_score_network_architectures.md, section 3).
 
 TimeResNet is the network of RSGM's net="timeres": a residual MLP in which every layer gets its own projection of a
 shared embedding of the noise level, with a normalization in every layer, as DPoser's TimeFC (and as PoseRFM's tMLP

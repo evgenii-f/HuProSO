@@ -1,6 +1,6 @@
 # Comparing the models: data, protocols, models
 
-A reference for ourselves, as of 2026-11-09, branch `dev`. It has no result numbers, only what is compared with what, how, and where the results are. For the numbers see the notebooks in the protocol table and [model_comparison_paper_protocol.md](model_comparison_paper_protocol.md).
+A reference for ourselves, as of 2026-11-09, branch `dev`. It has no result numbers, only what is compared with what, how, and where the results are. For the numbers see the notebooks in the protocol table and [model_comparison_paper_protocol.md](experiments/2026-10-22_model_comparison_paper_protocol.md).
 
 ## The main rule
 
@@ -123,7 +123,7 @@ How each model draws a pose, by default. NFE: network calls per sample. The step
 | HuProSO3 flow | uniform on SO(3)^19 | the inverse of the flow, one pass (exact sample and log p together) | SO(3) per joint, autoregressive over the joints | 1 pass | rotations by construction |
 | RSGM | uniform on SO(3)^19 | Euler–Maruyama on the reverse SDE, t from 1 to `eps` = 2e-4 (as the JAX code) | geodesic steps in the frame of x (`exp_frame`) | 100 (100) | rotations by construction |
 | PoseRFM | uniform on SO(3)^19 | geodesic midpoint on the flow ODE, t from 0 to 1 | the same | 100 (200) | rotations by construction |
-| PoseD-Flow (their checkpoint, `PoseDFlowPretrained`; retrained, `PoseDFlow`) | exp(N(0, I)) per joint in axis-angle (a wrapped normal of 1 rad, their `SO3.random`) | their solver, `method` "midpoint" (paper) or "euler" (their script: Euler 1000, raw weights) | the ambient space R^(9J), no projection on the way | midpoint 100 (200) | `projx`: QR onto orthogonal matrices (see `docs/posedflow_cuda_qr_projection.md`) |
+| PoseD-Flow (their checkpoint, `PoseDFlowPretrained`; retrained, `PoseDFlow`) | exp(N(0, I)) per joint in axis-angle (a wrapped normal of 1 rad, their `SO3.random`) | their solver, `method` "midpoint" (paper) or "euler" (their script: Euler 1000, raw weights) | the ambient space R^(9J), no projection on the way | midpoint 100 (200) | `projx`: QR onto orthogonal matrices (see `docs/experiments/2026-11-11_posedflow_cuda_qr_projection.md`) |
 | DPoser | N(0, I) in normalized axis-angle | Euler–Maruyama on the reverse VP SDE, `sample_steps` times from 1 to `sample_eps` = 1e-3 (their sampler) | R^(3J), Euclidean | 1000 (1000) | the mean of the last step (no noise), denormalized, axis-angle to rotations |
 
 The time grids are uniform, except RSGM with `schedule="edm"`.

@@ -55,13 +55,13 @@ Smoke run on every 30th frame (a few thousand steps) with the training script: t
 ## Follow-ups (separate tasks)
 
 - **ReduceLROnPlateau** in the trainer (`scheduler: plateau`), to train with the paper's recipe.
-- **Full training:** PoseRFM on the data of our best RSGM baseline (trial 34 on every 10th frame: 139.1-139.2 nats) and/or all frames, **with at least two seeds**: the noise between seeds of RSGM is ~0.2 nats (`docs/rsgm_mirror_augmentation.md`), so single runs cannot tell differences of a few tenths of a nat.
-- **Evaluation:** the HuProSO3 protocol (`hp/evaluation/huproso3_protocol.py`), the harness of the model zoo with the contrast, robust likelihood statistics and the rare poses of `docs/rsgm_rare_poses.json`, next to RSGM and the flow.
+- **Full training:** PoseRFM on the data of our best RSGM baseline (trial 34 on every 10th frame: 139.1-139.2 nats) and/or all frames, **with at least two seeds**: the noise between seeds of RSGM is ~0.2 nats (`docs/experiments/2026-10-20_rsgm_mirror_augmentation.md`), so single runs cannot tell differences of a few tenths of a nat.
+- **Evaluation:** the HuProSO3 protocol (`hp/evaluation/huproso3_protocol.py`), the harness of the model zoo with the contrast, robust likelihood statistics and the rare poses of `docs/experiments/2026-10-14_rsgm_rare_poses.json`, next to RSGM and the flow.
 - **The metrics of PoseD-Flow / NRDF** (FID on joint positions, APD, d_NN, 20 × 500 poses) in the protocol, for all models: the only bridge to their Tab. 1 (with the caveat of other data and 19 vs. 21 joints).
 - A shared manifold-ODE module for RSGM and PoseRFM (with a golden test that RSGM's numbers do not change).
 - Optional: a Euclidean flow matching baseline (PoseFM of the paper), for the effect of the geometry; Riemannian D-Flow (guidance for completion, denoising, HMR) as a common downstream test of the priors.
 
 ## Not to do
 
-- Mirror augmentation: tried for RSGM, it makes every metric worse (`docs/rsgm_mirror_augmentation.md`).
+- Mirror augmentation: tried for RSGM, it makes every metric worse (`docs/experiments/2026-10-20_rsgm_mirror_augmentation.md`).
 - 21 joints: the whole pipeline is built on 19.

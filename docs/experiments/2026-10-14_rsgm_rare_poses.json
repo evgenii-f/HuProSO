@@ -1,5 +1,5 @@
 {
- "about": "Poses on which RSGM rsgm_tuned_r2t12 (run_0001) breaks down; see docs/rsgm_rare_pose_instability.md. valid_index: position in the official valid split (HumanEva 61,020 poses first, then HDM05); hdm05_index: position in ~/data/AMASS_rotations/HDM05.pt; file/frame: the source sequence in ~/data/amass. Log-likelihoods: EMA weights, 200 ODE steps.",
+ "about": "Poses on which RSGM rsgm_tuned_r2t12 (run_0001) breaks down; see docs/experiments/2026-10-14_rsgm_rare_pose_instability.md. valid_index: position in the official valid split (HumanEva 61,020 poses first, then HDM05); hdm05_index: position in ~/data/AMASS_rotations/HDM05.pt; file/frame: the source sequence in ~/data/amass. Log-likelihoods: EMA weights, 200 ODE steps.",
  "valid_poses": [
   {
    "valid_index": 290043,
