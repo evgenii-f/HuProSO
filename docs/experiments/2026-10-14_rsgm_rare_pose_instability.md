@@ -1,6 +1,6 @@
 # RSGM r2t12: unstable training and broken densities on rare poses
 
-An issue found when training the best configuration of round 2 of the hyperparameter search (`docs/rsgm_hyperparameter_tuning.md`) at the full budget. The data behind every number here is in `docs/rsgm_rare_poses.json`; the poses are drawn in `docs/figures/rsgm_rare_poses.png`.
+An issue found when training the best configuration of round 2 of the hyperparameter search (`docs/experiments/2026-10-14_rsgm_hyperparameter_tuning.md`) at the full budget. The data behind every number here is in `docs/experiments/2026-10-14_rsgm_rare_poses.json`; the poses are drawn in `docs/experiments/figures/rsgm_rare_poses.png`.
 
 ## Summary
 
@@ -143,7 +143,7 @@ On the test, r2t12 is the best model: the test split (Transitions + SSM) happens
 
 ## Likely cause (not yet verified)
 
-- **The learning rate is too high for the long budget.** lr 1.6e-3 with a 1024 × 5 network was the best after 30k steps; the trouble starts at 40-47k, which the search never saw (`docs/rsgm_hyperparameter_tuning.md`, caveat 2). The default (lr 2e-4) and t23 (lr 1.06e-3, depth 3) are stable.
+- **The learning rate is too high for the long budget.** lr 1.6e-3 with a 1024 × 5 network was the best after 30k steps; the trouble starts at 40-47k, which the search never saw (`docs/experiments/2026-10-14_rsgm_hyperparameter_tuning.md`, caveat 2). The default (lr 2e-4) and t23 (lr 1.06e-3, depth 3) are stable.
 - **The network is unconstrained where there is little data.** At small noise levels the score of p_t is large and sharp near rare poses; the MLP's output (scaled by 1/std(t), with std ~0.01 at t = 0.01) is free to blow up there, and once it does, the training batches with these poses give huge gradients (clipped to norm 1, but they still move the weights), which feeds the instability. The probability flow ODE then integrates a huge velocity and diverges, so the log-likelihood is meaningless.
 - **β_f = 6** (the low end) may contribute: more of the noise schedule is spent at small noise levels.
 
@@ -179,4 +179,4 @@ with torch.no_grad():
                                                    # the default RSGM (~/data/experiments/rsgm/run_0001): 37.0
 ```
 
-The same pose by its index: `~/data/AMASS_rotations/HDM05.pt` holds quaternions `[N, 55, 4]` as `[x, y, z, w]`; `hdm05_index` in `docs/rsgm_rare_poses.json` is the row. The skeleton drawing of the figure is `perform_forward_kinematics` with the parents of `SkelForwardKinematics` (as in `explore/rsgm_tutorial.ipynb`, section 9).
+The same pose by its index: `~/data/AMASS_rotations/HDM05.pt` holds quaternions `[N, 55, 4]` as `[x, y, z, w]`; `hdm05_index` in `docs/experiments/2026-10-14_rsgm_rare_poses.json` is the row. The skeleton drawing of the figure is `perform_forward_kinematics` with the parents of `SkelForwardKinematics` (as in `explore/rsgm_tutorial.ipynb`, section 9).

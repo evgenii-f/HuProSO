@@ -43,5 +43,5 @@ Whether the asymmetry comes from the motions themselves (handedness) or from sys
 
 ## Open
 
-- Section 4 of the notebook (the log-likelihood of the mirror images of the test poses under the four runs, and the rare poses of `docs/rsgm_rare_poses.json`) was interrupted. It would confirm that the mirrored models are close to symmetric (the augmentation did what it should) and show whether the rare poses gain from it.
+- Section 4 of the notebook (the log-likelihood of the mirror images of the test poses under the four runs, and the rare poses of `docs/experiments/2026-10-14_rsgm_rare_poses.json`) was interrupted. It would confirm that the mirrored models are close to symmetric (the augmentation did what it should) and show whether the rare poses gain from it.
 - A smaller mirror probability would trade less of the asymmetry for less diversity; given the size of the effect it is not expected to help.

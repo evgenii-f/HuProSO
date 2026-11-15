@@ -23,7 +23,7 @@ them, the 22 joint positions of the forward kinematics (the root is always at th
 sum but counts in the mean). Two additions that the paper does not have: every number is repeated `repeats`
 times with independent draws (mean and std over the repeats), and the log-likelihood comes with robust
 statistics (median, trimmed mean, the share of values outside a plausible range), because a mean can be
-dominated by a few broken values (docs/rsgm_rare_pose_instability.md).
+dominated by a few broken values (docs/experiments/2026-10-14_rsgm_rare_pose_instability.md).
 
 The 100k model samples are drawn once and shared by the repeats (sampling a flow takes minutes); the repeats
 draw new dataset poses and new 1k subsets of the samples.
