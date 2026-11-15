@@ -2,6 +2,7 @@
 
     python scripts/tune_completion.py config/completion_tuning/rsgm_sds_pareto.yaml --device cuda:0
     python scripts/tune_completion.py config/completion_tuning/rsgm_sds_pareto.yaml --summary
+    python scripts/tune_completion.py config/completion_tuning/rsgm_sds_pareto.yaml --device cuda:0 --n-trials 120
     python scripts/tune_completion.py --study rsgm_sds_pareto --summary          # by name, without the file
 
 A study is described by a YAML file in config/completion_tuning, and its name is the name of the file:
@@ -223,6 +224,8 @@ def main() -> int:
     parser.add_argument("--study-dir", default=STUDY_DIR)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--summary", action="store_true", help="only print the trials so far")
+    parser.add_argument("--n-trials", type=int, default=None,
+                        help="finished trials to reach, instead of n_trials of the file (raises it, e.g. overnight)")
     args = parser.parse_args()
     study_dir = Path(args.study_dir).expanduser()
     if args.config is None:
@@ -232,6 +235,8 @@ def main() -> int:
         return 0
     path = Path(args.config)
     config, name, commit = load_config(path), path.stem, git_commit()
+    if args.n_trials is not None:
+        config["n_trials"] = args.n_trials
     study = open_study(name, study_dir, list(OBJECTIVES[config["objective"]][1]))
     check_or_record(study, config, commit)
     if args.summary:
