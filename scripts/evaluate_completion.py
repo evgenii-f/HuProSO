@@ -52,6 +52,21 @@ MODELS = {
                                               method="dposer"),
     "DPoser: their c10, RSGM budget, DPoser method": dict(
         run="~/data/experiments/dposer_posedflow_rsgm_budget_s10/run_0001", method="dposer"),
+    # inpainting with the reverse process of RSGM (hp/models/inpainting.py): one point per Optuna study
+    # (config/completion_tuning/rsgm_inpaint_*.yaml), chosen on 1000 validation poses by the rule of the studies (the
+    # lowest mean among the points of the front with APD >= 6.40, that of D-Flow with Heun EDM 50)
+    "RSGM 512x4: their c10, inpaint t52": dict(
+        run="~/data/experiments/rsgm_posedflow_small_s10/run_0001", method="inpaint",
+        prior=dict(steps=400, schedule="edm", guidance=0.057708678925692564, resample=5, replace=False)),
+    "RSGM deep: their c10, inpaint t75": dict(
+        run="~/data/experiments/rsgm_posedflow_deep_s10/run_0001", method="inpaint",
+        prior=dict(steps=200, schedule="edm", guidance=0.09753705685072556, resample=5, replace=False)),
+    "RSGM abl residual: their c10, inpaint t81": dict(
+        run="~/data/experiments/rsgm_posedflow_abl_residual_s10/run_0001", method="inpaint",
+        prior=dict(steps=400, schedule="edm", guidance=0.04934967328387599, resample=5, replace=False)),
+    "RSGM abl norm: their c10, inpaint t118": dict(
+        run="~/data/experiments/rsgm_posedflow_abl_norm_s10/run_0001", method="inpaint",
+        prior=dict(steps=200, schedule="edm", guidance=0.09515197497012039, resample=5, replace=False)),
 }
 
 
