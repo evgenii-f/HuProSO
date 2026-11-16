@@ -8,7 +8,7 @@ puts the three networks side by side and proposes the one to try.
 
 ## Summary
 
-Updated 2026-11-16 (sections 6-11). Validation numbers only; no test was run for this line of work.
+Updated 2026-11-16 (sections 6-12). Validation numbers only; no test was run for this line of work.
 
 - **Skip connections or LayerNorm in the score network remove the drift of SDS at the smallest noise** and improve the
   hybrid (DPoser's optimization with the RSGM denoiser) by 15-17 mm on the legs and 10-14 mm on the arms over a plain
@@ -440,6 +440,36 @@ CPU path): the spread of one seed of a network whose second phase drifts, not a 
 `abl_aniso` seeds 10 and 11 in section 10 (0.4-2 mm) was partly luck; its spread between runs is up to about 7 mm.
 The validation losses of the GPU path are 0.002-0.01 higher in all three pairs, too few pairs to tell.
 
+## 12. 2026-11-16: Training throughput (data on the device, TF32, batch size)
+
+Section 11 left the DataLoader as the suspect: it collates a batch pose by pose on the CPU and copies it. Two options
+of the trainer (`hp.training.trainer`, branch `experimental/aniso-models`): `train.data_on_device` keeps the training
+poses on the device and slices batches of a permutation drawn there every pass (the same sampling: every pose once
+per pass); `train.tf32` allows TF32 matrix products on cuda. The EMA update became one foreach call.
+`scripts/benchmark_training_throughput.py`: 20 warm-up and 200 timed training steps on the c10 training poses, per
+network, batch size, loader and TF32; workstation1, one RTX 4090 shared with other users' jobs, so single rows can be
+off (e.g. dposer_like, DataLoader, TF32, batch 20480). Thousands of poses per second (ms per step in brackets):
+
+| network | loader | TF32 | 5120 | 10240 | 20480 | 40960 | 81920 |
+|---|---|---|---|---|---|---|---|
+| abl_norm_aniso (1.2M) | DataLoader | off | 374 (13.7) | 376 (27.2) | 357 (57.4) | 340 (120.5) | 309 (265.0) |
+| abl_norm_aniso | DataLoader | on | 390 (13.1) | 387 (26.5) | 354 (57.8) | 344 (119.2) | 308 (265.8) |
+| abl_norm_aniso | device | off | 1740 (2.9) | 2125 (4.8) | 2178 (9.4) | 2176 (18.8) | 2089 (39.2) |
+| abl_norm_aniso | device | on | 1681 (3.1) | 2476 (4.1) | **2736** (7.5) | 2533 (16.2) | 2413 (34.0) |
+| dposer_like_aniso (7.3M) | DataLoader | off | 331 (15.5) | 318 (32.2) | 298 (68.8) | 290 (141.4) | 268 (306.2) |
+| dposer_like_aniso | DataLoader | on | 325 (15.8) | 298 (34.4) | 242 (84.7) | 296 (138.5) | 272 (300.7) |
+| dposer_like_aniso | device | off | 588 (8.7) | 613 (16.7) | 613 (33.4) | 628 (65.2) | 632 (129.5) |
+| dposer_like_aniso | device | on | 773 (6.6) | 783 (13.1) | 790 (25.9) | **794** (51.6) | 791 (103.5) |
+
+- The DataLoader was the bottleneck: it caps every network at 300-390 thousand poses per second, whatever the batch
+  and TF32. With the data on the device a step at batch 5120 is 4.7x faster for the 1.2M network (2.9 against 13.7 ms)
+  and 1.8x for the 7.3M one (8.7 against 15.5 ms).
+- A larger batch helps only the small network (up to 2.2-2.7 million poses per second from 10240-20480 on); the 7.3M
+  network is saturated at 5120 already (588-632 and 773-794 thousand). The batch of the pairs (4096 and 5120) can stay.
+- TF32 gives 1.3x for the 7.3M network, little for the 1.2M one. It changes the precision of the network's products,
+  so runs that are paired with float32 runs keep it off.
+- Memory: the c10 poses on the device take about 1.3 GB, all frames (18.6M poses) about 13 GB in float32.
+
 ## Conclusions
 
 1. Residual connections or LayerNorm are what a score network on SO(3) needs for score distillation at small noise:
@@ -482,7 +512,8 @@ The validation losses of the GPU path are 0.002-0.01 higher in all three pairs, 
   `~/data/experiments/full/rsgm_posedflow_dposer_like_s10` (on the Mac and on workstation1).
 - z statistics of section 9: `~/data/experiments/rsgm_z_statistics.json` on workstation1 (also in `model.json` of
   each z run).
-- The CPU-path runs of section 11: `~/data/experiments/cpu_noise/`.
+- Throughput rows of section 12: `~/data/experiments/throughput_worstation.jsonl` on workstation1
+  (`scripts/benchmark_training_throughput.py`); the CPU-path runs of section 11 in `~/data/experiments/cpu_noise/`.
 - The output lines behind the tables of sections 6-10: [2026-11-14_score_network_architectures_eval.txt](2026-11-14_score_network_architectures_eval.txt).
 - Scripts (from the root of the repository): `explore/evaluation/completion_diagnostics/eval_runs.sh` (valid loss,
   hybrid, trajectory for a list of runs), `hybrid.py`, `trajectory.py`, `loglik_valid.py`, `dflow_valid.py`; training configs in
