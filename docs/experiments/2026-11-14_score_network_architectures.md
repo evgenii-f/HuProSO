@@ -379,44 +379,10 @@ weighting std_j^2 differs per joint).
 
 ## 11. 2026-11-16: The IGSO(3) noise on the GPU
 
-Not a change of method: where the noise of RSGM is drawn (branch `experimental/igso_gpu`, commits 4e47e47 and 90c159a).
-The training loss drew its times, IGSO(3) angles and axes on the CPU in float64 and noised the poses there: every step
-copied the batch to the CPU and back, and several runs on one machine fought for its cores (about 50 each, load
-average about 160 on workstation1). Now the loss draws them on the device where it has float64 (cuda), still in
-float64; on mps (no float64) and for the validation loss (fixed CPU generator, the same number as before) the CPU path
-stays, so validation losses compare across the change. Inpainting draws its noise on the model's device in its dtype
-(`AngleSampler.sample_at`: the level of s is found on the CPU, so the GPU does not wait). SDS
-(`score_completion.py`) still draws on the CPU; D-Flow and the unconditional sampler draw no IGSO(3) noise.
-`RSGM.noise_on_cpu = True` restores the CPU path, for `scripts/benchmark_igso_noise.py`.
-
-- Speed of training, workstation1 under load: `abl_aniso` seed 11 ran at about 50 it/s (11 min for 30k steps) on the
-  GPU path against 2-3 it/s on the CPU path at the same time; on an idle machine the CPU path took 21 min (seed 10).
-- The same training: validation loss of `abl_aniso` seed 11 at 1k-6k steps 2.03 / 1.81 / 1.72 / 1.68 / 1.66 / 1.64
-  on the GPU path against 2.03 / 1.83 / 1.74 / 1.69 / 1.67 / 1.64 on the CPU path.
-- The same inpainting: 300 validation poses, K = 10, small std, steps 100, resample 2, guidance 0.1, 8 seeds per code
-  version on the Mac (mps): mean over the four occlusions 99.55 +- 0.40 against 99.49 +- 0.49 mm (MPVPE mean),
-  7.69 +- 0.07 against 7.72 +- 0.06 cm (APD), 52.46 +- 0.40 against 52.59 +- 0.59 mm (best of 10); none of the 15
-  differences (4 occlusions and the mean, 3 metrics) is significant (Welch p >= 0.08).
-- The float32 sampler (mps, same uniforms as float64 on the CPU, 400k draws): relative error of the angle 5e-8 on
-  average, at most 1.1e-4 (only in the far tail); KS distance to IGSO(3) 0.0009 (float32) and 0.0013 (float64),
-  1% threshold 0.0026.
-
-`scripts/benchmark_igso_noise.py` (untrained MLP 512 x 4, 19 joints, random poses), on an idle RTX 4090 of bigmama
-(torch 2.14.1, 16 CPU threads) and on the Mac (mps; there the loss draws on the CPU either way):
-
-| measurement | cuda: noise on CPU | cuda: on device | speed-up | mps: noise on CPU | mps: on device | speed-up |
-|---|---|---|---|---|---|---|
-| train step, batch 4096 | 82.2 it/s | 519.8 it/s | 6.32x | 53.1 it/s | 51.9 it/s | 0.98x |
-| train step, batch 16384 | 18.8 it/s | 183.2 it/s | 9.74x | 18.9 it/s | 18.7 it/s | 0.99x |
-| inpainting, 5000 poses, guidance 0, resample 3 | 7.91 ms/call | 1.29 ms/call | 6.11x | 12.99 ms/call | 5.67 ms/call | 2.29x |
-| inpainting, 5000 poses, guidance 0.1, resample 1 | 12.62 ms/call | 9.25 ms/call | 1.36x | 22.63 ms/call | 18.49 ms/call | 1.22x |
-| inpainting, 20000 poses, guidance 0, resample 3 | 25.56 ms/call | 3.38 ms/call | 7.56x | 46.97 ms/call | 23.84 ms/call | 1.97x |
-| inpainting, 20000 poses, guidance 0.1, resample 1 | 42.64 ms/call | 27.04 ms/call | 1.58x | 86.42 ms/call | 74.71 ms/call | 1.16x |
-
-On cuda the noise was most of the cost: 6-10x for a training step and 6-8x for inpainting without guidance. With
-guidance the backward pass through the network dominates (1.4-1.6x). A training step alone runs at 520 it/s, while
-the training script reached about 50 it/s: what is left in training is outside the loss (the DataLoader collates
-4096 poses one by one on the CPU, and the machine was loaded).
+Not a change of method: the seed-11 and GPU-noise runs of section 10 drew the noise of the loss on the GPU
+(`experimental/igso_gpu`). A training step is 6-10x faster on an RTX 4090, and the loss, the validation loss and
+inpainting are unchanged. The separate report is
+[2026-11-16_igso3_noise_on_gpu.md](2026-11-16_igso3_noise_on_gpu.md).
 
 ## Conclusions
 
