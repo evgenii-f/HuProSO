@@ -42,8 +42,9 @@ def trace_cost(x: torch.Tensor) -> torch.Tensor:
 class _RotationLatent:
     """The latent of the priors on SO(3)^J: their start projx(sqrt(1/4) guess + sqrt(3/4) noise), steps x exp(delta)."""
 
-    def start(self, y0: torch.Tensor) -> torch.Tensor:
-        return projx(math.sqrt(0.25) * self.guess(y0) + math.sqrt(0.75) * self.noise(y0.shape[0]))
+    def start(self, y0: torch.Tensor, alpha: float = 0.25) -> torch.Tensor:
+        """projx(sqrt(alpha) guess + sqrt(1 - alpha) noise): alpha 0.25 in their completion, 0.75 in denoising."""
+        return projx(math.sqrt(alpha) * self.guess(y0) + math.sqrt(1 - alpha) * self.noise(y0.shape[0]))
 
     @staticmethod
     def zero_delta(start: torch.Tensor) -> torch.Tensor:
@@ -160,8 +161,8 @@ class DPoserPrior:
         x = self.model.normalize(y0.to(self.model.device, self.dtype))
         return self._run(x, self._times(not self.invert), False)[0]
 
-    def start(self, y0: torch.Tensor) -> torch.Tensor:
-        return math.sqrt(0.25) * self.guess(y0) + math.sqrt(0.75) * self.noise(y0.shape[0])
+    def start(self, y0: torch.Tensor, alpha: float = 0.25) -> torch.Tensor:
+        return math.sqrt(alpha) * self.guess(y0) + math.sqrt(1 - alpha) * self.noise(y0.shape[0])
 
     @staticmethod
     def zero_delta(start: torch.Tensor) -> torch.Tensor:
@@ -197,8 +198,15 @@ def geodesic_loss(pred: torch.Tensor, target: torch.Tensor, eps: float = 1e-6) -
 
 
 def dflow(prior, loss_fn: Callable[[torch.Tensor], torch.Tensor], start: torch.Tensor, steps: int = 200,
-          lr: float = 0.1, running_weight: float = 1e-3) -> torch.Tensor:
-    """x_1 [B, J, 3, 3] of the last forward pass (as theirs, before the last step of the optimizer)."""
+          lr: float = 0.1, running_weight: float = 1e-3, optimizer: str = "adam") -> torch.Tensor:
+    """x_1 [B, J, 3, 3] of the last forward pass (as theirs, before the last step of the optimizer).
+
+    optimizer "adam": Adam on the tangent coordinates delta at the start (per coordinate); "riemannian": their
+    RiemannianAdam (geoopt) on their SO3Power, for the priors on SO(3)^J (riemannian_adam_dflow)."""
+    if optimizer == "riemannian":
+        return riemannian_adam_dflow(prior, loss_fn, start, steps, lr, running_weight)
+    if optimizer != "adam":
+        raise ValueError(f"Unknown optimizer '{optimizer}'. Use 'adam' or 'riemannian'.")
     start = start.detach()
     delta = prior.zero_delta(start).requires_grad_(True)
     optimizer = torch.optim.Adam([delta], lr=lr)
@@ -209,6 +217,32 @@ def dflow(prior, loss_fn: Callable[[torch.Tensor], torch.Tensor], start: torch.T
             x1, running = prior.generate(prior.shift(start, delta))
             (loss_fn(x1) + running_weight * running).backward()
             optimizer.step()
+    return x1.detach()
+
+
+def riemannian_adam_dflow(prior, loss_fn: Callable[[torch.Tensor], torch.Tensor], start: torch.Tensor,
+                          steps: int = 200, lr: float = 0.1, running_weight: float = 1e-3, betas=(0.9, 0.999),
+                          eps: float = 1e-8) -> torch.Tensor:
+    """D-Flow with their optimizer: geoopt's RiemannianAdam on their SO3Power (manifm/manifolds/so3power.py). The
+    Riemannian gradient of a joint is the skew matrix hat(s) = skew(x^T dL/dx), s = g / 2 for g the gradient of the
+    loss in the coordinates x exp(hat(delta)) at delta = 0; the second moment is per joint, their component_inner
+    |hat(s)|_F^2 = 2 |s|^2 shared by the joint's entries; the step x <- x exp(-lr hat(m) / (sqrt(v) + eps)) with the
+    bias corrections of Adam and the moments carried over unchanged (their transp is the identity). Their weight
+    decay adds wd x to dL/dx, whose skew(x^T x) = 0: it has no effect and is left out. Rotation priors only."""
+    x = start.detach().clone()
+    m = torch.zeros(*x.shape[:2], 3, device=x.device, dtype=x.dtype)
+    v = torch.zeros(*x.shape[:2], 1, device=x.device, dtype=x.dtype)
+    x1 = None
+    with torch.enable_grad():
+        for step in range(1, steps + 1):
+            delta = torch.zeros_like(m).requires_grad_(True)
+            x1, running = prior.generate(exp_frame(x, delta))
+            (g,) = torch.autograd.grad(loss_fn(x1) + running_weight * running, delta)
+            s = g / 2
+            m = betas[0] * m + (1 - betas[0]) * s
+            v = betas[1] * v + (1 - betas[1]) * 2 * s.pow(2).sum(-1, keepdim=True)
+            direction = (m / (1 - betas[0] ** step)) / ((v / (1 - betas[1] ** step)).sqrt() + eps)
+            x = exp_frame(x, -lr * direction).detach()
     return x1.detach()
 
 
