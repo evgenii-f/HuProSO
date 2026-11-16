@@ -418,6 +418,28 @@ guidance the backward pass through the network dominates (1.4-1.6x). A training 
 the training script reached about 50 it/s: what is left in training is outside the loss (the DataLoader collates
 4096 poses one by one on the CPU, and the machine was loaded).
 
+Added the same day: the three aniso runs of section 10 trained with the same configs and seeds on both paths
+(workstation1; CPU path in `~/data/experiments/cpu_noise/`, GPU path in `igso_speed/`), evaluated as in section 10
+(hybrid on 500 validation poses, MPVPE mean / APD / best of 10; trajectory on 300; `eval_runs.sh` on the Mac). The
+same seed is not the same random stream on the two paths (CPU and CUDA generators), so a pair differs by the seed as
+well. The rule written before: the paths are equivalent if a pair differs by at most 1-2 mm in the hybrid and about
+0.1 deg in the first phase.
+
+| run | noise | left_leg | legs | arms | trunk | valid loss | left_leg 100 -> 199 | arms 100 -> 199 |
+|---|---|---|---|---|---|---|---|---|
+| abl_aniso s11 | CPU | 99.6 / 7.11 / 52.9 | 120.1 / 8.24 / 75.8 | 115.7 / 6.13 / 76.3 | 47.1 / 2.05 / 26.0 | 1.547 | 12.6 -> 14.5 | 23.1 -> 25.7 |
+| abl_aniso s11 | GPU | 93.0 / 6.83 / 49.6 | 114.1 / 7.92 / 71.6 | 121.7 / 5.92 / 82.1 | 47.3 / 1.97 / 26.8 | 1.549 | 12.2 -> 13.5 | 23.1 -> 25.4 |
+| abl_residual_aniso | CPU | 89.1 / 5.95 / 50.2 | 109.5 / 6.91 / 72.7 | 113.3 / 4.81 / 81.4 | 46.1 / 1.83 / 27.4 | 1.541 | 12.2 -> 12.7 | 22.6 -> 23.1 |
+| abl_residual_aniso | GPU | 89.6 / 6.03 / 50.4 | 107.6 / 6.66 / 71.3 | 115.7 / 4.96 / 82.6 | 46.6 / 1.74 / 28.7 | 1.551 | 12.3 -> 12.8 | 22.7 -> 23.1 |
+| abl_norm_aniso | CPU | 86.3 / 5.58 / 50.3 | 103.5 / 6.31 / 69.0 | 107.9 / 4.84 / 75.3 | 43.4 / 1.68 / 25.8 | 1.552 | 12.1 -> 12.3 | 22.1 -> 22.4 |
+| abl_norm_aniso | GPU | 87.0 / 5.81 / 49.3 | 105.2 / 6.40 / 70.6 | 108.0 / 4.87 / 75.0 | 44.0 / 1.61 / 26.5 | 1.556 | 12.1 -> 12.3 | 22.4 -> 22.6 |
+
+With residual or LayerNorm the paths agree (0.1-2.4 mm, at most 0.1 deg). The plain MLP `abl_aniso` differs by up to
+6.6 mm and 0.5 deg, with signs that change between the occlusions (the legs better on the GPU path, the arms on the
+CPU path): the spread of one seed of a network whose second phase drifts, not a shift of the path. So the agreement of
+`abl_aniso` seeds 10 and 11 in section 10 (0.4-2 mm) was partly luck; its spread between runs is up to about 7 mm.
+The validation losses of the GPU path are 0.002-0.01 higher in all three pairs, too few pairs to tell.
+
 ## Conclusions
 
 1. Residual connections or LayerNorm are what a score network on SO(3) needs for score distillation at small noise:
@@ -460,6 +482,7 @@ the training script reached about 50 it/s: what is left in training is outside t
   `~/data/experiments/full/rsgm_posedflow_dposer_like_s10` (on the Mac and on workstation1).
 - z statistics of section 9: `~/data/experiments/rsgm_z_statistics.json` on workstation1 (also in `model.json` of
   each z run).
+- The CPU-path runs of section 11: `~/data/experiments/cpu_noise/`.
 - The output lines behind the tables of sections 6-10: [2026-11-14_score_network_architectures_eval.txt](2026-11-14_score_network_architectures_eval.txt).
 - Scripts (from the root of the repository): `explore/evaluation/completion_diagnostics/eval_runs.sh` (valid loss,
   hybrid, trajectory for a list of runs), `hybrid.py`, `trajectory.py`, `loglik_valid.py`, `dflow_valid.py`; training configs in
