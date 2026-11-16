@@ -19,3 +19,6 @@ full/rsgm_posedflow_dposer_like_s10 | valid best 5.986 last 6.010 | hybrid: left
 # log ~/data/experiments/dflow_valid_ws2.log, rows in ~/data/experiments/completion/dflow_valid_arch_ws2.jsonl there):
 heun-edm50 | dposer like full    |  94.7/ 7.56/ 46.3 | 116.1/ 9.24/ 67.9 | 119.8/ 7.33/ 69.1 |  46.8/ 2.03/ 26.6 | mean 94.35 best 52.46 | 1366s
 heun-edm50 | small std c10       |  95.2/ 7.65/ 46.2 | 113.0/ 8.76/ 67.1 | 117.8/ 7.12/ 69.4 |  47.4/ 2.06/ 27.0 | mean 93.33 best 52.43 | 400s
+# section 9, 2026-11-16 (z-scored tangent input):
+rsgm_posedflow_abl_z_s10 | valid best 5.903 last 5.903 | hybrid: left_leg 106.0/8.83/51.7 | legs 127.3/10.20/76.1 | arms 130.0/7.29/85.1 | trunk 46.0/2.13/25.3 | RSGM err at steps 100,199 (left_leg, arms): 13.15 14.65 23.82 26.95
+rsgm_posedflow_res_norm_z_s10 | valid best 6.043 last 6.043 | hybrid: left_leg 108.0/7.48/57.3 | legs 127.5/8.91/79.6 | arms 126.8/6.57/83.4 | trunk 47.1/1.66/29.1 | RSGM err at steps 100,199 (left_leg, arms): 14.23 15.20 23.77 25.55
