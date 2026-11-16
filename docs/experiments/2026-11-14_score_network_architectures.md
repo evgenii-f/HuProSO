@@ -8,7 +8,7 @@ puts the three networks side by side and proposes the one to try.
 
 ## Summary
 
-Updated 2026-11-16 (sections 6-9). Validation numbers only; no test was run for this line of work.
+Updated 2026-11-16 (sections 6-10). Validation numbers only; no test was run for this line of work.
 
 - **Skip connections or LayerNorm in the score network remove the drift of SDS at the smallest noise** and improve the
   hybrid (DPoser's optimization with the RSGM denoiser) by 15-17 mm on the legs and 10-14 mm on the arms over a plain
@@ -19,17 +19,23 @@ Updated 2026-11-16 (sections 6-9). Validation numbers only; no test was run for 
   claim of section 5 that the time conditioning is what helps is wrong: timeres helped through its residual blocks and
   LayerNorm.
 - **The slow first phase of SDS does not move** with any network: 13.2-14.3 deg on the left leg at step 100 for every
-  RSGM, 10.8 deg for DPoser.
+  RSGM with the isotropic noise, 10.8 deg for DPoser. It moves only with the noise (section 10).
 - **DPoser's size and training budget do not close the gap** (section 7): a 7.3M network trained 200k steps x 5120 on
   all frames is in the hybrid where the 1.2M networks with residual or LayerNorm are (94.8 / 124.0 / 125.5 / 42.6 mm
   against DPoser's 79.4 / 103.3 / 110.6 / 43.5), and in D-Flow it is not better than the 512x4 MLP (94.35 / 52.46 mm
   against 93.33 / 52.43, section 8).
 - **The input representation does not move it either** (section 9): z-scored tangent coordinates around each joint's
   mean next to the matrices (as DPoser's input) leave the first phase at 13.2 and 14.2 deg; the hybrid on the left leg
-  is 106.0 / 108.0 mm, above the networks with residual or LayerNorm.
-- Decision: the remaining gap of score distillation to DPoser is not the network, its capacity or its training budget.
-  Next: completion that uses the whole reverse process (inpainting on SO(3)), where the pull from implausible poses
-  happens at large noise, inside the training range.
+  is 106.0 / 108.0 mm, above the networks with residual or LayerNorm. With DPoser's network and budget
+  (`dposer_like_z`) it changes nothing either, and it breaks the exact likelihood of 4% of the poses.
+- **Per-joint noise is what was missing** (section 10): with the Brownian time c_j s(t), c_j proportional to the
+  squared spread of the joint (every joint at the same signal-to-noise ratio, as DPoser's noise in z-scored
+  coordinates), the first phase moves from 13.2-14.3 to 12.1-12.3 deg (seed 10 and 11 agree), and it adds up with
+  residual or LayerNorm. `abl_norm_aniso` (1.2M, 30k steps, c10) reaches 87.0 / 105.2 / 108.0 / 44.0 mm in the
+  hybrid against DPoser's 79.4 / 103.3 / 110.6 / 43.5: better on the arms, 1.9 mm behind on the legs, 7.6 mm on the
+  left leg. The APD is lower than without it (5.8-6.8 against 7.3-9.5 cm).
+- Decision: train the RSGM networks with per-joint noise; test it in the completion protocols (inpainting, D-Flow)
+  and with DPoser's size and budget.
 
 ## 1. The three networks
 
@@ -378,12 +384,14 @@ weighting std_j^2 differs per joint).
    they stop the drift of the second phase. The time conditioning is not the reason.
 2. The slow first phase, and with it 15-20 mm of the gap to DPoser in the hybrid, is not a matter of the network, its
    capacity, the training budget, the amount of data or the representation of its input (section 9: z-scored tangent
-   coordinates as DPoser's do not move it). What remains differs between RSGM and DPoser by design: isotropic IGSO(3)
-   noise against noise proportional to every joint's spread, score against noise prediction, and the hybrid's
-   schedule, which is DPoser's.
+   coordinates as DPoser's do not move it). It is the noise: with a Brownian time per joint proportional to its
+   squared spread (section 10) the first phase moves halfway to DPoser, and with LayerNorm the hybrid comes within
+   2-8 mm of DPoser on the legs and beats it on the arms. The rest of the first phase (about 1.3 deg) may be the
+   isotropy within a joint, score against noise prediction, or the hybrid's schedule, which is DPoser's.
 3. In D-Flow the network does not matter either (512x4 MLP = dposer_like).
 4. Next: completion with the whole reverse process of RSGM (inpainting on SO(3)), where the hidden joints are pulled
-   at large noise, which training covers, instead of extrapolating the score at small noise.
+   at large noise, which training covers, instead of extrapolating the score at small noise; and per-joint noise in
+   every RSGM network: inpainting and D-Flow with `abl_norm_aniso`, and DPoser's size and budget with it.
 
 ## What it does not show
 
