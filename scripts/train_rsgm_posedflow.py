@@ -123,6 +123,8 @@ CONFIGS["dposer_like"] = ["model.args.net=timeres", "model.args.net_width=1024",
                           "train.batch_size=5120", "train.max_iterations=200000", "train.scheduler=cosine",
                           "train.warmup_steps=5000", "train.ema_decay=0.9999", "train.valid_interval=5000",
                           "train.checkpoint_every=10000"]
+# and with the z-scored tangent input (Z_INPUT): the pair dposer_like / dposer_like_z differs by the input only
+CONFIGS["dposer_like_z"] = CONFIGS["dposer_like"] + Z_INPUT
 # ----------------------------------------------------------------------------------------
 
 
