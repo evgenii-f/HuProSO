@@ -26,7 +26,8 @@ steps and ode_steps go to run() and the others to the D-Flow prior (e.g. invert)
 t_min = t_max * t_min_fraction, and scale "none" for no scale.
 
 Every trial runs on the same validation poses with the same seeds (common random numbers), so trials differ only by
-their settings; per occlusion MPVPE mean, best of K and APD are kept as user attributes. One set of settings for all
+their settings; per occlusion MPVPE mean, best of K and APD are kept as user attributes, with the minutes, the host
+and the device of the trial. One set of settings for all
 occlusions. A single mean rewards hypotheses that collapse onto one pose (the mean error of K hypotheses is smallest
 when they agree), the best of K rewards covering the plausible completions; objective "pareto" keeps the front of the
 two, objective "mean_apd" the front of the mean and the diversity (APD, higher is better: alone it would favour random
@@ -39,6 +40,7 @@ written to <name>.json next to it, to be copied into MODELS of evaluate_completi
 """
 import argparse
 import json
+import platform
 import subprocess
 import time
 from pathlib import Path
@@ -102,13 +104,15 @@ def values_of(config: dict, trial) -> dict:
     return values
 
 
-def objective_of(config: dict, model, gt, body, commit: str):
+def objective_of(config: dict, model, gt, body, commit: str, device: str):
     names = OBJECTIVES[config["objective"]][0]
     pareto = len(names) > 1
 
     def objective(trial):
         values = values_of(config, trial)
         trial.set_user_attr("git", commit)
+        trial.set_user_attr("host", platform.node().split(".")[0])
+        trial.set_user_attr("device", device)
         start, values_of_occlusions = time.perf_counter(), {"mean": [], "best_of_k": [], "apd": []}
         for occlusion in OCCLUSIONS:
             if config["method"] in ("dposer", "inpaint"):
@@ -254,7 +258,7 @@ def main() -> int:
         model = build({"run": config["model"]}, args.device)
         print(f"study {name} ({commit}): {finished} of {config['n_trials']} trials done, {len(gt)} validation poses",
               flush=True)
-        study.optimize(objective_of(config, model, gt, body, commit), n_trials=config["n_trials"] - finished)
+        study.optimize(objective_of(config, model, gt, body, commit, args.device), n_trials=config["n_trials"] - finished)
     report(study, study_dir)
     return 0
 

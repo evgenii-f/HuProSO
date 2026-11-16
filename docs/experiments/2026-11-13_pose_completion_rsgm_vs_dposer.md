@@ -28,6 +28,11 @@ All numbers on the 5000 test poses of PoseD-Flow, K = 10, MPVPE in mm averaged o
   and APD. **The gain is the procedure, not the prior**: the same inpainting on DPoser c10 gives 87.60 / 47.52 / 6.61,
   on par with RSGM. The claim of the bullet above ("the remaining gap is the model") is thereby revised: at an equal
   procedure the two priors are equal; DPoser's own optimization is still the best mean and 15 times faster.
+
+- **2026-11-16, inpainting on the test (section 11)**: the four points chosen on validation by the rule of 10.4, run
+  once on the 5000 test poses. Best: the residual network of the ablation, 85.50 / 46.70 mm, APD 6.45 cm, the lowest
+  best of 10 of all rows (DPoser 47.22, PoseD-Flow 50.26) and 2.8 mm better than D-Flow in the mean; still 4.3 mm
+  behind DPoser and 5.9 mm behind PoseD-Flow in the mean, mostly on the arms.
 - **2026-11-16, fairness check (validation, section 12)**: section 10 favoured RSGM (Optuna against a hand grid,
   twice the network calls). Tuned the same way (120 trials, 1000 validation poses), DPoser c10 inpainting reaches the
   front of RSGM (88.26 / 49.22 mm / 6.46 cm against 88.22 / 49.30 / 6.39); DPoser's own optimization stays about
@@ -336,7 +341,8 @@ workstation2. The rule for the test, written in each configuration before it: am
 worse than D-Flow Heun EDM 50 of 512×4 on the same poses (best of 10 52.43 mm for the first; APD 6.40 cm for the
 others), the lowest mean. Their numbers go here when they are finished and copied to the Mac. Seen so far in the
 summaries: the best points sit at the upper ends of the search space (r = 5, 400 steps) without replacement, so the
-space should be widened (r up to 12, steps up to 800) in a next study.
+space should be widened (r up to 12, steps up to 800) in a next study. The finished studies and the test of the chosen
+points are in section 11.
 
 ### 10.5 The same inpainting on DPoser
 
@@ -372,6 +378,79 @@ reach the same point (87.6 / 47.5 / 6.6 against 86.7 / 48.2 / 6.4). Inpainting m
 **What it does not show.** 100 poses: differences below ~2 mm are not resolved. The DPoser variants are a hand-made
 grid, not tuned as RSGM's were (Optuna). Times are on the Mac and include the network calls of all K hypotheses. No
 test numbers: the test is run once for the points chosen by the rules of 10.4.
+
+## 11. 2026-11-16: Inpainting on the test
+
+**Question.** Do the inpainting settings chosen on validation (10.4) keep their gain on the test, and how do they stand
+against PoseD-Flow and DPoser there?
+
+**Setup.** Optuna studies on the first 1000 fixed validation poses, K = 10, `scripts/tune_completion.py`, EDM grid,
+search space steps {100, 200, 400}, ζ in [0.01, 0.5] (log), r {1, 2, 3, 5}, replacement {yes, no}, on workstation2.
+Models: `~/data/experiments/rsgm_posedflow_{small,deep,abl_residual,abl_norm}_s10/run_0001`, all "std" weighting,
+c10, one training seed each. The rules, written in the configurations before the studies: for `rsgm_inpaint_pareto`
+(objectives mean and best of 10) the lowest mean among the front points with best of 10 ≤ 52.43 mm; for
+`rsgm_inpaint_mean_apd_*` (objectives mean and APD) the lowest mean among the front points with APD ≥ 6.40 cm. The
+thresholds are D-Flow with Heun EDM 50 on 512×4 on the same poses (93.33 / 52.43 / 6.40). The chosen points were run
+once on the 5000 test poses of PoseD-Flow, K = 10, as rows of `scripts/evaluate_completion.py` (commit `c01a464`, on
+workstation2); the metrics are read from their caches. MPVPE in mm, APD in cm.
+
+### 11.1 Studies and chosen points (validation, 1000 poses)
+
+| study | network | trials | point | steps | ζ | r | replacement | mean | best of 10 | APD |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `rsgm_inpaint_pareto` | 512×4 (small) | 60 | 52 | 400 | 0.0577 | 5 | no | 92.43 | 50.86 | 6.99 |
+| `rsgm_inpaint_mean_apd_deep` | deep | 120 | 75 | 200 | 0.0975 | 5 | no | 91.29 | 50.19 | 6.84 |
+| `rsgm_inpaint_mean_apd_residual` | abl residual | 120 | 81 | 400 | 0.0493 | 5 | no | **88.32** | **49.18** | 6.41 |
+| `rsgm_inpaint_mean_apd_norm` | abl norm | 120 | 118 | 200 | 0.0952 | 5 | no | 89.55 | 49.72 | 6.57 |
+
+All four points sit at r = 5, the upper end of the space, without replacement, at ζ 0.05-0.10. Points with a lower
+mean exist on the fronts but below the APD threshold (residual trial 59: 88.22 / APD 6.39; deep trial 40: 89.82 /
+5.69, with replacement). The Pareto study ran 60 of its 120 planned trials; its last front points (trials 51-56) differ by less than
+0.2 mm.
+A fifth study, `rsgm_inpaint_mean_apd_search_lik_full` (1536×6, likelihood weighting, full data), was at 88 of 120
+trials when this was written; its rule point so far is trial 71 (400 steps, ζ 0.040, r 5: 90.70 / 50.62 / 6.65), not
+better than residual, and it was not run on the test.
+
+### 11.2 Test (5000 poses)
+
+Cells: mean / best of 10 / APD.
+
+| row | left_leg | legs | arms | trunk | average |
+|---|---|---|---|---|---|
+| PoseD-Flow (their checkpoint, D-Flow) | 79.8 / 47.2 / 5.15 | **92.4** / 59.6 / 6.60 | 106.9 / 66.7 / 5.63 | **39.5** / 27.6 / 1.07 | **79.65** / 50.26 / 4.61 |
+| DPoser (its own optimization) | **76.3** / **38.3** / 6.46 | 102.9 / 65.0 / 7.46 | **102.2** / 62.5 / 5.64 | 43.4 / 23.1 / 1.87 | 81.19 / 47.22 / 5.36 |
+| RSGM 512×4, D-Flow Heun EDM 50 (section 8) | 92.5 / 46.2 / 7.46 | 105.4 / 62.4 / 8.64 | 111.5 / 65.6 / 6.47 | 43.8 / 25.5 / 1.71 | 88.32 / 49.92 / 6.07 |
+| RSGM 512×4, inpainting t52 | 87.1 / 42.1 / 7.90 | 105.7 / 61.5 / 9.86 | 115.4 / 62.6 / 8.24 | 45.9 / 24.3 / 2.07 | 88.55 / 47.62 / 7.02 |
+| RSGM deep, inpainting t75 | 86.6 / 42.5 / 7.72 | 107.1 / 63.2 / 9.61 | 122.4 / 67.3 / 8.28 | 44.3 / 23.6 / 1.96 | 90.11 / 49.15 / 6.89 |
+| RSGM abl residual, inpainting t81 | 81.6 / 40.1 / 7.07 | 102.4 / 61.2 / 8.90 | 114.9 / 62.5 / 7.96 | 43.1 / **23.0** / 1.88 | 85.50 / **46.70** / 6.45 |
+| RSGM abl norm, inpainting t118 | 85.7 / 42.2 / 7.57 | 105.3 / 62.1 / 9.50 | 116.5 / 63.4 / 8.04 | 43.1 / 23.5 / 1.87 | 87.64 / 47.80 / 6.74 |
+
+Inpainting with the residual network has the lowest best of 10 of all rows and the highest APD among the rows within
+6 mm of the best mean, but stays 4.3 mm behind DPoser and 5.9 mm behind PoseD-Flow in the mean.
+
+- *Against D-Flow on the same 512×4 network*: equal mean (88.55 against 88.32), best of 10 2.3 mm lower, APD 7.0
+  against 6.1 cm. With the residual network inpainting is better in all three.
+- *Per occlusion against DPoser*: left_leg +5.3 mm (on validation +6), legs −0.5, trunk −0.3, arms +12.7 mm with an
+  equal best of 10 (62.5): on the arms the hypotheses are spread too wide rather than wrong. Against PoseD-Flow the
+  legs are also 10 mm behind.
+- *Validation to test*: residual drops 2.8 mm in the mean (88.32 → 85.50), D-Flow on 512×4 about 5 mm (93.33 →
+  88.32); residual and norm are first and second on both splits, small and deep swap places (within 1.6 mm).
+
+### 11.3 Conclusions of this phase
+
+1. The validation result holds on the test: inpainting is the best RSGM procedure, and with the residual network it
+   reaches the best best of 10 of all methods, PoseD-Flow and DPoser included.
+2. The mean is still behind DPoser (4.3 mm) and PoseD-Flow (5.9 mm); the gap is mostly the arms, where the hypotheses
+   are more diverse than the observation warrants.
+3. The best settings are at the boundary of the search space (r = 5); a wider search (r up to 12, steps up to 800),
+   a short refinement of each hypothesis after inpainting, or a schedule of ζ are the next candidates, not yet run.
+
+**What it does not show.** One training seed per network: differences of 1-2 mm between networks (residual against
+norm) can be seed noise; deep being worst is clear. One test run per row. The Pareto study of 512×4 ran half its
+trials. The metrics of the deep, residual and norm rows were read from their cache files directly
+(`hp.evaluation.completion.cache_path` and `cached_metrics`): the copies of the weights on the Mac have another
+modification time than on workstation2, so the cache check of `cached_run` refuses them; the rows themselves were
+computed on workstation2 by `scripts/evaluate_completion.py`. No timing on the test.
 
 ## 12. 2026-11-16: Was DPoser compared fairly? DPoser c10 tuned like RSGM (validation)
 
@@ -474,5 +553,9 @@ on the poses the settings were chosen on.
   `~/data/experiments/completion/{inpaint,dflow,baselines}_valid_mac.jsonl` by
   `explore/evaluation/completion_diagnostics/{inpaint_valid,dflow_valid,baselines_valid}.py`; `dposer_inpaint` and
   the DPoser variants on the branch `experimental/dposer-inpainting`.
+- Inpainting studies and test (section 11): `~/data/experiments/completion/optuna/rsgm_inpaint_*.db`, configurations
+  `config/completion_tuning/rsgm_inpaint_*.yaml`; test rows `RSGM <network>: their c10, inpaint t<trial>` in
+  `scripts/evaluate_completion.py` and `explore/evaluation/pose_completion.ipynb`, caches in
+  `~/data/experiments/completion/cache/`.
 - DPoser c10 studies (section 12): `config/completion_tuning/dposer_c10_{method,inpaint}_mean_apd.yaml`, databases in
   `~/data/experiments/completion/optuna/`; the table by `explore/evaluation/completion_diagnostics/study_fronts.py`.
