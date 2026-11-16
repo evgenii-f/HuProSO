@@ -35,7 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from hp.evaluation.data import load_reference  # noqa: E402
 from hp.models.io import load_model  # noqa: E402
-from hp.models.rsgm import z_statistics  # noqa: E402
+from hp.models.rsgm import fit_joint_scale, z_statistics  # noqa: E402
 from hp.training import cli  # noqa: E402
 from hp.training.config import load_config  # noqa: E402
 
@@ -115,6 +115,11 @@ CONFIGS["res_norm"] = ABL_BASE + ["model.args.net_residual=true", "model.args.ne
 Z_INPUT = ["model.args.inputs=local+z"]
 CONFIGS["abl_z"] = ABL_BASE + Z_INPUT
 CONFIGS["res_norm_z"] = CONFIGS["res_norm"] + Z_INPUT
+# Per-joint noise (joint_scale, hp.models.rsgm): the Brownian time c_j s(t) with c_j proportional to the spread of joint
+# j (fit_joint_scale of the z statistics), as DPoser's noise in z-scored coordinates; with abl_base, the pair differs by
+# the noise only. The configs in ANISO get model.args.joint_scale from the statistics.
+CONFIGS["abl_aniso"] = list(ABL_BASE)
+ANISO = {"abl_aniso"}
 # DPoser's network and training on RSGM: TimeFC's size (1024 x 2 blocks, a 512-dim embedding, dropout 0.1) and
 # DPoser's schedule (200k steps x 5120, lr 2e-4, cosine with 5k warm-up, EMA 0.9999). For the full data, as DPoser's
 # full run: --rotations ~/data/AMASS_rotations_posedflow --run-root ~/data/experiments/full
@@ -228,6 +233,9 @@ def main() -> int:
         if "model.args.inputs=local+z" in argv:
             stats = fitted_z_statistics(rotations, split, args.run_root, frames)
             argv += [f"model.args.z_mean={json.dumps(stats['z_mean'])}", f"model.args.z_std={json.dumps(stats['z_std'])}"]
+        if config in ANISO:
+            stats = fitted_z_statistics(rotations, split, args.run_root, frames)
+            argv += [f"model.args.joint_scale={json.dumps(fit_joint_scale(stats['z_std']))}"]
         runs = runs_of(Path(args.run_root).expanduser() / name)
         done = [r for r in runs if finished(r)]
         stopped = [r for r in runs if resumable(r)]
@@ -249,8 +257,8 @@ def main() -> int:
             argv = [f"resume={stopped[-1]}", f"train.device={args.device}", *overrides]
             plan = f"resuming {stopped[-1]}; " + plan
         if args.dry_run:
-            shown = [a.split("=")[0] + "=[57 numbers]" if a.startswith(("model.args.z_mean=", "model.args.z_std="))
-                     else a for a in argv]
+            shown = [a.split("=")[0] + "=[...]" if a.startswith(("model.args.z_mean=", "model.args.z_std=",
+                                                                  "model.args.joint_scale=")) else a for a in argv]
             print(f"{head}: {plan}\n  would run scripts/train_model.py {' '.join(shown)}", flush=True)
             continue
         print(f"\n{head}: {plan}; started {time.strftime('%H:%M')}, {minutes(time.perf_counter() - started)} into the script",

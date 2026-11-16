@@ -34,13 +34,18 @@ def rsgm_hat_aniso(x, t_d):
 
 
 def rsgm_hat(x, t_d):
-    """RSGM's denoised estimate of the normalized vectors x [B, 57] at DPoser's time t_d (matched mean noise)."""
+    """RSGM's denoised estimate of the normalized vectors x [B, 57] at DPoser's time t_d (matched mean noise).
+    RSGM's time t_r: s(t_r) = mean over the joints of s_j^DPoser / c_j, s_j^DPoser = (std/alpha)^2 * the mean square
+    of DPoser's data_std of joint j, and the noise is IGSO(3) of c_j s(t_r) per joint. For the isotropic model (c = 1)
+    that is the mean square noise of DPoser, the same for every joint; with joint_scale (c_j ~ spread^2) it is close
+    to DPoser's own noise of every joint."""
     a, sd = dp.marginal(t_d)
-    sigma = ((sd / a)[:, None] * data_std[None]).pow(2).mean(1).sqrt()          # RMS radians per coordinate
-    s = sigma.cpu().double() ** 2
+    s_dp = ((sd / a)[:, None, None] * data_std.view(1, 19, 3)).pow(2).mean(-1).cpu().double()   # [B, 19]
+    c = torch.ones(19, dtype=torch.float64) if rs.joint_scale is None else rs.joint_scale.cpu().double()
+    s = (s_dp / c).mean(1)
     R = dp.denormalize(x)                                                        # [B, 19, 3, 3]
     b = len(x)
-    noise = sampler.sample(s[:, None].expand(b, 19))[..., None] * igso3.random_axes((b, 19))
+    noise = sampler.sample(s[:, None] * c)[..., None] * igso3.random_axes((b, 19))
     Rt = exp_frame(R.cpu().double(), noise).float().to(dev)
     t_r = rs.t_of_s(s).float().to(dev)
     R0 = rsgm_denoise(rs, Rt, t_r)

@@ -31,6 +31,16 @@ of the condition MLP are concatenated to the input of the score network. Samplin
 score(x, t, c); log_prob is log p(pose | c). cond_mask = "random" hides joints at random in the loss, "none": all
 joints are observed. Without `condition`, cond_dim > 0 makes a model with a generic condition vector [B, cond_dim].
 
+Per-joint noise (`joint_scale` = c [J]): joint j diffuses with the Brownian time s_j(t) = c_j s(t), i.e. with
+beta_j = c_j beta, so x_t | x_0 is still IGSO(3) per joint and the target of the loss stays exact. With c_j proportional
+to the spread of the joint over the data (fit_joint_scale), every joint has the same signal-to-noise ratio at a given
+t, as in DPoser, whose noise is added to z-scored coordinates; the isotropic model (c = 1) drowns the joints of small
+spread (the spine, the shoulders) at times where the wide ones (the knees, the elbows) are still clear. The std trick,
+the weighting std_j(t)^2 of the loss, the sampler and the probability flow use s_j and beta_j joint by joint; the
+network still gets the one time t. c is normalized to min c_j = 1, so that at t = 1 every joint is at least as close
+to uniform as in the isotropic model. s_j stops at S_CAP (beta_j = 0 from there on): IGSO(3) of time 20 is uniform to
+about exp(-20), and the numerics of the heat kernel fail far above it (c_j s(1) reaches about 160 for the knees).
+
 Inputs of the score network. The rotations of a pose are relative to the parent joints, so the orientation of a
 hand is a product along the chain root-spine-shoulder-arm-elbow-hand, which a plain MLP has to learn to multiply.
 inputs = "local+global" also gives it these products (the forward kinematics along the SMPL tree, no root rotation),
@@ -65,6 +75,7 @@ class Sin(nn.Module):
 
 
 ACTIVATIONS = {"sin": Sin, "silu": nn.SiLU, "relu": nn.ReLU}
+S_CAP = 20.0  # the largest Brownian time of a joint with joint_scale (see the module doc)
 SAMPLERS = {"euler_maruyama": 1, "euler": 1, "heun": 2}  # and the network calls of a step
 
 
@@ -128,6 +139,13 @@ def z_statistics(poses: torch.Tensor, iterations: int = 50, chunk: int = 1_000_0
     return roma.rotmat_to_rotvec(m).reshape(-1).tolist(), std.reshape(-1).tolist()
 
 
+def fit_joint_scale(z_std) -> list:
+    """joint_scale c [J] from the per-coordinate std [3J] of z_statistics: c_j = sigma_j^2 / min_k sigma_k^2, sigma_j
+    the RMS of the three stds of joint j (the RMS angle of the joint around its mean)."""
+    sigma2 = torch.as_tensor(z_std, dtype=torch.float64).reshape(-1, 3).pow(2).mean(-1)
+    return (sigma2 / sigma2.min()).tolist()
+
+
 @register_model("rsgm")
 class RSGM(PoseModel):
     has_log_prob = True
@@ -170,6 +188,7 @@ class RSGM(PoseModel):
         net_residual: bool = True,  # residual,
         net_norm: bool = True,  # norm,
         net_zero_init: bool = True,  # zero_init
+        joint_scale: Optional[Sequence[float]] = None,  # c [J]: the Brownian time c_j s(t) per joint (module doc)
     ):
         if representation != "matrix":
             raise ValueError("RSGM works on rotation matrices directly; use representation='matrix'.")
@@ -219,7 +238,16 @@ class RSGM(PoseModel):
                 width = h
             layers.append(nn.Linear(width, 3 * num_joints))
             self.net = nn.Sequential(*layers)
-        s_lo, s_hi = self.s(torch.tensor(min(eps, loss_t_min))), self.s(torch.tensor(1.0))
+        c = None  # a buffer when given (saved with the weights, never trained), else no buffer, as before
+        if joint_scale is not None:
+            c = torch.as_tensor(joint_scale, dtype=torch.float64).reshape(-1)
+            if c.shape != (num_joints,) or not (c > 0).all():
+                raise ValueError(f"joint_scale must have {num_joints} positive entries, got {c.tolist()}.")
+            c = c.float()
+        self.register_buffer("joint_scale", c)
+        c_lo, c_hi = (1.0, 1.0) if joint_scale is None else (float(c.min()), float(c.max()))
+        s_lo, s_hi = c_lo * self.s(torch.tensor(min(eps, loss_t_min))), c_hi * self.s(torch.tensor(1.0))
+        s_hi = s_hi if joint_scale is None else min(s_hi, torch.tensor(S_CAP))
         self.angles = igso3.AngleSampler(float(s_lo) * 0.999, float(s_hi) * 1.001)
 
     @property
@@ -239,6 +267,28 @@ class RSGM(PoseModel):
     def std(self, t: torch.Tensor) -> torch.Tensor:
         """The scale of the std trick: sqrt(1 - exp(-s)), as marginal_prob of the JAX code."""
         return torch.sqrt(-torch.expm1(-self.s(t)))
+
+    def _c(self, like: torch.Tensor) -> Optional[torch.Tensor]:
+        return None if self.joint_scale is None else self.joint_scale.to(like.device).to(like.dtype)  # mps: no float64
+
+    def joint_s(self, t: torch.Tensor) -> torch.Tensor:
+        """The Brownian time of every joint [B, J] at the times t [B]: min(c_j s(t), S_CAP) (s(t) for the isotropic
+        model)."""
+        s = self.s(t)[:, None]
+        c = self._c(s)
+        return s.expand(-1, self.num_joints) if c is None else (s * c).clamp_max(S_CAP)
+
+    def joint_std(self, t: torch.Tensor) -> torch.Tensor:
+        """The scale of the std trick per joint [B, J]: sqrt(1 - exp(-s_j(t)))."""
+        return torch.sqrt(-torch.expm1(-self.joint_s(t)))
+
+    def joint_beta(self, t: torch.Tensor) -> torch.Tensor:
+        """beta_j(t) = d s_j / dt [B, J]: c_j beta(t), and 0 where s_j has reached S_CAP."""
+        b = self.beta(t)[:, None]
+        c = self._c(b)
+        if c is None:
+            return b.expand(-1, self.num_joints)
+        return torch.where(self.s(t)[:, None] * c < S_CAP, b * c, torch.zeros_like(b * c))
 
     def t_of_s(self, s: torch.Tensor) -> torch.Tensor:
         """The time t of the Brownian time s: s = beta_0 t + (beta_f - beta_0) t^2 / 2, solved for t."""
@@ -282,15 +332,19 @@ class RSGM(PoseModel):
                 level = torch.log(self.s(t.to(x.dtype))) / 4  # s(t) >= beta_0 eps ~ 2e-7: fine in float32
             else:
                 level = t.to(x.dtype)
-            out = self.net(features, level) / self.std(t)[:, None].to(x.dtype)
-            return out.reshape(b, self.num_joints, 3)
+            return self._unscale(self.net(features, level), t, x.dtype)
         inputs.append(t_col)
         if self.time_features:  # frequencies pi, 2 pi, 4 pi, ...: periods from 2 down to 2^(2 - K) in t
             angles = t_col * (math.pi * 2.0 ** torch.arange(self.time_features, device=x.device, dtype=x.dtype))
             inputs += [torch.sin(angles), torch.cos(angles)]
         features = torch.cat(inputs + ([] if f is None else [f]), dim=1)
-        out = self.net(features) / self.std(t)[:, None].to(x.dtype)
-        return out.reshape(x.shape[0], self.num_joints, 3)
+        return self._unscale(self.net(features), t, x.dtype)
+
+    def _unscale(self, out: torch.Tensor, t: torch.Tensor, dtype) -> torch.Tensor:
+        """The output [B, 3J] of the network divided by std (per joint with joint_scale), as [B, J, 3]."""
+        if self.joint_scale is None:
+            return (out / self.std(t)[:, None].to(dtype)).reshape(out.shape[0], self.num_joints, 3)
+        return out.reshape(out.shape[0], self.num_joints, 3) / self.joint_std(t.to(dtype))[..., None]
 
     def loss(self, pose: torch.Tensor, cond: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Denoising score matching: E || std(t) * (score(x_t, t) - grad log p_t(x_t | x_0)) ||^2.
@@ -305,15 +359,16 @@ class RSGM(PoseModel):
         if self.cond_mask == "random":
             cond = conditioning.hide_random(cond, generator)
         t = self.loss_times(torch.rand(batch, dtype=torch.float64, generator=generator))
-        s = self.s(t)[:, None].expand(batch, joints)
+        s = self.joint_s(t)  # [B, J], float64 on the CPU
+        std = self.joint_std(t)
         omega = self.angles.sample(s, generator)
         axis = igso3.random_axes((batch, joints), generator)
         x0 = move(pose.detach().reshape(batch, joints, 3, 3), "cpu", torch.float64)
         xt = exp_frame(x0, omega[..., None] * axis)
-        target = (self.std(t)[:, None, None] * igso3.d_log_density(omega, s)[..., None] * axis)
+        target = std[..., None] * igso3.d_log_density(omega, s)[..., None] * axis
         dtype = self.dtype
-        xt, target, t = (move(v, self.device, dtype) for v in (xt, target, t))
-        scaled = self.score(xt, t, self.cond_features(cond, batch)) * self.std(t)[:, None, None]
+        xt, target, t, std = (move(v, self.device, dtype) for v in (xt, target, t, std))
+        scaled = self.score(xt, t, self.cond_features(cond, batch)) * std[..., None]
         return ((scaled - target) ** 2).sum(dim=(1, 2)).mean()
 
     # ---- sampling: the time reversal, by geodesic Euler-Maruyama or the probability flow ODE ----
@@ -351,7 +406,7 @@ class RSGM(PoseModel):
         for t, t_next in zip(times[:-1], times[1:]):
             h = t_next - t  # negative: the ODE runs backwards in time
             if self.sampler == "euler_maruyama":
-                dt, beta = -h, self.beta(t)
+                dt, beta = -h, self.joint_beta(t.expand(n))[..., None]
                 step = beta * self.score(x, t.expand(n), f) * dt + torch.sqrt(beta * dt) * torch.randn(n, self.num_joints, 3, device=self.device, dtype=dtype)
                 x = exp_frame(x, step)
                 continue
@@ -383,8 +438,8 @@ class RSGM(PoseModel):
     # ---- the likelihood: probability flow ODE with the exact divergence ----
 
     def velocity(self, x: torch.Tensor, t: torch.Tensor, f: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """The probability flow -beta(t)/2 * score, coordinates [B, J, 3] in the frame of x."""
-        return -0.5 * self.beta(t)[:, None, None] * self.score(x, t, f)
+        """The probability flow -beta_j(t)/2 * score, coordinates [B, J, 3] in the frame of x."""
+        return -0.5 * self.joint_beta(t)[..., None] * self.score(x, t, f)
 
     def velocity_and_divergence(self, x: torch.Tensor, t: torch.Tensor, f: Optional[torch.Tensor] = None):
         """The velocity and its Riemannian divergence [B]. The frame fields x @ hat(e_i) are divergence free

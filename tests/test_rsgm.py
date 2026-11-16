@@ -500,3 +500,85 @@ def test_the_plain_log_is_roma_s_away_from_pi():
     far = v.norm(dim=-1) < math.pi - 1e-3
     assert torch.allclose(log_rotations(r)[far], v[far], atol=1e-9)
     assert torch.equal(log_rotations(torch.eye(3)), torch.zeros(3))
+
+
+# ---- per-joint noise (joint_scale) ----
+
+from hp.models.rsgm import fit_joint_scale  # noqa: E402
+
+
+class AnisoOracle(Oracle):
+    """The oracle with the Brownian time c_j s(t) per joint: p_t is IGSO(3) around mu with time s0 + c_j s(t)."""
+
+    def score(self, x, t, f=None):
+        v = log_map(self.mu.transpose(-1, -2) @ x)
+        angle = v.norm(dim=-1)
+        return (igso3.d_log_density(angle, self.s0 + self.joint_s(t)) / angle)[..., None] * v
+
+
+def test_log_prob_of_the_per_joint_oracle_is_the_analytic_density():
+    model = AnisoOracle(2, beta_f=20.0, likelihood_steps=100, joint_scale=[1.0, 4.0])
+    poses, angles = model.data(300)
+    s_eps = model.s(torch.tensor(model.eps, dtype=torch.float64)) * torch.tensor([1.0, 4.0], dtype=torch.float64)
+    exact = igso3.log_density(angles, model.s0 + s_eps).sum(-1)
+    error = model.log_prob(poses) - exact
+    assert error.mean().abs() < 0.01 and error.abs().max() < 0.1
+
+
+@pytest.mark.parametrize("sampler", ["euler_maruyama", "heun"])
+def test_samples_of_the_per_joint_oracle_follow_its_distribution(sampler):
+    model = AnisoOracle(2, beta_f=20.0, sample_steps=200, sampler=sampler, joint_scale=[1.0, 4.0])
+    torch.manual_seed(0)
+    angles = log_map(model.mu.transpose(-1, -2) @ model.sample(10_000)).norm(dim=-1)
+    for joint in range(2):
+        assert ks_distance(angles[:, joint], model.s0) < 1.63 / math.sqrt(10_000)
+
+
+def test_the_loss_noises_every_joint_with_its_own_time(monkeypatch):
+    model = build_model("rsgm", num_joints=3, hidden=[8], joint_scale=[1.0, 2.0, 5.0]).eval()
+    seen = []
+    real = model.angles.sample
+    monkeypatch.setattr(model.angles, "sample", lambda s, g=None: seen.append(s) or real(s, g))
+    model.loss(roma.random_rotmat(4 * 3).reshape(4, 3, 3, 3))
+    assert torch.allclose(seen[0] / seen[0][:, :1], torch.tensor([1.0, 2.0, 5.0], dtype=torch.float64))
+
+
+def test_unit_joint_scale_is_the_isotropic_model():
+    torch.manual_seed(0)
+    iso = build_model("rsgm", num_joints=J19, hidden=[16]).eval()
+    unit = build_model("rsgm", num_joints=J19, hidden=[16], joint_scale=[1.0] * J19).eval()
+    unit.load_state_dict(iso.state_dict() | {"joint_scale": unit.joint_scale})
+    x, t = poses19(3), torch.tensor([0.01, 0.3, 0.9])
+    with torch.no_grad():
+        assert torch.allclose(iso.score(x, t), unit.score(x, t), rtol=1e-5)
+        poses = poses19(8)
+        assert torch.allclose(iso.loss(poses), unit.loss(poses), rtol=1e-5)
+
+
+def test_joint_scale_is_a_buffer_and_is_saved_and_loaded(tmp_path):
+    poses, _, scale = concentrated_poses(5_000)
+    _, z_std = z_statistics(poses)
+    c = fit_joint_scale(z_std)
+    rms = scale.pow(2).mean(-1)
+    assert min(c) == 1.0 and torch.allclose(torch.tensor(c, dtype=torch.float64), rms / rms.min(), rtol=0.05)
+    torch.manual_seed(0)
+    model = build_model("rsgm", num_joints=J19, net="timeres", net_width=32, net_blocks=1, net_embed=16,
+                        net_zero_init=False, joint_scale=c)
+    assert "joint_scale" in dict(model.named_buffers()) and "joint_scale" not in dict(model.named_parameters())
+    save_model(model, tmp_path)
+    loaded = load_model(tmp_path)
+    x, t = poses19(3), torch.tensor([0.01, 0.3, 0.9])
+    with torch.no_grad():
+        assert torch.equal(model.eval().score(x, t), loaded.score(x, t))
+    with pytest.raises(ValueError, match="joint_scale"):
+        build_model("rsgm", num_joints=J19, joint_scale=[1.0] * 3)
+
+
+def test_the_brownian_time_of_a_joint_stops_at_the_cap():
+    from hp.models.rsgm import S_CAP
+    model = build_model("rsgm", num_joints=2, hidden=[8], beta_f=7.5, joint_scale=[1.0, 50.0])
+    t = torch.tensor([0.01, 0.5, 1.0], dtype=torch.float64)
+    s, beta = model.joint_s(t), model.joint_beta(t)
+    assert torch.allclose(s[:, 0], model.s(t)) and s[:, 1].max() == S_CAP
+    assert beta[2, 1] == 0 and beta[0, 1] == 50 * model.beta(t[0])
+    assert torch.isfinite(model.loss(roma.random_rotmat(64 * 2).reshape(64, 2, 3, 3)))
