@@ -2,13 +2,15 @@
 
     python scripts/tune_completion.py config/completion_tuning/rsgm_sds_pareto.yaml --device cuda:0
     python scripts/tune_completion.py config/completion_tuning/rsgm_sds_pareto.yaml --summary
+    python scripts/tune_completion.py config/completion_tuning/rsgm_sds_pareto.yaml --device cuda:0 --n-trials 120
     python scripts/tune_completion.py --study rsgm_sds_pareto --summary          # by name, without the file
 
 A study is described by a YAML file in config/completion_tuning, and its name is the name of the file:
 
     model: ~/data/experiments/rsgm_posedflow_small_s10/run_0001     # a run folder
-    method: dposer          # DPoser's optimization (run(method="dposer")), or dflow (D-Flow)
-    objective: mean         # mean: the mean over the occlusions of MPVPE mean; pareto: that and of MPVPE best of K
+    method: dposer          # DPoser's optimization (run(method="dposer")), dflow (D-Flow) or inpaint (RSGM, DPoser)
+    objective: mean         # mean: the mean over the occlusions of MPVPE mean; pareto: that and of MPVPE best of K;
+                            # mean_apd: that and of APD (maximized)
     poses: 1000             # fixed random validation poses
     n_trials: 80            # finished trials of the study (may be raised later)
     params:                 # searched: {low, high, log} a float, {low, high, int: true} an integer, [a, b] a choice
@@ -18,7 +20,8 @@ A study is described by a YAML file in config/completion_tuning, and its name is
     first: [{lr: 0.05, start: noise}]                                # trials enqueued into a new study
 
 The values of a trial (fixed and searched) are options of run(): for dposer all of them go to the optimization
-(dposer_complete or rsgm_complete, and start / scale / stats of run's RSGM starts); for dflow, lr, running_weight,
+(dposer_complete or rsgm_complete, and start / scale / stats of run's RSGM starts); for inpaint, to rsgm_inpaint
+or dposer_inpaint (steps, schedule, resample, guidance, replace); for dflow, lr, running_weight,
 steps and ode_steps go to run() and the others to the D-Flow prior (e.g. invert). t_min_fraction stands for
 t_min = t_max * t_min_fraction, and scale "none" for no scale.
 
@@ -26,7 +29,8 @@ Every trial runs on the same validation poses with the same seeds (common random
 their settings; per occlusion MPVPE mean, best of K and APD are kept as user attributes. One set of settings for all
 occlusions. A single mean rewards hypotheses that collapse onto one pose (the mean error of K hypotheses is smallest
 when they agree), the best of K rewards covering the plausible completions; objective "pareto" keeps the front of the
-two, and a setting is chosen from it by a rule fixed before the test.
+two, objective "mean_apd" the front of the mean and the diversity (APD, higher is better: alone it would favour random
+poses), and a setting is chosen from the front by a rule fixed before the test.
 
 The study lives in STUDY_DIR / <name>.db and keeps its configuration, K and the git commit of its creation as user
 attributes; every trial keeps the commit it ran on. Run again, it continues; it refuses to continue if the file now
@@ -51,7 +55,12 @@ ROTATIONS = "~/data/AMASS_rotations_posedflow_c10"  # their data: the validation
 K = 10                                               # hypotheses per pose
 BATCH = 500
 SEED = 10
-METHODS, OBJECTIVES = ("dposer", "dflow"), ("mean", "pareto")
+METHODS = ("dposer", "dflow", "inpaint")
+OBJECTIVES = {  # name: (the values of a trial, their directions)
+    "mean": (("mean",), ("minimize",)),
+    "pareto": (("mean", "best_of_k"), ("minimize", "minimize")),
+    "mean_apd": (("mean", "apd"), ("minimize", "maximize")),
+}
 RUN_KEYS = ("lr", "running_weight", "steps", "ode_steps")  # dflow: arguments of run(), the others go to the prior
 KEYS = ("model", "method", "objective", "poses", "n_trials", "params", "fixed", "first")
 
@@ -65,7 +74,7 @@ def load_config(path: Path) -> dict:
     if unknown:
         raise ValueError(f"{path}: unknown keys {sorted(unknown)}.")
     if config["method"] not in METHODS or config["objective"] not in OBJECTIVES:
-        raise ValueError(f"{path}: method must be one of {METHODS} and objective one of {OBJECTIVES}.")
+        raise ValueError(f"{path}: method must be one of {METHODS} and objective one of {list(OBJECTIVES)}.")
     config.setdefault("fixed", {})
     config.setdefault("first", [])
     for name, spec in config["params"].items():
@@ -94,19 +103,20 @@ def values_of(config: dict, trial) -> dict:
 
 
 def objective_of(config: dict, model, gt, body, commit: str):
-    pareto = config["objective"] == "pareto"
+    names = OBJECTIVES[config["objective"]][0]
+    pareto = len(names) > 1
 
     def objective(trial):
         values = values_of(config, trial)
         trial.set_user_attr("git", commit)
-        start, means, bests = time.perf_counter(), [], []
+        start, values_of_occlusions = time.perf_counter(), {"mean": [], "best_of_k": [], "apd": []}
         for occlusion in OCCLUSIONS:
-            if config["method"] == "dposer":
+            if config["method"] in ("dposer", "inpaint"):
                 options = dict(values)
-                if options.get("start", "rest") != "rest" or "scale" in options:
+                if config["method"] == "dposer" and (options.get("start", "rest") != "rest" or "scale" in options):
                     options.setdefault("stats", ROTATIONS)
-                pred = run(model, gt, occlusion, K, batch=BATCH, together=True, progress=False, method="dposer",
-                           prior=options)
+                pred = run(model, gt, occlusion, K, batch=BATCH, together=True, progress=False,
+                           method=config["method"], prior=options)
             else:
                 kwargs = {key: values[key] for key in RUN_KEYS if key in values}
                 prior = {key: value for key, value in values.items() if key not in RUN_KEYS}
@@ -114,12 +124,13 @@ def objective_of(config: dict, model, gt, body, commit: str):
             s = summary(metrics(pred, gt, occlusion, body))
             for key in ("mpvpe_mean", "mpvpe_min", "apd"):
                 trial.set_user_attr(f"{occlusion}_{key}", s[key])
-            means.append(s["mpvpe_mean"])
-            bests.append(s["mpvpe_min"])
+            for name, key in (("mean", "mpvpe_mean"), ("best_of_k", "mpvpe_min"), ("apd", "apd")):
+                values_of_occlusions[name].append(s[key])
             if not pareto:  # intermediate values: single-objective studies only
-                trial.report(float(np.mean(means)), len(means) - 1)
+                trial.report(float(np.mean(values_of_occlusions["mean"])), len(values_of_occlusions["mean"]) - 1)
         trial.set_user_attr("minutes", (time.perf_counter() - start) / 60)
-        return (float(np.mean(means)), float(np.mean(bests))) if pareto else float(np.mean(means))
+        result = tuple(float(np.mean(values_of_occlusions[name])) for name in names)
+        return result if pareto else result[0]
     return objective
 
 
@@ -185,17 +196,25 @@ def report(study, study_dir: Path) -> None:
     out = {"study": study.study_name, "trials": len(done), "config": study.user_attrs.get("config"),
            "git": study.user_attrs.get("git")}
     if pareto:
+        names = OBJECTIVES[(study.user_attrs.get("config") or {}).get("objective", "pareto")][0]
         front = sorted(study.best_trials, key=lambda t: t.values[0])
-        out["front"] = [{"number": t.number, "mean": t.values[0], "best_of_k": t.values[1], "params": t.params,
+        out["front"] = [{"number": t.number, **dict(zip(names, t.values)), **averages(t), "params": t.params,
                          "attrs": t.user_attrs} for t in front]
-        print("\nPareto front (mean MPVPE, best of K):")
+        print(f"\nPareto front ({', '.join(names)}); all: mean / best of K (mm) / APD (cm):")
         for t in front:
-            print(f"  trial {t.number}: {t.values[0]:.2f} / {t.values[1]:.2f} mm, {t.params}")
+            a = averages(t)
+            print(f"  trial {t.number}: {a['mean']:.2f} / {a['best_of_k']:.2f} / {a['apd']:.2f}, {t.params}")
     else:
         best = study.best_trial
         out.update(value=best.value, params=best.params, attrs=best.user_attrs)
         print(f"\nbest: trial {best.number}, {best.value:.2f} mm, {best.params}")
     (study_dir / f"{study.study_name}.json").write_text(json.dumps(out, indent=1))
+
+
+def averages(trial) -> dict:
+    """The means over the occlusions of MPVPE mean, best of K and APD of a trial, from its user attributes."""
+    return {name: float(np.mean([trial.user_attrs.get(f"{occlusion}_{key}", np.nan) for occlusion in OCCLUSIONS]))
+            for name, key in (("mean", "mpvpe_mean"), ("best_of_k", "mpvpe_min"), ("apd", "apd"))}
 
 
 def main() -> int:
@@ -205,6 +224,8 @@ def main() -> int:
     parser.add_argument("--study-dir", default=STUDY_DIR)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--summary", action="store_true", help="only print the trials so far")
+    parser.add_argument("--n-trials", type=int, default=None,
+                        help="finished trials to reach, instead of n_trials of the file (raises it, e.g. overnight)")
     args = parser.parse_args()
     study_dir = Path(args.study_dir).expanduser()
     if args.config is None:
@@ -214,7 +235,9 @@ def main() -> int:
         return 0
     path = Path(args.config)
     config, name, commit = load_config(path), path.stem, git_commit()
-    study = open_study(name, study_dir, ["minimize"] * (2 if config["objective"] == "pareto" else 1))
+    if args.n_trials is not None:
+        config["n_trials"] = args.n_trials
+    study = open_study(name, study_dir, list(OBJECTIVES[config["objective"]][1]))
     check_or_record(study, config, commit)
     if args.summary:
         report(study, study_dir)

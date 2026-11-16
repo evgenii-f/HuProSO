@@ -1,0 +1,27 @@
+# Inpainting with the reverse process of RSGM 512x4 c10 (run(method="inpaint"), hp.models.inpainting) with two
+# objectives (mean MPVPE, best of 10). The smoke test on 100 validation poses (explore/evaluation/completion_diagnostics/
+# inpaint_valid.py) found the EDM grid better than the uniform one, replacement alone weak (124.8 mm), DPS guidance
+# the lever (0.1-0.2 per step at 200 steps: 101 / 53 mm), too much of it harmful (0.5, or 0.2 at 500 steps) and
+# resampling trading diversity for the mean (94.9 / 61.1 with replacement, guidance 0.2 and r = 5); D-Flow with Heun
+# EDM 50 on the same poses 90.9 / 52.4.
+# Rule for the test, fixed before it: among the points of the front that are not worse than D-Flow with Heun EDM 50
+# in best of 10 on the same 1000 validation poses (93.33 / 52.43 mm, dflow_valid.py on workstation2), take the one
+# with the lowest mean; if there is none, report that, and take the point with the lowest mean of the front.
+model: ~/data/experiments/rsgm_posedflow_small_s10/run_0001
+method: inpaint
+objective: pareto
+poses: 1000
+n_trials: 60
+params:
+  steps: [100, 200, 400]
+  guidance: {low: 0.01, high: 0.5, log: true}
+  resample: [1, 2, 3, 5]
+  replace: [true, false]
+fixed:
+  schedule: edm
+first:  # the best points of the smoke test
+  - {steps: 200, guidance: 0.1, resample: 1, replace: false}
+  - {steps: 200, guidance: 0.2, resample: 1, replace: false}
+  - {steps: 200, guidance: 0.2, resample: 5, replace: false}
+  - {steps: 200, guidance: 0.2, resample: 5, replace: true}
+  - {steps: 200, guidance: 0.05, resample: 1, replace: true}
