@@ -35,6 +35,19 @@ VARIANTS = {
     "dps0.2-edm500": dict(steps=500, schedule="edm", replace=False, guidance=0.2),
     "dps0.2-edm200-r5": dict(steps=200, schedule="edm", replace=False, guidance=0.2, resample=5),
     "replace-dps0.2-edm200-r5": dict(steps=200, schedule="edm", guidance=0.2, resample=5),
+    # the best region of the Optuna studies of RSGM (400 steps, guidance ~0.055, r = 5, no replacement)
+    "dps0.055-edm400-r5": dict(steps=400, schedule="edm", replace=False, guidance=0.055, resample=5),
+    # for DPoser (dposer_inpaint): its guidance acts on z-scored axis-angle, another scale than the radians of RSGM
+    "dps0.05-edm200": dict(steps=200, schedule="edm", replace=False, guidance=0.05),
+    "dps0.05-edm200-r5": dict(steps=200, schedule="edm", replace=False, guidance=0.05, resample=5),
+    "dps0.1-edm200-r5": dict(steps=200, schedule="edm", replace=False, guidance=0.1, resample=5),
+    "dps1-edm200": dict(steps=200, schedule="edm", replace=False, guidance=1.0),
+    "dps2-edm200": dict(steps=200, schedule="edm", replace=False, guidance=2.0),
+    "dps5-edm200": dict(steps=200, schedule="edm", replace=False, guidance=5.0),
+    "dps2-edm200-r5": dict(steps=200, schedule="edm", replace=False, guidance=2.0, resample=5),
+    "replace-dps0.5-edm200-r5": dict(steps=200, schedule="edm", guidance=0.5, resample=5),
+    "replace-edm400-r5": dict(steps=400, schedule="edm", resample=5),
+    "replace-edm200-r10": dict(steps=200, schedule="edm", resample=10),
 }
 
 
