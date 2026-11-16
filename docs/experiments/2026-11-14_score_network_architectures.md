@@ -8,7 +8,7 @@ puts the three networks side by side and proposes the one to try.
 
 ## Summary
 
-Updated 2026-11-16 (sections 6-10). Validation numbers only; no test was run for this line of work.
+Updated 2026-11-16 (sections 6-11). Validation numbers only; no test was run for this line of work.
 
 - **Skip connections or LayerNorm in the score network remove the drift of SDS at the smallest noise** and improve the
   hybrid (DPoser's optimization with the RSGM denoiser) by 15-17 mm on the legs and 10-14 mm on the arms over a plain
@@ -348,8 +348,7 @@ DPoser's own noise of every joint; for c = 1 it is the old matching (`abl_base` 
 Configs `abl_aniso` = `abl_base` + c, `abl_residual_aniso` and `abl_norm_aniso` = `abl_residual` and `abl_norm` + c;
 each pair differs by the noise only (30k x 4096, c10, std weighting). `abl_aniso` seed 10 was trained with the CPU
 noise of the loss (workstation1, 21 min); seed 11 and the other two with the noise drawn on the GPU (branch
-`experimental/igso_gpu`, 11-14 min each on a loaded workstation1; the validation loss matched the old code within 0.02
-at 1k-6k steps).
+`experimental/igso_gpu`, 11-14 min each on a loaded workstation1; section 11).
 
 The rule, written before the runs (as section 9): the left-leg error at step 100 moves from about 13.4 deg clearly
 toward 10.8 deg, and the hybrid on the left leg drops clearly below the 97-103 mm of the networks with residual or
@@ -377,6 +376,41 @@ with LayerNorm the drift of the second phase nearly vanishes (12.1 -> 12.3 deg) 
 DPoser on the legs and better on the arms. The APD drops with the noise (left leg 5.8-6.8 against 7.3-9.5 cm): part of
 the gain in the mean may be less diversity. The validation losses with c are not comparable to those without (the
 weighting std_j^2 differs per joint).
+
+## 11. 2026-11-16: The IGSO(3) noise on the GPU
+
+Not a change of method: where the noise of RSGM is drawn (branch `experimental/igso_gpu`, commits 4e47e47 and 90c159a).
+The training loss drew its times, IGSO(3) angles and axes on the CPU in float64 and noised the poses there: every step
+copied the batch to the CPU and back, and several runs on one machine fought for its cores (about 50 each, load
+average about 160 on workstation1). Now the loss draws them on the device where it has float64 (cuda), still in
+float64; on mps (no float64) and for the validation loss (fixed CPU generator, the same number as before) the CPU path
+stays, so validation losses compare across the change. Inpainting draws its noise on the model's device in its dtype
+(`AngleSampler.sample_at`: the level of s is found on the CPU, so the GPU does not wait). SDS
+(`score_completion.py`) still draws on the CPU; D-Flow and the unconditional sampler draw no IGSO(3) noise.
+`RSGM.noise_on_cpu = True` restores the CPU path, for `scripts/benchmark_igso_noise.py`.
+
+- Speed of training, workstation1 under load: `abl_aniso` seed 11 ran at about 50 it/s (11 min for 30k steps) on the
+  GPU path against 2-3 it/s on the CPU path at the same time; on an idle machine the CPU path took 21 min (seed 10).
+- The same training: validation loss of `abl_aniso` seed 11 at 1k-6k steps 2.03 / 1.81 / 1.72 / 1.68 / 1.66 / 1.64
+  on the GPU path against 2.03 / 1.83 / 1.74 / 1.69 / 1.67 / 1.64 on the CPU path.
+- The same inpainting: 300 validation poses, K = 10, small std, steps 100, resample 2, guidance 0.1, 8 seeds per code
+  version on the Mac (mps): mean over the four occlusions 99.55 +- 0.40 against 99.49 +- 0.49 mm (MPVPE mean),
+  7.69 +- 0.07 against 7.72 +- 0.06 cm (APD), 52.46 +- 0.40 against 52.59 +- 0.59 mm (best of 10); none of the 15
+  differences (4 occlusions and the mean, 3 metrics) is significant (Welch p >= 0.08).
+- The float32 sampler (mps, same uniforms as float64 on the CPU, 400k draws): relative error of the angle 5e-8 on
+  average, at most 1.1e-4 (only in the far tail); KS distance to IGSO(3) 0.0009 (float32) and 0.0013 (float64),
+  1% threshold 0.0026.
+
+`scripts/benchmark_igso_noise.py` on the Mac (mps, untrained MLP 512 x 4, 19 joints; on mps the loss draws on the CPU
+either way):
+
+| measurement | noise on CPU | noise on device | speed-up |
+|---|---|---|---|
+| train step, batch 4096 | 53.1 it/s | 51.9 it/s | 0.98x |
+| inpainting, 5000 poses, guidance 0, resample 3 | 12.99 ms/call | 5.67 ms/call | 2.29x |
+| inpainting, 5000 poses, guidance 0.1, resample 1 | 22.63 ms/call | 18.49 ms/call | 1.22x |
+| inpainting, 20000 poses, guidance 0, resample 3 | 46.97 ms/call | 23.84 ms/call | 1.97x |
+| inpainting, 20000 poses, guidance 0.1, resample 1 | 86.42 ms/call | 74.71 ms/call | 1.16x |
 
 ## Conclusions
 
