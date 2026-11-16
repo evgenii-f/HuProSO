@@ -119,7 +119,10 @@ CONFIGS["res_norm_z"] = CONFIGS["res_norm"] + Z_INPUT
 # j (fit_joint_scale of the z statistics), as DPoser's noise in z-scored coordinates; with abl_base, the pair differs by
 # the noise only. The configs in ANISO get model.args.joint_scale from the statistics.
 CONFIGS["abl_aniso"] = list(ABL_BASE)
-ANISO = {"abl_aniso"}
+# and with the two components that stop the drift of the second phase, one at a time (as abl_residual and abl_norm)
+CONFIGS["abl_residual_aniso"] = ABL_BASE + ABLATION["residual"]
+CONFIGS["abl_norm_aniso"] = ABL_BASE + ABLATION["norm"]
+ANISO = {"abl_aniso", "abl_residual_aniso", "abl_norm_aniso"}
 # DPoser's network and training on RSGM: TimeFC's size (1024 x 2 blocks, a 512-dim embedding, dropout 0.1) and
 # DPoser's schedule (200k steps x 5120, lr 2e-4, cosine with 5k warm-up, EMA 0.9999). For the full data, as DPoser's
 # full run: --rotations ~/data/AMASS_rotations_posedflow --run-root ~/data/experiments/full
