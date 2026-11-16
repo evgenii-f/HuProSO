@@ -31,12 +31,14 @@ from hp.models import igso3
 from hp.models.rsgm import RSGM, exp_frame
 
 
-def _igso3_noise(model: RSGM, s: torch.Tensor, shape) -> torch.Tensor:
-    """Tangent coordinates [*shape, 3] of IGSO(3) noise of Brownian time s (broadcast to shape), on the CPU in float64.
-    s is clamped to the range of the model's angle table (the ends are far below and above any step that matters)."""
-    s = torch.as_tensor(s, dtype=torch.float64).expand(*shape)
-    s = s.clamp(model.angles.s_min, model.angles.s_max)
-    return model.angles.sample(s)[..., None] * igso3.random_axes(tuple(shape))
+def _igso3_noise(model: RSGM, s: float, shape) -> torch.Tensor:
+    """Tangent coordinates [*shape, 3] of IGSO(3) noise of one Brownian time s, drawn on the model's device in its
+    dtype (the GPU does not wait for the CPU). s is clamped to the range of the model's angle table (the ends are far
+    below and above any step that matters)."""
+    s = min(max(float(s), model.angles.s_min), model.angles.s_max)
+    device, dtype = model.device, model.dtype
+    angles = model.angles.sample_at(s, shape, device, dtype)
+    return angles[..., None] * igso3.random_axes(tuple(shape), device=device, dtype=dtype)
 
 
 def _guidance(model: RSGM, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor, vis: torch.Tensor):
@@ -83,7 +85,7 @@ def rsgm_inpaint(model: RSGM, observed: torch.Tensor, visible: torch.Tensor, ste
         beta = model.beta(t64).to(device, dtype)
         for r in range(resample):
             if replace and n_vis:
-                noise = _igso3_noise(model, model.s(t64), (n, n_vis)).to(device, dtype)
+                noise = _igso3_noise(model, model.s(t64), (n, n_vis))
                 x[:, vis] = exp_frame(y[:, vis], noise)
             if guidance > 0:
                 score, grad = _guidance(model, x, t, y, vis)
@@ -94,7 +96,7 @@ def rsgm_inpaint(model: RSGM, observed: torch.Tensor, visible: torch.Tensor, ste
                 step = step - guidance * grad
             x = exp_frame(x, step)
             if r < resample - 1:  # back from t_next to t by the forward Brownian motion
-                back = _igso3_noise(model, model.s(t64) - model.s(t_next64), (n, joints)).to(device, dtype)
+                back = _igso3_noise(model, model.s(t64) - model.s(t_next64), (n, joints))
                 x = exp_frame(x, back)
     return torch.where(seen, y, x)
 
