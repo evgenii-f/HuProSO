@@ -20,10 +20,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from hp.evaluation.denoising import PAPER, SIGMAS, cached_run, summary  # noqa: E402
 
 CACHE = "~/data/experiments/denoising/cache"
-# RSGM in DPoser's optimization, per noise level: a first guess from 10 validation sequences at 40 mm, replaced by
-# the settings chosen on validation (config/denoising_tuning/rsgm_sds_<mm>mm.yaml) before the test
-SDS = {0.04: dict(t_max=0.05, t_min=0.01, sds_weight=10.0),
-       0.1: dict(t_max=0.05, t_min=0.01, sds_weight=10.0)}
+# RSGM in DPoser's optimization, per noise level: the best trials of the Optuna studies on validation
+# (config/denoising_tuning/rsgm_sds_<mm>mm.yaml, RSGM 512x4 c10, 40 trials each): 40 mm trial 36, 18.69 mm;
+# 100 mm trial 29, 30.87 mm. t_min = t_min_fraction * t_max.
+SDS = {0.04: dict(t_max=0.05949959532179853, t_min=0.05949959532179853 * 0.38708311854899335,
+                  sds_weight=7.7486572605596375, lr=0.04133605348828209, steps_per_iter=67),
+       0.1: dict(t_max=0.05147455761154559, t_min=0.05147455761154559 * 0.8807515453505762,
+                 sds_weight=4.381518863971957, lr=0.042200143285960834, steps_per_iter=133)}
+# the same at DPoser's number of steps (3 x 60 at 40 mm, 3 x 80 at 100 mm), for a comparison at an equal budget
+SDS_DPOSER_STEPS = {0.04: {**SDS[0.04], "steps_per_iter": 60}, 0.1: {**SDS[0.1], "steps_per_iter": 80}}
 RUNS = {
     "RSGM 512x4: their c10": "~/data/experiments/rsgm_posedflow_small_s10/run_0001",
     "RSGM 1536x6: their c10": "~/data/experiments/rsgm_posedflow_s10/run_0001",
@@ -40,6 +45,8 @@ MODELS = {
     # RSGM in DPoser's optimization (score distillation on SO(3)^J), the procedure we tune: settings per noise level
     # chosen on validation with RSGM 512x4 c10 (config/denoising_tuning/rsgm_sds_<mm>mm.yaml) and used for every RSGM
     **{f"{name}, DPoser method": dict(run=run, method="dposer", settings=SDS) for name, run in RUNS.items()},
+    "RSGM 512x4: their c10, DPoser method, DPoser's steps": dict(run=RUNS["RSGM 512x4: their c10"], method="dposer",
+                                                                settings=SDS_DPOSER_STEPS),
     # DPoser retrained on their full data: its own optimization (the DPoser rows of their table) and D-Flow
     "DPoser: their full, DPoser method": dict(run="~/data/experiments/full/dposer_posedflow_s10/run_0001",
                                               method="dposer"),
