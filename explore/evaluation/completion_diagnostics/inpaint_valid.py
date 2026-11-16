@@ -35,6 +35,10 @@ VARIANTS = {
     "dps0.2-edm500": dict(steps=500, schedule="edm", replace=False, guidance=0.2),
     "dps0.2-edm200-r5": dict(steps=200, schedule="edm", replace=False, guidance=0.2, resample=5),
     "replace-dps0.2-edm200-r5": dict(steps=200, schedule="edm", guidance=0.2, resample=5),
+    # two points of the Optuna study rsgm_inpaint_mean_apd_residual (the lowest mean, and the lowest mean with APD
+    # above D-Flow's after ~60 trials), to see them per occlusion next to the baselines (baselines_valid.py)
+    "residual-trial59": dict(steps=400, schedule="edm", replace=False, guidance=0.05457452885996979, resample=5),
+    "residual-trial16": dict(steps=200, schedule="edm", replace=False, guidance=0.06107655015655633, resample=5),
 }
 
 

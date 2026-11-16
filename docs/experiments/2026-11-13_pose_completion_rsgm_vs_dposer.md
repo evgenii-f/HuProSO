@@ -22,6 +22,13 @@ All numbers on the 5000 test poses of PoseD-Flow, K = 10, MPVPE in mm averaged o
 - **The remaining mean gap is the model**, not the procedure or the solver; next: the residual + LayerNorm network of
   the architecture ablation, with "std", in D-Flow with Heun EDM 50.
 
+- **2026-11-15, inpainting (validation, section 10)**: completing by the whole reverse process of RSGM, with DPS
+  guidance and RePaint resampling, beats D-Flow on all three metrics at once (100 validation poses: 86.68 / 48.19 mm,
+  APD 6.42 cm against 90.88 / 52.40 / 6.08), 1.4 times faster; 3.4 mm behind DPoser in the mean, ahead in best of 10
+  and APD. **The gain is the procedure, not the prior**: the same inpainting on DPoser c10 gives 87.60 / 47.52 / 6.61,
+  on par with RSGM. The claim of the bullet above ("the remaining gap is the model") is thereby revised: at an equal
+  procedure the two priors are equal; DPoser's own optimization is still the best mean and 15 times faster.
+
 ## 1. Protocol
 
 The test protocol of PoseD-Flow (their Tab. 2): 5000 test poses of their AMASS split (`PoseDFlow_test.pt` in
@@ -234,6 +241,134 @@ solver does not close the mean gap.
    `experimental/score-net-ablation`) points at residual connections and LayerNorm as what helps; the next candidate
    is such a network with weighting "std", evaluated with D-Flow and Heun EDM 50.
 
+## 10. 2026-11-15: Inpainting with the reverse process (validation)
+
+**Question.** SDS and D-Flow use the prior only at small noise (SDS) or through one ODE (D-Flow). Does the whole
+reverse process of RSGM, with the visible joints kept consistent with the observation, complete poses better?
+
+**Method** (`hp.models.inpainting.rsgm_inpaint`, `run(method="inpaint")`, branch `experimental/rsgm-inpainting`).
+The reverse SDE of RSGM (geodesic Euler-Maruyama) from uniform rotations at t = 1 down to eps, with three options:
+
+- *replacement*: before every step the visible joints are drawn from the exact q(x_t | y), the observation noised by
+  IGSO(3) of s(t) (the forward process noises every joint independently);
+- *resampling* (RePaint, jump 1): a step is repeated r times, the pose at t_next noised back to t by the forward
+  Brownian motion in between;
+- *guidance* (DPS): the step is moved by −ζ · grad / sqrt(loss) of the squared geodesic error of the visible joints of
+  the one-step denoising x̂0 = x_t exp(s(t) · score) (Tweedie on SO(3)), the gradient through the network.
+
+`dposer_inpaint` does the same for DPoser in its z-scored axis-angle space (exact Gaussian replacement, the exact
+forward transition of the sub-VP SDE for resampling, the same geodesic DPS loss); it is on the local branch
+`experimental/dposer-inpainting`, not merged.
+
+**Setup.** The first 100 of the 1000 fixed validation poses (`valid_poses`), K = 10, the four occlusions, seeds as the
+Optuna studies; MPVPE mean and best of 10 in mm, APD in cm, averaged over the occlusions; seconds on an M-series Mac
+(MPS). Scripts: `explore/evaluation/completion_diagnostics/inpaint_valid.py` (inpainting variants),
+`dflow_valid.py` (D-Flow, Heun EDM 50), `baselines_valid.py` (PoseD-Flow and DPoser); the rows are in
+`~/data/experiments/completion/{inpaint,dflow,baselines}_valid_mac.jsonl`. Nothing in this section is on the test.
+
+### 10.1 Variants on RSGM 512×4 std c10
+
+| variant | mean | best of 10 | APD | s |
+|---|---|---|---|---|
+| replacement, uniform 200 steps | 124.82 | 62.04 | 10.68 | 4 |
+| replacement, EDM 200 | 124.61 | 64.13 | 10.47 | 3 |
+| replacement, EDM 200, r = 5 | 106.24 | 56.20 | 8.37 | 16 |
+| DPS ζ = 0.02, EDM 200 | 129.15 | 65.08 | 10.69 | 6 |
+| DPS 0.1 | 101.51 | **52.53** | 8.20 | 6 |
+| DPS 0.2 | 100.71 | 53.00 | 8.01 | 6 |
+| DPS 0.5 | 119.39 | 68.37 | 8.71 | 6 |
+| DPS 0.2, 500 steps | 110.08 | 61.59 | 8.47 | 14 |
+| replacement + DPS 0.05 | 104.68 | 53.55 | 8.39 | 7 |
+| DPS 0.2, r = 5 | 97.26 | 55.06 | 7.08 | 32 |
+| replacement + DPS 0.2, r = 5 | **94.92** | 61.11 | 5.32 | 46 |
+| *D-Flow, Heun EDM 50 (reference)* | *90.88* | *52.40* | *6.08* | *96* |
+
+Replacement alone does not tie the hidden joints to the visible ones (APD 10.5, mean 125). DPS is the lever; its total
+strength is about ζ × steps, so too much of it (0.5, or 0.2 over 500 steps) hurts. Resampling trades diversity for the
+mean.
+
+### 10.2 Nine networks at two settings
+
+| network | DPS 0.1: mean / best / APD | replacement + DPS 0.2, r = 5: mean / best / APD |
+|---|---|---|
+| small std c10 (512×4) | 101.51 / 52.53 / 8.20 | 94.92 / 61.11 / 5.32 |
+| small std c10, seed 11 | 101.23 / 52.50 / 8.09 | 93.22 / 61.27 / 5.16 |
+| abl residual | 101.59 / 52.58 / 8.06 | 90.06 / 59.88 / 4.70 |
+| abl norm | 101.30 / 53.40 / 8.12 | 90.37 / 60.44 / 4.82 |
+| res norm | 101.43 / 52.65 / 8.03 | 95.65 / 65.24 / 4.81 |
+| deep | 105.98 / 54.20 / 8.83 | **88.19** / 56.57 / 5.05 |
+| search std c10 (1536×6) | 102.15 / 53.49 / 8.12 | 98.72 / 67.39 / 5.03 |
+| small lik c10 | 102.06 / 52.61 / 8.28 | 96.38 / 64.81 / 5.09 |
+| dposer like full | 102.67 / 53.41 / 8.22 | 91.25 / 59.89 / 4.88 |
+
+With DPS alone the networks are equal (101-106 / 52.5-54); with resampling they spread by 10 mm at an equal APD. One
+point per network is not a comparison of networks: the settings move a model along its trade-off of mean and APD, so
+the networks are compared by Optuna fronts of (mean, APD) (10.4).
+
+### 10.3 Against the baselines, per occlusion
+
+Cells: mean / best of 10 / APD.
+
+| row | left_leg | legs | arms | trunk | average | s |
+|---|---|---|---|---|---|---|
+| PoseD-Flow (their checkpoint, D-Flow) | 85.4 / 49.4 / 5.23 | **99.0** / 68.8 / 6.09 | 113.7 / 67.8 / 6.29 | **37.0** / 25.1 / 1.15 | 83.78 / 52.79 / 4.69 | 304 |
+| DPoser full (its own optimization) | **80.0** / **39.0** / 6.56 | 100.1 / 60.7 / 7.41 | **111.7** / 72.2 / 5.95 | 41.3 / 24.0 / 1.93 | **83.28** / 48.95 / 5.46 | **4** |
+| RSGM small, D-Flow Heun EDM 50 | 90.8 / 46.6 / 7.33 | 105.2 / 66.2 / 7.99 | 124.9 / 73.0 / 7.03 | 42.6 / 23.9 / 1.98 | 90.88 / 52.40 / 6.08 | 96 |
+| RSGM abl residual, inpainting (trial 59) | 86.2 / 44.1 / 6.69 | 100.0 / 61.3 / 8.24 | 119.0 / **63.8** / 8.75 | 41.5 / 23.5 / 1.99 | 86.68 / **48.19** / 6.42 | 66 |
+| RSGM abl residual, inpainting (trial 16) | 84.2 / 43.8 / 6.49 | 106.3 / **59.2** / 8.73 | 124.8 / 70.4 / 8.65 | 41.1 / **22.2** / 2.02 | 89.09 / 48.89 / 6.47 | 34 |
+
+Trials 59 (400 steps, ζ = 0.0546, r = 5, no replacement) and 16 (200 steps, ζ = 0.0611, r = 5) are points of the
+Optuna study `rsgm_inpaint_mean_apd_residual` after about 60 trials, rerun here by `inpaint_valid.py`
+(variants `residual-trial59`, `residual-trial16`). Inpainting beats D-Flow on all three metrics; against DPoser it
+loses 3.4 mm in the mean, mostly on the arms (+7 mm, with the best best of 10 and APD 8.75 against 5.95: the
+hypotheses are too spread where the observation constrains little) and the left leg (+6 mm, there best of 10 too).
+Legs and trunk are at DPoser's level.
+
+### 10.4 Optuna studies (running at the time of writing)
+
+On 1000 validation poses, `scripts/tune_completion.py`: `rsgm_inpaint_pareto` (512×4 std, objectives mean and best of
+10) and `rsgm_inpaint_mean_apd_{deep,residual,norm}` (objectives mean and APD, maximized), 120 trials each, on
+workstation2. The rule for the test, written in each configuration before it: among the points of the front not
+worse than D-Flow Heun EDM 50 of 512×4 on the same poses (best of 10 52.43 mm for the first; APD 6.40 cm for the
+others), the lowest mean. Their numbers go here when they are finished and copied to the Mac. Seen so far in the
+summaries: the best points sit at the upper ends of the search space (r = 5, 400 steps) without replacement, so the
+space should be widened (r up to 12, steps up to 800) in a next study.
+
+### 10.5 The same inpainting on DPoser
+
+| DPoser model | variant | mean | best of 10 | APD | s |
+|---|---|---|---|---|---|
+| full | its own optimization (10.3) | **83.28** | 48.95 | 5.46 | **4** |
+| full | replacement, EDM 200 | 108.81 | 54.71 | 8.97 | 6 |
+| full | replacement, r = 5 | 90.50 | 48.33 | 6.87 | 23 |
+| full | replacement, r = 10 | 87.25 | 48.60 | 6.36 | 45 |
+| full | DPS ζ = 1 (no replacement) | 101.08 | 52.40 | 8.00 | 11 |
+| full | DPS 2, r = 5 | 92.49 | 58.43 | 5.26 | 61 |
+| full | DPS 0.055, 400 steps, r = 5 (RSGM's best setting) | 127.72 | 66.45 | 10.13 | 94 |
+| full | replacement + DPS 0.5, r = 5 | 86.14 | **47.46** | 6.33 | 56 |
+| c10, RSGM budget | replacement + DPS 0.5, r = 5 | 87.60 | 47.52 | 6.61 | 53 |
+| c10, RSGM budget | replacement, r = 10 | 88.97 | 49.27 | 6.55 | 46 |
+| *RSGM abl residual c10* | *inpainting, trial 59 (10.3)* | *86.68* | *48.19* | *6.42* | *66* |
+
+DPS alone on DPoser needs a 10-20 times larger ζ (its coordinates are z-scored axis-angle, not radians) and is weak
+even then; replacement is what works, the opposite of RSGM. With the best settings of each, DPoser c10 and RSGM c10
+reach the same point (87.6 / 47.5 / 6.6 against 86.7 / 48.2 / 6.4). Inpainting moves both priors to a lower best of
+10 and a higher APD at a slightly higher mean than DPoser's own optimization.
+
+### 10.6 Conclusions of this phase
+
+1. Inpainting is the best procedure for RSGM so far: on validation better than D-Flow in mean, best of 10 and APD,
+   at fewer seconds; DPS without replacement and resampling r = 5 are the settings that matter.
+2. The gain comes from the procedure. With the same inpainting DPoser trained on the same data is as good as RSGM;
+   the earlier conclusion "the remaining gap is the model" (section 9, item 6) holds only within D-Flow and SDS.
+3. A better mean than DPoser's own optimization (83.3 here) needs a better trade-off for both priors, e.g.
+   inpainting followed by a short refinement of each hypothesis (DPoser's optimization from the inpainted pose), or a
+   wider search (10.4).
+
+**What it does not show.** 100 poses: differences below ~2 mm are not resolved. The DPoser variants are a hand-made
+grid, not tuned as RSGM's were (Optuna). Times are on the Mac and include the network calls of all K hypotheses. No
+test numbers: the test is run once for the points chosen by the rules of 10.4.
+
 ## What it does not show
 
 - One training seed per likelihood run, one Pareto study (on the old 512×4 std model); SDS settings were not retuned
@@ -252,3 +387,7 @@ solver does not close the mean gap.
 - Runs: `~/data/experiments/rsgm_posedflow_*_s10`, `~/data/experiments/full/rsgm_posedflow_*_s10`.
 - Diagnostics: `explore/evaluation/completion_diagnostics/` (run from the root of the repository with
   `PYTHONPATH=src`; each script says how in its docstring).
+- Inpainting (section 10): `src/hp/models/inpainting.py`; validation rows in
+  `~/data/experiments/completion/{inpaint,dflow,baselines}_valid_mac.jsonl` by
+  `explore/evaluation/completion_diagnostics/{inpaint_valid,dflow_valid,baselines_valid}.py`; `dposer_inpaint` and
+  the DPoser variants on the local branch `experimental/dposer-inpainting`.
