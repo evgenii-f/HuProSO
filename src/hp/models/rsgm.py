@@ -151,6 +151,9 @@ class RSGM(PoseModel):
     has_log_prob = True
     supports_cond = True
     density_space = "SO(3)^J"
+    # True: draw the IGSO(3) noise of the loss and of inpainting on the CPU in float64 and copy it to the device, the
+    # behaviour before it was drawn on the device; for scripts/benchmark_igso_noise.py (not saved with the model)
+    noise_on_cpu = False
 
     def __init__(
         self,
@@ -360,7 +363,8 @@ class RSGM(PoseModel):
             cond = conditioning.hide_random(cond, generator)
         # the noise and its target in float64 (the score of IGSO(3) is ~1/s large near s = 0), on the model's device
         # where it has float64 (cuda), else on the CPU (mps); validation (fixed generator) on the CPU, as before
-        work = torch.device("cpu") if generator is not None or self.device.type == "mps" else self.device
+        on_cpu = generator is not None or self.device.type == "mps" or self.noise_on_cpu
+        work = torch.device("cpu") if on_cpu else self.device
         t = self.loss_times(torch.rand(batch, dtype=torch.float64, device=work, generator=generator))
         s = self.joint_s(t)  # [B, J], float64
         std = self.joint_std(t)

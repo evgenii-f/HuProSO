@@ -34,9 +34,12 @@ from hp.models.rsgm import RSGM, exp_frame
 def _igso3_noise(model: RSGM, s: float, shape) -> torch.Tensor:
     """Tangent coordinates [*shape, 3] of IGSO(3) noise of one Brownian time s, drawn on the model's device in its
     dtype (the GPU does not wait for the CPU). s is clamped to the range of the model's angle table (the ends are far
-    below and above any step that matters)."""
+    below and above any step that matters). model.noise_on_cpu: drawn on the CPU in float64 and copied (the old way)."""
     s = min(max(float(s), model.angles.s_min), model.angles.s_max)
     device, dtype = model.device, model.dtype
+    if model.noise_on_cpu:
+        noise = model.angles.sample_at(s, shape)[..., None] * igso3.random_axes(tuple(shape))
+        return noise.to(device, dtype)
     angles = model.angles.sample_at(s, shape, device, dtype)
     return angles[..., None] * igso3.random_axes(tuple(shape), device=device, dtype=dtype)
 
