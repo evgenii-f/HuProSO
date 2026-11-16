@@ -36,7 +36,13 @@ All numbers on the 5000 test poses of PoseD-Flow, K = 10, MPVPE in mm averaged o
 - **2026-11-16, fairness check (validation, section 12)**: section 10 favoured RSGM (Optuna against a hand grid,
   twice the network calls). Tuned the same way (120 trials, 1000 validation poses), DPoser c10 inpainting reaches the
   front of RSGM (88.26 / 49.22 mm / 6.46 cm against 88.22 / 49.30 / 6.39); DPoser's own optimization stays about
-  2 mm lower in the mean at a lower APD (86.17 / 49.99 / 6.02 with 3 × 200 steps). Test of the chosen points pending.
+  2 mm lower in the mean at a lower APD (86.17 / 49.99 / 6.02 with 3 × 200 steps). On the test the chosen points
+  confirm it: DPoser c10 inpainting 85.94 / 47.90 / 6.19 against RSGM residual 85.50 / 46.70 / 6.45, its own method
+  (3 × 200 steps) 84.10 / 48.59 / 5.80.
+- **2026-11-16, fronts over bands of APD (validation, section 13)**: averaged over APD bands from 6.0 cm up, the
+  inpainting front of DPoser c10 is 1.2-1.9 mm lower in the mean than that of the best RSGM network (abl residual);
+  at the threshold of the rule (6.4) they meet, hence the equal test points. Among the RSGM networks the order is
+  residual ≲ norm < deep ≈ 1536×6 lik full; the likelihood weighting brings inpainting nothing.
 
 ## 1. Protocol
 
@@ -407,9 +413,10 @@ All four points sit at r = 5, the upper end of the space, without replacement, a
 mean exist on the fronts but below the APD threshold (residual trial 59: 88.22 / APD 6.39; deep trial 40: 89.82 /
 5.69, with replacement). The Pareto study ran 60 of its 120 planned trials; its last front points (trials 51-56) differ by less than
 0.2 mm.
-A fifth study, `rsgm_inpaint_mean_apd_search_lik_full` (1536×6, likelihood weighting, full data), was at 88 of 120
-trials when this was written; its rule point so far is trial 71 (400 steps, ζ 0.040, r 5: 90.70 / 50.62 / 6.65), not
-better than residual, and it was not run on the test.
+A fifth study, `rsgm_inpaint_mean_apd_search_lik_full` (1536×6, likelihood weighting, full data), finished its 120
+trials later (at 88 when this section was first written, rule point trial 71: 90.70 / 50.62 / 6.65). Its rule point is
+trial 110 (400 steps, ζ 0.035, r 5, no replacement: 90.66 / 50.43 / 6.66): on validation dominated by residual and
+by DPoser c10 inpainting, so it was not run on the test, a negative result (section 13).
 
 ### 11.2 Test (5000 poses)
 
@@ -495,7 +502,7 @@ least a level, and the point of the rule (mean / best of 10 / APD):
 | RSGM abl residual, inpainting | 120 | 88.22 | 88.22 | 88.22 | 88.32 | 93.45 | t81: 88.32 / 49.18 / 6.41 |
 | RSGM abl norm, inpainting | 120 | 89.55 | 89.55 | 89.55 | 89.55 | 93.99 | t118: 89.55 / 49.72 / 6.57 |
 | RSGM deep, inpainting | 120 | 89.82 | 89.82 | 91.29 | 91.29 | 94.00 | t75: 91.29 / 50.19 / 6.84 |
-| RSGM 1536×6 lik full, inpainting (other session) | 88 | 90.70 | 90.70 | 90.70 | 90.70 | 95.15 | t71: 90.70 / 50.62 / 6.65 |
+| RSGM 1536×6 lik full, inpainting | 120 | 90.66 | 90.66 | 90.66 | 90.66 | 95.06 | t110: 90.66 / 50.43 / 6.66 |
 | DPoser c10, inpainting | 120 | 88.26 | 88.26 | 88.26 | **88.26** | **91.60** | t68: 88.26 / **49.22** / 6.46 |
 | DPoser c10, DPoser's method | 120 | **86.15** | **86.17** | **86.17** | 91.50 | 91.50 | t28: 91.50 / 51.13 / 7.04 |
 
@@ -523,13 +530,82 @@ improve on their defaults in the middle of the front.
 3. The inpainting fronts end at r = 5 and do not reach APD below about 6.4; a comparison at equal APD with DPoser's
    method needs a wider space (r up to 10-12, steps up to 800).
 
-**Test.** The rows of the chosen points are in `scripts/evaluate_completion.py`: RSGM t52, t75, t81, t118 (another
-session) and DPoser c10 inpainting t68, DPoser's method t28 and, outside the rule, t3; DPoser's method with their
-defaults was tested before (row "DPoser: their c10, RSGM budget, DPoser method"). The DPoser rows are not run yet.
+**Test** (5000 test poses, K = 10, one run per row; rows of `scripts/evaluate_completion.py` on workstation2, metrics
+from the cache; mean / best of 10 / APD, the occlusion cells mean only):
+
+| row | left_leg | legs | arms | trunk | average | validation |
+|---|---|---|---|---|---|---|
+| DPoser full, its own method (defaults) | **76.3** | 102.9 | **102.2** | 43.4 | 81.19 / 47.22 / 5.36 | |
+| DPoser c10, its own method, defaults (t0) | 81.6 | 102.6 | 108.5 | 47.2 | 84.99 / 51.07 / 5.38 | 86.15 / 52.78 / 5.50 |
+| DPoser c10, its own method t3 (outside the rule) | 83.2 | 101.6 | 103.7 | 47.8 | **84.10** / 48.59 / 5.80 | 86.17 / 49.99 / 6.02 |
+| DPoser c10, its own method t28 (rule) | 90.0 | 108.3 | 110.5 | 50.2 | 89.75 / 49.46 / 6.83 | 91.50 / 51.13 / 7.04 |
+| DPoser c10, inpainting t68 (rule) | 81.8 | **98.6** | 120.0 | 43.5 | 85.94 / 47.90 / 6.19 | 88.26 / 49.22 / 6.46 |
+| RSGM abl residual, inpainting t81 (rule, section 11) | 81.6 | 102.4 | 114.9 | **43.1** | 85.50 / **46.70** / **6.45** | 88.32 / 49.18 / 6.41 |
+
+The rule points of the two priors under inpainting are equal on the test as on validation (0.4 mm in the mean, one
+seed each); DPoser's APD fell more from validation to test (6.46 → 6.19 against 6.41 → 6.45). DPoser's method t28 is
+the worst mean, as expected of a point picked by a gap of the front (see above), not a measured loss of the method;
+t3, outside the rule, keeps its validation place: 1.4 mm below inpainting in the mean, at a lower APD and a higher best
+of 10. Training on c10 costs DPoser's method 3.8 mm against DPoser full (84.99 against 81.19 with their defaults).
 
 **What it does not show.** DPoser c10 was trained with a recipe made for 200k steps; one training seed each; the
-compared settings differ in network calls; the 1536×6 lik full study is at 88 of 120 trials. Numbers are validation,
-on the poses the settings were chosen on.
+compared settings differ in network calls. Numbers are validation, on the poses the settings were chosen on, except
+the test above.
+
+## 13. 2026-11-16: Fronts over bands of APD (validation)
+
+**Question.** The rule compares one point per study, at the threshold APD 6.4 cm. Do the fronts compare the same way
+elsewhere?
+
+**Measure.** For a study, f(a) is the lowest mean (or best of 10) among its trials with APD at least a: the staircase
+of the front. Its average over a band of APD, the integral of f over the band divided by the width, is the hypervolume
+of the front in that band in mm, lower is better. Only bands covered by every front compare; outside its points a
+front would be extrapolated. The 1000 validation poses of the studies, K = 10;
+`explore/evaluation/completion_diagnostics/plot_study_fronts.py --bands` (also the figure of all trials and fronts).
+
+Mean (mm):
+
+| study | trials | APD 5.5-6.4 | APD 6.0-7.0 | APD 6.4-7.5 | APD 6.4-8.5 | APD 7.0-8.5 |
+|---|---|---|---|---|---|---|
+| RSGM abl residual, inpainting | 120 | **88.22** | 90.08 | 93.08 | 96.97 | 99.23 |
+| RSGM abl norm, inpainting | 120 | 89.55 | 90.92 | 93.35 | 97.10 | 99.21 |
+| RSGM deep, inpainting | 120 | 90.99 | 91.54 | 93.95 | 97.42 | 99.70 |
+| RSGM 1536×6 lik full, inpainting | 120 | 90.66 | 91.58 | 93.95 | 97.89 | 100.17 |
+| RSGM small, inpainting (objectives mean and best of 10) | 60 | 92.43 | 92.44 | 93.56 | 97.17 | 99.07 |
+| DPoser c10, inpainting | 120 | 88.26 | **88.91** | **91.17** | **95.42** | 97.84 |
+| DPoser c10, its own method | 120 | 88.40 | 91.37 | 92.91 | 95.57 | **97.19** |
+
+Best of 10 (mm):
+
+| study | trials | APD 5.5-6.4 | APD 6.0-7.0 | APD 6.4-7.5 | APD 6.4-8.5 | APD 7.0-8.5 |
+|---|---|---|---|---|---|---|
+| RSGM abl residual, inpainting | 120 | 49.09 | 49.52 | 50.32 | **51.35** | 51.96 |
+| RSGM abl norm, inpainting | 120 | 49.66 | 50.06 | 50.70 | 51.76 | 52.34 |
+| RSGM deep, inpainting | 120 | 50.18 | 50.30 | 51.19 | 52.03 | 52.69 |
+| RSGM 1536×6 lik full, inpainting | 120 | 50.34 | 50.59 | 51.15 | 52.21 | 52.79 |
+| RSGM small, inpainting (objectives mean and best of 10) | 60 | 50.81 | 50.81 | 50.93 | 51.63 | **51.95** |
+| DPoser c10, inpainting | 120 | **48.87** | **48.97** | **49.64** | 51.36 | 52.29 |
+| DPoser c10, its own method | 120 | 50.47 | 51.10 | 51.54 | 51.92 | 52.24 |
+
+In the band 5.5-6.4 the inpainting fronts have no points of their own below about 6.4 (f takes their first point
+above), so that column compares the rule points more than the fronts.
+
+**Conclusions.**
+
+1. Under the same inpainting DPoser c10 is slightly better than every RSGM network: 1.2-1.9 mm lower mean in the bands
+   from APD 6.0 up, and a lower best of 10 up to APD 7.5. The fronts meet at the threshold 6.4, so the rule points (and
+   their test rows) are equal; "the two priors are equal under inpainting" (10.6, 12) holds at that point only.
+2. DPoser's own method is not better than inpainting of the same model where both have points: equal in 5.5-6.4
+   (2 mm better in 5.5-6.0, 3 mm worse in 6.0-6.4, its gap), 1.7-2.5 mm worse in 6.0-7.5, 0.6 mm better in 7.0-8.5.
+   Its advantage is the region below APD 5.5 (down to 78.5 mm at APD 3.3), which inpainting does not reach.
+3. Among the RSGM networks residual and norm are ahead of deep and 1536×6 lik full by up to 2.5 mm; with one training
+   seed each, residual against norm is within noise. The likelihood weighting, which helped SDS and hurt D-Flow, brings
+   inpainting nothing (the last 32 of its 120 trials moved its front by at most 0.35 mm).
+
+**What it does not show.** A band average depends on the band, hence five bands. A front is also a measure of how well
+Optuna explored the space: DPoser's method has 15 of its 120 trials in the range of the figure (mean ≤ 105 mm, APD
+3-9 cm). One training seed per model. Nothing here is on the test; testing a second point per study (e.g. the lowest
+mean at APD ≥ 7.5) is left until the studies on full-data models (`config/completion_tuning/*full*`) are in.
 
 ## What it does not show
 
@@ -559,3 +635,6 @@ on the poses the settings were chosen on.
   `~/data/experiments/completion/cache/`.
 - DPoser c10 studies (section 12): `config/completion_tuning/dposer_c10_{method,inpaint}_mean_apd.yaml`, databases in
   `~/data/experiments/completion/optuna/`; the table by `explore/evaluation/completion_diagnostics/study_fronts.py`.
+- Fronts over bands (section 13): `explore/evaluation/completion_diagnostics/plot_study_fronts.py --bands`; all
+  validation settings and the test rows on their fronts in `explore/evaluation/completion_fronts.ipynb` (a selector of
+  the split).
