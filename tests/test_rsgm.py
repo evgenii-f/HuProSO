@@ -413,3 +413,90 @@ def test_timeres_switches_change_only_their_component():
         RSGM(19, net="timeres", net_level="sigma")
     with pytest.raises(ValueError):
         TimeResNet(20, 6, time_in="everywhere")
+
+
+# ---- the z-scored tangent input (inputs="local+z") ----
+
+from hp.models.rsgm import z_statistics  # noqa: E402
+
+
+def concentrated_poses(n, seed=0):
+    """Poses around a random mean M_j with a different spread per joint and per axis (in the frame of M_j)."""
+    generator = torch.Generator().manual_seed(seed)
+    means = roma.random_rotmat(J19, generator=generator, dtype=torch.float64)
+    scale = torch.linspace(0.05, 0.6, J19, dtype=torch.float64)[:, None] * torch.tensor([1.0, 0.5, 0.25], dtype=torch.float64)
+    v = torch.randn(n, J19, 3, generator=generator, dtype=torch.float64) * scale
+    return exp_frame(means.expand(n, -1, 3, 3), v), means, scale
+
+
+def test_the_z_statistics_are_the_karcher_mean_and_the_spread_around_it():
+    poses, means, scale = concentrated_poses(20_000)
+    z_mean, z_std = z_statistics(poses, chunk=7_000)
+    m = roma.rotvec_to_rotmat(torch.tensor(z_mean, dtype=torch.float64).reshape(J19, 3))
+    logs = roma.rotmat_to_rotvec(m.transpose(-1, -2) @ poses)
+    assert logs.mean(0).abs().max() < 1e-9  # the Karcher mean: the logs average to zero
+    assert roma.rotmat_geodesic_distance(m, means).max() < 0.02  # near the mean of the generating distribution
+    assert torch.allclose(torch.tensor(z_std, dtype=torch.float64).reshape(J19, 3), scale, rtol=0.05)
+
+
+def z_model(seed=0, **kwargs):
+    torch.manual_seed(seed)
+    poses, _, _ = concentrated_poses(2_000, seed)
+    z_mean, z_std = z_statistics(poses)
+    return build_model("rsgm", num_joints=J19, inputs="local+z", z_mean=z_mean, z_std=z_std, **kwargs), poses
+
+
+def test_the_z_input_is_z_scored_and_kept_as_buffers(tmp_path):
+    model, poses = z_model(hidden=[16])
+    assert model.net[0].in_features == 9 * J19 + 3 * J19 + 1
+    assert {"z_rot", "z_std"} <= set(dict(model.named_buffers()))
+    assert not any(name.startswith("z_") for name, _ in model.named_parameters())
+    z = roma.rotmat_to_rotvec(model.z_rot.double().transpose(-1, -2) @ poses) / model.z_std.double()
+    assert z.mean(0).abs().max() < 1e-4 and (z.std(0) - 1).abs().max() < 1e-4
+    save_model(model, tmp_path)
+    state = torch.load(tmp_path / "weights.pt", weights_only=True)
+    assert torch.equal(state["z_rot"], model.z_rot) and torch.equal(state["z_std"], model.z_std)
+    loaded = load_model(tmp_path)
+    x, t = poses19(3), torch.tensor([0.01, 0.3, 0.9])
+    with torch.no_grad():
+        assert torch.equal(model.eval().score(x, t), loaded.score(x, t))
+
+
+def test_the_timeres_net_takes_the_z_input():
+    model, _ = z_model(net="timeres", net_width=64, net_blocks=2, net_embed=32, net_zero_init=False)
+    x, t = poses19(3), torch.tensor([0.003, 0.1, 0.9])
+    assert model.eval().score(x, t).shape == (3, J19, 3)
+    assert torch.isfinite(model.loss(poses19(8)))
+
+
+def test_the_z_input_keeps_the_divergence_exact():
+    model, _ = z_model(hidden=[32])
+    model = model.double()
+    x, t = poses19(3, dtype=torch.float64), torch.rand(3, dtype=torch.float64)
+    with torch.no_grad():
+        _, divergence = model.velocity_and_divergence(x, t)
+        numeric = torch.zeros(3, dtype=torch.float64)
+        for joint in range(J19):
+            for i in range(3):
+                e = torch.zeros(3, J19, 3, dtype=torch.float64)
+                e[:, joint, i] = 1e-5
+                numeric += (model.velocity(exp_frame(x, e), t) - model.velocity(exp_frame(x, -e), t))[:, joint, i] / 2e-5
+    assert torch.allclose(divergence, numeric, atol=1e-6)
+
+
+def test_the_z_input_needs_its_statistics_and_only_it_takes_them():
+    with pytest.raises(ValueError, match="z_mean"):
+        build_model("rsgm", num_joints=J19, inputs="local+z")
+    with pytest.raises(ValueError, match="z_mean"):
+        build_model("rsgm", num_joints=J19, z_mean=[0.0] * 57, z_std=[1.0] * 57)
+    with pytest.raises(ValueError, match="positive"):
+        build_model("rsgm", num_joints=J19, inputs="local+z", z_mean=[0.0] * 57, z_std=[0.0] * 57)
+
+
+def test_the_plain_log_is_roma_s_away_from_pi():
+    from hp.models.rsgm import log_rotations
+    r = roma.random_rotmat(10_000, generator=torch.Generator().manual_seed(3), dtype=torch.float64)
+    v = roma.rotmat_to_rotvec(r)
+    far = v.norm(dim=-1) < math.pi - 1e-3
+    assert torch.allclose(log_rotations(r)[far], v[far], atol=1e-9)
+    assert torch.equal(log_rotations(torch.eye(3)), torch.zeros(3))

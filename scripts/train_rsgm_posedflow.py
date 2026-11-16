@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from hp.evaluation.data import load_reference  # noqa: E402
 from hp.models.io import load_model  # noqa: E402
+from hp.models.rsgm import z_statistics  # noqa: E402
 from hp.training import cli  # noqa: E402
 from hp.training.config import load_config  # noqa: E402
 
@@ -108,6 +109,12 @@ CONFIGS["deep_nores"] = CONFIGS["deep"] + ["model.args.net_residual=false"]
 # The two components that carry the ablation, together and alone: a plain MLP with the skip connections and LayerNorm
 # (the time a scalar t at the input, no dropout, no zero init, lr 2e-3 as abl_base)
 CONFIGS["res_norm"] = ABL_BASE + ["model.args.net_residual=true", "model.args.net_norm=true"]
+# The z-scored tangent coordinates next to the matrices at the input (inputs="local+z", hp.models.rsgm, as DPoser's
+# input), with abl_base and with res_norm: the pairs differ by the input only. The statistics are fitted on the training
+# poses once (fitted_z_statistics) and given as model.args.z_mean / z_std.
+Z_INPUT = ["model.args.inputs=local+z"]
+CONFIGS["abl_z"] = ABL_BASE + Z_INPUT
+CONFIGS["res_norm_z"] = CONFIGS["res_norm"] + Z_INPUT
 # DPoser's network and training on RSGM: TimeFC's size (1024 x 2 blocks, a 512-dim embedding, dropout 0.1) and
 # DPoser's schedule (200k steps x 5120, lr 2e-4, cosine with 5k warm-up, EMA 0.9999). For the full data, as DPoser's
 # full run: --rotations ~/data/AMASS_rotations_posedflow --run-root ~/data/experiments/full
@@ -140,6 +147,21 @@ def train_frames(rotations: str, split: str) -> int:
         except RuntimeError:  # an old file format without mmap
             total += torch.load(path, weights_only=True).shape[0]
     return total
+
+
+def fitted_z_statistics(rotations: str, split: str, run_root: str, frames: int) -> dict:
+    """z_mean and z_std of inputs="local+z" on the training poses, from <run root>/rsgm_z_statistics.json or fitted
+    now (and written there) when the file is missing or of other data."""
+    path = Path(run_root).expanduser() / "rsgm_z_statistics.json"
+    stats = json.loads(path.read_text()) if path.is_file() else None
+    if stats is None or (stats["rotations"], stats["split"], stats["poses"]) != (rotations, split, frames):
+        train = load_reference("train", rotations, split)
+        mean, std = z_statistics(train)
+        stats = {"rotations": rotations, "split": split, "poses": len(train), "z_mean": mean, "z_std": std}
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(stats, indent=1))
+        print(f"z statistics fitted on {len(train):,} training poses, written to {path}", flush=True)
+    return stats
 
 
 def minutes(seconds: float) -> str:
@@ -201,6 +223,9 @@ def main() -> int:
         argv = ["model=rsgm", f"run_root={args.run_root}", f"run_name={name}", f"seed={seed}",
                 f"data.rotations={rotations}", f"data.split={split}", "data.load_dtype=float32",
                 f"train.device={args.device}", *COMMON, *CONFIGS[config], *overrides]
+        if "model.args.inputs=local+z" in argv:
+            stats = fitted_z_statistics(rotations, split, args.run_root, frames)
+            argv += [f"model.args.z_mean={json.dumps(stats['z_mean'])}", f"model.args.z_std={json.dumps(stats['z_std'])}"]
         runs = runs_of(Path(args.run_root).expanduser() / name)
         done = [r for r in runs if finished(r)]
         stopped = [r for r in runs if resumable(r)]
@@ -222,7 +247,9 @@ def main() -> int:
             argv = [f"resume={stopped[-1]}", f"train.device={args.device}", *overrides]
             plan = f"resuming {stopped[-1]}; " + plan
         if args.dry_run:
-            print(f"{head}: {plan}\n  would run scripts/train_model.py {' '.join(argv)}", flush=True)
+            shown = [a.split("=")[0] + "=[57 numbers]" if a.startswith(("model.args.z_mean=", "model.args.z_std="))
+                     else a for a in argv]
+            print(f"{head}: {plan}\n  would run scripts/train_model.py {' '.join(shown)}", flush=True)
             continue
         print(f"\n{head}: {plan}; started {time.strftime('%H:%M')}, {minutes(time.perf_counter() - started)} into the script",
               flush=True)

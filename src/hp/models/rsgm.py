@@ -36,6 +36,12 @@ hand is a product along the chain root-spine-shoulder-arm-elbow-hand, which a pl
 inputs = "local+global" also gives it these products (the forward kinematics along the SMPL tree, no root rotation),
 19 x 9 numbers more; time_features adds sin and cos of t at several frequencies. Both are functions of x and t only,
 so the sampler, the loss and the exact divergence of log_prob are unchanged.
+inputs = "local+z" gives it, next to the matrices, the z-scored tangent coordinates of every joint around its mean, as
+DPoser's input: z_j = log(M_j^T x_j) / sigma_j, with M_j the Karcher mean of the joint over the training poses and
+sigma_j the std of each of the 3 coordinates of log(M_j^T x_j) (z_statistics; the arguments z_mean, the rotation
+vectors of M_j, and z_std, kept as buffers). Joints of small spread (the wrists, the spine) move their 9 matrix numbers
+little and their z by about 1. The matrices stay in the input: near angle pi from M_j the log jumps (large t), they
+do not. A function of x only, like "local+global".
 """
 import math
 from typing import Optional, Sequence
@@ -67,6 +73,17 @@ def exp_frame(x: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
     return x @ roma.rotvec_to_rotmat(v)
 
 
+def log_rotations(r: torch.Tensor) -> torch.Tensor:
+    """Rotation vectors [..., 3] of rotations r [..., 3, 3] in plain out-of-place ops, so that torch.func can vmap and
+    differentiate it (the exact divergence of log_prob; roma's log map writes in place). The angle is atan2(|w|, c) of
+    w = vee(r - r^T) / 2 = sin(angle) axis and c = (trace - 1) / 2 = cos(angle): accurate near 0; near pi the axis of w
+    is still right while |w| is far above the rounding error (about 1e-3 rad from pi in float32), and at pi it is lost."""
+    w = torch.stack([r[..., 2, 1] - r[..., 1, 2], r[..., 0, 2] - r[..., 2, 0], r[..., 1, 0] - r[..., 0, 1]], -1) / 2
+    c = (r.diagonal(dim1=-2, dim2=-1).sum(-1) - 1) / 2
+    n = w.pow(2).sum(-1).clamp_min(1e-20).sqrt()
+    return (torch.atan2(n, c) / n)[..., None] * w
+
+
 # parents of the 22 body joints of SMPL (AmassJoints order; -1: none), as body_models/smpl_skeleton.npz
 SMPL_PARENTS = (-1, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 9, 12, 13, 14, 16, 17, 18, 19)
 # for each joint of AmassJoints4Learning, the index of its parent among them; -1: the parent is the root (identity)
@@ -81,6 +98,34 @@ def global_rotations(x: torch.Tensor) -> torch.Tensor:
     for j, p in enumerate(PARENTS19):  # a parent comes before its children
         out.append(x[..., j, :, :] if p < 0 else out[p] @ x[..., j, :, :])
     return torch.stack(out, dim=-3)
+
+
+@torch.no_grad()
+def z_statistics(poses: torch.Tensor, iterations: int = 50, chunk: int = 1_000_000):
+    """(z_mean, z_std) [3J] of inputs="local+z" from training poses [N, J, 3, 3], as lists for the model's arguments:
+    the rotation vectors of the Karcher (geodesic L2) mean M_j of every joint, and the std (N - 1) of each coordinate of
+    log(M_j^T x_j). The mean starts at the projection of the mean matrix onto SO(3) and is moved by the mean of the
+    logs until the step is below 1e-10 rad; in float64."""
+    def logs_sum(m, power):
+        total = torch.zeros(m.shape[0], 3, dtype=torch.float64)
+        for i in range(0, len(poses), chunk):
+            v = roma.rotmat_to_rotvec(m.transpose(-1, -2) @ poses[i:i + chunk].double())
+            total += (v ** power).sum(0)
+        return total
+
+    n = len(poses)
+    total = torch.zeros(poses.shape[1], 3, 3, dtype=torch.float64)
+    for i in range(0, n, chunk):
+        total += poses[i:i + chunk].double().sum(0)
+    m = roma.special_procrustes(total / n)
+    for _ in range(iterations):
+        step = logs_sum(m, 1) / n
+        m = m @ roma.rotvec_to_rotmat(step)
+        if step.norm(dim=-1).max() < 1e-10:
+            break
+    mean = logs_sum(m, 1) / n  # ~0 at the Karcher mean
+    std = ((logs_sum(m, 2) - n * mean ** 2) / (n - 1)).sqrt()
+    return roma.rotmat_to_rotvec(m).reshape(-1).tolist(), std.reshape(-1).tolist()
 
 
 @register_model("rsgm")
@@ -110,7 +155,9 @@ class RSGM(PoseModel):
         cond_mask: str = "none",  # joints hidden in the loss: "none" or "random" (see the module doc)
         representation: str = "matrix",
         cond_dim: int = 0,  # set by `condition`; without one, a generic condition vector of this length
-        inputs: str = "local",  # of the score network: "local" (the rotations) or "local+global" (see the module doc)
+        inputs: str = "local",  # of the score network: "local" (the rotations), "local+global" or "local+z" (module doc)
+        z_mean: Optional[Sequence[float]] = None,  # of inputs="local+z": the rotation vectors of the means M_j [3J],
+        z_std: Optional[Sequence[float]] = None,  # and the std of log(M_j^T x_j) [3J] (z_statistics)
         time_features: int = 0,  # sin and cos of t at this many frequencies, next to t itself; 0: t alone
         net: str = "mlp",  # "mlp": Linear-activation layers of `hidden`, t at the input; "timeres": score_nets.TimeResNet
         net_width: int = 1024,  # of net="timeres": the width,
@@ -132,8 +179,10 @@ class RSGM(PoseModel):
             raise ValueError(f"Unknown net_level '{net_level}'. Use 'log_s' or 't'.")
         if net == "timeres" and time_features:
             raise ValueError("net='timeres' embeds the noise level itself; use time_features=0.")
-        if inputs not in ("local", "local+global"):
-            raise ValueError(f"Unknown inputs '{inputs}'. Use 'local' or 'local+global'.")
+        if inputs not in ("local", "local+global", "local+z"):
+            raise ValueError(f"Unknown inputs '{inputs}'. Use 'local', 'local+global' or 'local+z'.")
+        if (inputs == "local+z") != (z_mean is not None and z_std is not None):
+            raise ValueError("inputs='local+z' needs z_mean and z_std (z_statistics of the training poses), and only it.")
         if inputs == "local+global" and num_joints != len(PARENTS19):
             raise ValueError(f"inputs='local+global' needs the {len(PARENTS19)} joints of AmassJoints4Learning, got {num_joints}.")
         cond_dim = conditioning.resolve(condition, cond_dim, cond_mask)
@@ -148,7 +197,16 @@ class RSGM(PoseModel):
         self.check_sampler()
         self.inputs, self.time_features = inputs, time_features
         self.cond_net = conditioning.make_net(cond_dim, condition, cond_hidden, cond_features)
-        rotations = 9 * num_joints * (2 if inputs == "local+global" else 1)
+        if inputs == "local+z":  # buffers: saved with the weights, never trained
+            z_mean = torch.as_tensor(z_mean, dtype=torch.float32).reshape(-1)
+            z_std = torch.as_tensor(z_std, dtype=torch.float32).reshape(-1)
+            if z_mean.shape != (3 * num_joints,) or z_std.shape != (3 * num_joints,):
+                raise ValueError(f"z_mean and z_std must have {3 * num_joints} entries (3 per joint).")
+            if not (z_std > 0).all():
+                raise ValueError("z_std must be positive.")
+            self.register_buffer("z_rot", roma.rotvec_to_rotmat(z_mean.reshape(num_joints, 3)))
+            self.register_buffer("z_std", z_std.reshape(num_joints, 3))
+        rotations = 9 * num_joints * (2 if inputs == "local+global" else 1) + (3 * num_joints if inputs == "local+z" else 0)
         self.net_kind, self.net_level = net, net_level
         if net == "timeres":
             self.net = TimeResNet(rotations + (cond_features if cond_dim else 0), 3 * num_joints, net_width, net_blocks,
@@ -215,6 +273,9 @@ class RSGM(PoseModel):
         inputs = [x.reshape(b, -1)]
         if self.inputs == "local+global":
             inputs.append(global_rotations(x).reshape(b, -1))
+        elif self.inputs == "local+z":
+            z = log_rotations(self.z_rot.to(x.dtype).transpose(-1, -2) @ x) / self.z_std.to(x.dtype)
+            inputs.append(z.reshape(b, -1))
         if self.net_kind == "timeres":  # the time goes to every layer, as the noise level log(s) / 4
             features = torch.cat(inputs + ([] if f is None else [f]), dim=1)
             if self.net_level == "log_s":
