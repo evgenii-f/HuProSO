@@ -1,7 +1,7 @@
-"""Results of pose completion on the VALIDATION poses in one form, for comparing methods and models on their fronts
-(completion_fronts.ipynb, hp.evaluation.fronts): the JSON lines of the scripts of
+"""Results of pose completion in one form, for comparing methods and models on their fronts (completion_fronts.ipynb,
+hp.evaluation.fronts): on the VALIDATION poses the JSON lines of the scripts of
 explore/evaluation/completion_diagnostics (dflow_valid.py, inpaint_valid.py) and the trials of the Optuna studies of
-scripts/tune_completion.py.
+scripts/tune_completion.py (load); apart, the rows of the TEST poses in the completion cache (load_test).
 
 A record (dict) is one setting of one method on one model, evaluated on the first `poses` of the 1000 fixed validation
 poses, K = 10, all four occlusions:
@@ -122,6 +122,47 @@ def load(paths: Iterable[Union[str, Path]]) -> List[dict]:
                     out += load_study(path, summary.study_name)
         else:
             raise ValueError(f"{path}: neither .jsonl nor .db")
+    return out
+
+
+def load_test(cache: Union[str, Path]) -> List[dict]:
+    """The records of the TEST rows in the completion cache (cache/<label>/<occlusion>.pt and <occlusion>_metrics.pt of
+    hp.evaluation.completion.cached_run and cached_metrics, e.g. of scripts/evaluate_completion.py): one per label with
+    the metrics of all four occlusions, computed from the completions file that is there now and by this
+    METRICS_VERSION; other labels are skipped. Their split is "test" (the records of load() are on validation poses):
+
+    model    the label up to its first comma ("RSGM abl residual: their c10")
+    setting  the rest of the label ("inpaint t81"), or "default"
+    method   that of the spec the completions were made with
+    """
+    import torch
+
+    from hp.evaluation.completion import METRICS_VERSION, file_identity, summary
+
+    out = []
+    for folder in sorted(p for p in Path(cache).expanduser().iterdir() if p.is_dir()):
+        cells, spec, poses = {}, None, None
+        for occlusion in OCCLUSIONS:
+            completions, metrics = folder / f"{occlusion}.pt", folder / f"{occlusion}_metrics.pt"
+            if not (completions.is_file() and metrics.is_file()):
+                break
+            saved = torch.load(metrics, weights_only=True)
+            settings = json.loads(saved["settings"])
+            if settings["completions"] != file_identity(completions) or settings["version"] != METRICS_VERSION:
+                break
+            if spec is None:  # the tensors stay on disk (mmap): only the settings are read
+                made = json.loads(torch.load(completions, weights_only=True, mmap=True)["settings"])
+                spec, poses = made["model"]["spec"], made["poses"]
+            s = summary({key: value.numpy() for key, value in saved["plain"].items()})
+            cells[occlusion] = {"mpvpe_mean": s["mpvpe_mean"], "mpvpe_min": s["mpvpe_min"], "apd": s["apd"]}
+        if len(cells) < len(OCCLUSIONS):
+            continue
+        label = folder.name.replace("_", " ")
+        model, _, setting = label.partition(", ")
+        options = {key: value for key, value in spec.items() if key not in ("run", "posedflow", "method")}
+        record = _record("cache", model, spec.get("run") or spec.get("posedflow"), spec.get("method", "dflow"),
+                         setting or "default", options, poses, cells, None, None)
+        out.append({**record, "split": "test"})
     return out
 
 

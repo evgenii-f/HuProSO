@@ -1,11 +1,14 @@
 """Results of pose completion on the validation poses in one form (hp/evaluation/completion_results.py)."""
 import json
 
+import numpy as np
 import optuna
 import pytest
+import torch
 
 from hp.evaluation.completion import OCCLUSIONS
-from hp.evaluation.completion_results import at_occlusion, load, load_jsonl, load_study
+from hp.evaluation.completion import METRICS_VERSION, cache_path, file_identity
+from hp.evaluation.completion_results import at_occlusion, load, load_jsonl, load_study, load_test
 
 
 def cells(base):
@@ -82,3 +85,40 @@ def test_an_old_study_by_its_name_and_load_of_several_files(tmp_path):
     with pytest.raises(ValueError):
         load_study(tmp_path / "bad.db", "something_else")
     assert len(load([path, tmp_path / "missing.jsonl"])) == 2
+
+
+def save_row(cache, label, spec, base, occlusions=OCCLUSIONS, stale=()):
+    """A test row of the cache as cached_run and cached_metrics leave it: per occlusion the completions with their
+    settings and the per-pose metrics of these completions (MPVPE base + i on every hypothesis, APD 1 + i)."""
+    for i, occlusion in enumerate(occlusions):
+        completions = cache_path(cache, label, occlusion)
+        completions.parent.mkdir(parents=True, exist_ok=True)
+        torch.save({"pred": torch.zeros(3, 10, 1), "settings": json.dumps({"model": {"spec": spec}, "poses": 3})},
+                   completions)
+        identity = file_identity(completions)
+        if occlusion in stale:  # metrics of an older completions file
+            identity = {**identity, "size": identity["size"] + 1}
+        plain = {"mpvpe": torch.full((3, 10), base + i, dtype=torch.float64),
+                 "mpjpe": torch.zeros(3, 10), "mgeo": torch.zeros(3, 10), "apd": torch.full((3,), 1.0 + i)}
+        plain["mpvpe"][:, 0] -= 10  # the best of the K hypotheses
+        torch.save({"settings": json.dumps({"completions": identity, "poses": 3, "version": METRICS_VERSION}),
+                    "plain": plain, "rest": plain}, completions.with_name(f"{occlusion}_metrics.pt"))
+
+
+def test_the_test_rows_of_the_cache(tmp_path):
+    save_row(tmp_path, "RSGM abl residual: their c10, inpaint t81", {"run": "~/r", "method": "inpaint",
+                                                                      "prior": {"steps": 400}}, 80)
+    save_row(tmp_path, "PoseD-Flow: their checkpoint", {"posedflow": "~/ckpt"}, 70)
+    save_row(tmp_path, "unfinished", {"run": "~/r"}, 60, occlusions=list(OCCLUSIONS)[:2])
+    save_row(tmp_path, "stale", {"run": "~/r"}, 60, stale=list(OCCLUSIONS)[-1:])
+    posedflow, rsgm = load_test(tmp_path)
+    assert (rsgm["model"], rsgm["setting"]) == ("RSGM abl residual: their c10", "inpaint t81")
+    assert rsgm["method"] == "inpaint"
+    assert rsgm["split"] == "test" and rsgm["poses"] == 3 and rsgm["run"] == "~/r"
+    assert rsgm["options"] == {"prior": {"steps": 400}}
+    assert rsgm["mean"] == pytest.approx(np.mean([80 + i - 1 for i in range(4)]))  # one hypothesis 10 lower
+    assert rsgm["best_of_k"] == pytest.approx(np.mean([70 + i for i in range(4)]))
+    assert rsgm["apd"] == pytest.approx(2.5) and at_occlusion(rsgm, "arms")["apd"] == pytest.approx(3.0)
+    assert (posedflow["model"], posedflow["setting"], posedflow["method"]) == ("PoseD-Flow: their checkpoint",
+                                                                               "default", "dflow")
+    assert posedflow["run"] == "~/ckpt"
