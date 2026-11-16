@@ -323,6 +323,55 @@ The median is as good or better, but a few percent of the poses get thousands of
 is meaningless. A smooth feature (vee(M_j^T x_j - x_j^T M_j) / 2 = sin(angle) axis) would avoid it; not done, since the
 input does not help completion.
 
+## 10. 2026-11-16: Per-joint noise (`abl_aniso`, `abl_residual_aniso`, `abl_norm_aniso`)
+
+Question: is the slow first phase the isotropic noise? DPoser adds its noise to z-scored coordinates, so in radians
+the noise of a joint is proportional to its spread, and at every noise level every joint has the same
+signal-to-noise ratio. RSGM's IGSO(3) noise has one angle for all joints: at a t where the knees (spread about 0.5 rad)
+are still clear, the spine and the shoulders (0.04-0.2 rad) are drowned.
+
+`joint_scale` = c (`hp/models/rsgm.py`): joint j diffuses with the Brownian time s_j(t) = min(c_j s(t), 20), beta_j =
+d s_j / dt, so x_t | x_0 is still IGSO(3) per joint and the target of the loss stays exact; the std trick, the
+weighting std_j(t)^2, the samplers and the likelihood work joint by joint, and the network still gets one t.
+c_j = sigma_j^2 / min_k sigma_k^2 with sigma_j the RMS spread of joint j around its Karcher mean (`fit_joint_scale` of
+the z statistics of section 9): 1 (Spine2) to 42.8 (right elbow), about 35 for the knees. The cap at 20 (uniform to
+exp(-20)) keeps the IGSO(3) numerics finite, which fail above about 30 (c_j s(1) reaches 160). In the hybrid the RSGM
+time is chosen with s(t_r) = mean_j s_j^DPoser / c_j and the noise of joint j is IGSO(3) of c_j s(t_r): close to
+DPoser's own noise of every joint; for c = 1 it is the old matching (`abl_base` reproduces its numbers exactly).
+
+Configs `abl_aniso` = `abl_base` + c, `abl_residual_aniso` and `abl_norm_aniso` = `abl_residual` and `abl_norm` + c;
+each pair differs by the noise only (30k x 4096, c10, std weighting). `abl_aniso` seed 10 was trained with the CPU
+noise of the loss (workstation1, 21 min); seed 11 and the other two with the noise drawn on the GPU (branch
+`experimental/igso_gpu`, 11-14 min each on a loaded workstation1; the validation loss matched the old code within 0.02
+at 1k-6k steps).
+
+The rule, written before the runs (as section 9): the left-leg error at step 100 moves from about 13.4 deg clearly
+toward 10.8 deg, and the hybrid on the left leg drops clearly below the 97-103 mm of the networks with residual or
+LayerNorm.
+
+Hybrid on 500 validation poses, K = 10, MPVPE mean (mm) / APD (cm) / best of 10 (mm); validation loss of the run;
+hidden-joint error of the trajectory at steps 100 and 199 (deg, 300 validation poses); `eval_runs.sh` on the Mac:
+
+| run | left_leg | legs | arms | trunk | valid loss best / last | left_leg 100 -> 199 | arms 100 -> 199 |
+|---|---|---|---|---|---|---|---|
+| DPoser (control) | **79.4** | **103.3** | 110.6 | 43.5 | – | **10.8 -> 11.5** | **21.7 -> 22.1** |
+| abl_base | 112.2 / 9.52 / 54.8 | 138.7 / 11.52 / 80.0 | 133.6 / 8.09 / 84.2 | 48.2 / 2.22 / 26.1 | 5.884 / 5.885 | 13.6 -> 15.8 | 24.1 -> 28.2 |
+| abl_residual | 96.6 / 7.27 / 50.9 | 121.7 / 8.72 / 76.6 | 123.3 / 6.37 / 83.0 | 45.4 / 1.86 / 26.2 | 5.906 / 5.913 | 13.2 -> 14.1 | 23.4 -> 24.8 |
+| abl_norm | 97.4 / 7.89 / 47.8 | 121.4 / 9.10 / 74.6 | 119.5 / 6.04 / 81.8 | 44.4 / 1.79 / 26.0 | 5.903 / 5.903 | 13.2 -> 13.6 | 23.4 -> 24.5 |
+| RSGM dposer_like (full, 200k) | 94.8 / 7.30 / 49.3 | 124.0 / 8.75 / 78.3 | 125.5 / 6.74 / 83.0 | **42.6** / 1.69 / 25.3 | 5.986 / 6.010 | 13.4 -> 13.6 | 24.0 -> 25.5 |
+| abl_aniso, seed 10 | 93.4 / 6.68 / 51.4 | 116.3 / 8.02 / 74.4 | 121.6 / 6.12 / 82.2 | 47.8 / 2.06 / 26.5 | 1.539 / 1.539 | 12.3 -> 13.9 | 23.1 -> 25.5 |
+| abl_aniso, seed 11 | 93.0 / 6.83 / 49.6 | 114.1 / 7.92 / 71.6 | 121.7 / 5.92 / 82.1 | 47.3 / 1.97 / 26.8 | 1.549 / 1.549 | 12.2 -> 13.5 | 23.1 -> 25.4 |
+| abl_residual_aniso | 89.6 / 6.03 / 50.4 | 107.6 / 6.66 / 71.3 | 115.7 / 4.96 / 82.6 | 46.6 / 1.74 / 28.7 | 1.550 / 1.551 | 12.3 -> 12.8 | 22.7 -> 23.1 |
+| abl_norm_aniso | 87.0 / 5.81 / 49.3 | 105.2 / 6.40 / 70.6 | **108.0** / 4.87 / 75.0 | 44.0 / 1.61 / 26.5 | 1.556 / 1.556 | 12.1 -> 12.3 | 22.4 -> 22.6 |
+
+Both parts of the rule hold. The first phase leaves the band of all isotropic networks (13.2-14.3 deg) for the first
+time: 12.1-12.3 deg, about half of the way to DPoser, and the two seeds of `abl_aniso` agree within 0.1 deg and
+0.4-2 mm. The noise adds up with residual and LayerNorm (7-16 mm on the left leg, the legs and the arms in each pair);
+with LayerNorm the drift of the second phase nearly vanishes (12.1 -> 12.3 deg) and the hybrid is within 2 mm of
+DPoser on the legs and better on the arms. The APD drops with the noise (left leg 5.8-6.8 against 7.3-9.5 cm): part of
+the gain in the mean may be less diversity. The validation losses with c are not comparable to those without (the
+weighting std_j^2 differs per joint).
+
 ## Conclusions
 
 1. Residual connections or LayerNorm are what a score network on SO(3) needs for score distillation at small noise:
@@ -349,15 +398,21 @@ input does not help completion.
 - The likelihood weighting with the new networks.
 - The z input (section 9): one seed per run, the z input alone (without the matrices) not tried, and the noise of the
   hybrid stays isotropic in the angle, so the network gets the joints' scale only at the input.
+- Per-joint noise (section 10): two seeds for `abl_aniso` only, one for the residual and LayerNorm variants; one scale
+  per joint (the noise is isotropic within a joint, IGSO(3) has no anisotropic heat kernel in closed form); only the
+  hybrid, not the completion protocols; the mean at equal APD not compared; the noise of the hybrid is matched to the
+  model's, so the hybrid of an aniso model also uses DPoser-like noise per joint.
 
 ## Where things are
 
 - Runs: `~/data/experiments/rsgm_posedflow_{abl_*,deep,deep_nores,res_norm,res_norm_z,timeres,timeres_small}_s10`,
-  `~/data/experiments/full/rsgm_posedflow_dposer_like_z_s10`,
+  `~/data/experiments/full/rsgm_posedflow_dposer_like_z_s10`; the GPU-noise runs of section 10 in
+  `~/data/experiments/igso_speed/rsgm_posedflow_{abl_aniso_s11,abl_residual_aniso_s10,abl_norm_aniso_s10}` (their z
+  statistics in `~/data/experiments/igso_speed/rsgm_z_statistics.json`),
   `~/data/experiments/full/rsgm_posedflow_dposer_like_s10` (on the Mac and on workstation1).
 - z statistics of section 9: `~/data/experiments/rsgm_z_statistics.json` on workstation1 (also in `model.json` of
   each z run).
-- The output lines behind the tables of sections 6-9: [2026-11-14_score_network_architectures_eval.txt](2026-11-14_score_network_architectures_eval.txt).
+- The output lines behind the tables of sections 6-10: [2026-11-14_score_network_architectures_eval.txt](2026-11-14_score_network_architectures_eval.txt).
 - Scripts (from the root of the repository): `explore/evaluation/completion_diagnostics/eval_runs.sh` (valid loss,
   hybrid, trajectory for a list of runs), `hybrid.py`, `trajectory.py`, `loglik_valid.py`, `dflow_valid.py`; training configs in
   `scripts/train_rsgm_posedflow.py`.
