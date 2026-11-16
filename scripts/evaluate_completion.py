@@ -67,6 +67,18 @@ MODELS = {
     "RSGM abl norm: their c10, inpaint t118": dict(
         run="~/data/experiments/rsgm_posedflow_abl_norm_s10/run_0001", method="inpaint",
         prior=dict(steps=200, schedule="edm", guidance=0.09515197497012039, resample=5, replace=False)),
+    # DPoser trained like RSGM c10, one point per study (config/completion_tuning/dposer_c10_*_mean_apd.yaml) by the
+    # same rule; and, outside the rule, DPoser's method with their defaults and 3 x 200 steps (trial 3 of that study)
+    "DPoser: their c10, RSGM budget, inpaint t68": dict(
+        run="~/data/experiments/dposer_posedflow_rsgm_budget_s10/run_0001", method="inpaint",
+        prior=dict(steps=200, schedule="edm", guidance=1.0888627538152378, resample=5, replace=True)),
+    "DPoser: their c10, RSGM budget, DPoser method t28": dict(
+        run="~/data/experiments/dposer_posedflow_rsgm_budget_s10/run_0001", method="dposer",
+        prior=dict(lr=0.12276386856394805, t_max=0.17371331329113274, t_min=0.0397763049393363, iterations=3,
+                   steps_per_iter=100)),
+    "DPoser: their c10, RSGM budget, DPoser method t3": dict(
+        run="~/data/experiments/dposer_posedflow_rsgm_budget_s10/run_0001", method="dposer",
+        prior=dict(lr=0.1, t_max=0.15, t_min=0.049999999999999996, iterations=3, steps_per_iter=200)),
 }
 
 
