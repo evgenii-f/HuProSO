@@ -401,16 +401,22 @@ stays, so validation losses compare across the change. Inpainting draws its nois
   average, at most 1.1e-4 (only in the far tail); KS distance to IGSO(3) 0.0009 (float32) and 0.0013 (float64),
   1% threshold 0.0026.
 
-`scripts/benchmark_igso_noise.py` on the Mac (mps, untrained MLP 512 x 4, 19 joints; on mps the loss draws on the CPU
-either way):
+`scripts/benchmark_igso_noise.py` (untrained MLP 512 x 4, 19 joints, random poses), on an idle RTX 4090 of bigmama
+(torch 2.14.1, 16 CPU threads) and on the Mac (mps; there the loss draws on the CPU either way):
 
-| measurement | noise on CPU | noise on device | speed-up |
-|---|---|---|---|
-| train step, batch 4096 | 53.1 it/s | 51.9 it/s | 0.98x |
-| inpainting, 5000 poses, guidance 0, resample 3 | 12.99 ms/call | 5.67 ms/call | 2.29x |
-| inpainting, 5000 poses, guidance 0.1, resample 1 | 22.63 ms/call | 18.49 ms/call | 1.22x |
-| inpainting, 20000 poses, guidance 0, resample 3 | 46.97 ms/call | 23.84 ms/call | 1.97x |
-| inpainting, 20000 poses, guidance 0.1, resample 1 | 86.42 ms/call | 74.71 ms/call | 1.16x |
+| measurement | cuda: noise on CPU | cuda: on device | speed-up | mps: noise on CPU | mps: on device | speed-up |
+|---|---|---|---|---|---|---|
+| train step, batch 4096 | 82.2 it/s | 519.8 it/s | 6.32x | 53.1 it/s | 51.9 it/s | 0.98x |
+| train step, batch 16384 | 18.8 it/s | 183.2 it/s | 9.74x | 18.9 it/s | 18.7 it/s | 0.99x |
+| inpainting, 5000 poses, guidance 0, resample 3 | 7.91 ms/call | 1.29 ms/call | 6.11x | 12.99 ms/call | 5.67 ms/call | 2.29x |
+| inpainting, 5000 poses, guidance 0.1, resample 1 | 12.62 ms/call | 9.25 ms/call | 1.36x | 22.63 ms/call | 18.49 ms/call | 1.22x |
+| inpainting, 20000 poses, guidance 0, resample 3 | 25.56 ms/call | 3.38 ms/call | 7.56x | 46.97 ms/call | 23.84 ms/call | 1.97x |
+| inpainting, 20000 poses, guidance 0.1, resample 1 | 42.64 ms/call | 27.04 ms/call | 1.58x | 86.42 ms/call | 74.71 ms/call | 1.16x |
+
+On cuda the noise was most of the cost: 6-10x for a training step and 6-8x for inpainting without guidance. With
+guidance the backward pass through the network dominates (1.4-1.6x). A training step alone runs at 520 it/s, while
+the training script reached about 50 it/s: what is left in training is outside the loss (the DataLoader collates
+4096 poses one by one on the CPU, and the machine was loaded).
 
 ## Conclusions
 
