@@ -297,6 +297,32 @@ drift; against `res_norm` the sign changes from occlusion to occlusion (left leg
 better), within the spread of one seed seen in section 6. The validation loss of `res_norm_z` is worse (6.043 against
 5.908). The representation of the input is not the cause of the slow first phase.
 
+Added the same day: `dposer_like_z` (`dposer_like` + z, full data, 200k x 5120, 2.97 h on workstation1) against
+`dposer_like`, same hybrid and trajectory:
+
+| run | left_leg | legs | arms | trunk | valid loss best / last | left_leg 100 -> 199 | arms 100 -> 199 |
+|---|---|---|---|---|---|---|---|
+| RSGM dposer_like (full, 200k) | 94.8 / 7.30 / 49.3 | 124.0 / 8.75 / 78.3 | 125.5 / 6.74 / 83.0 | 42.6 / 1.69 / 25.3 | 5.986 / 6.010 | 13.4 -> 13.6 | 24.0 -> 25.5 |
+| dposer_like_z | 94.2 / 7.23 / 49.5 | 122.3 / 8.98 / 75.0 | 124.5 / 6.50 / 82.7 | 42.7 / 1.71 / 25.1 | 6.065 / 6.066 | 13.2 -> 13.3 | 24.1 -> 25.6 |
+
+The rule fixed before it (left leg at step 100 at most 12.5 deg and the hybrid on the left leg at most 90 mm) does
+not hold: the two differ by 0-2 mm and 0.2 deg.
+
+The z input breaks the exact likelihood. Validation log-likelihood of the 500 poses of the quick check (EMA weights,
+nats relative to uniform on SO(3)^19, `loglik_valid.py` on the Mac):
+
+| run | mean +- s.e.m. | median | min / 1% / 5% | poses below 0 |
+|---|---|---|---|---|
+| abl_base | 135.88 +- 0.81 | 136.6 | 72.8 / 97.2 / 106.5 | 0 |
+| abl_z | 130.35 +- 5.34 | 138.4 | -2019 / -14.0 / 102.5 | 6 |
+| dposer_like | 136.58 +- 0.78 | 137.1 | 80.7 / 98.6 / 107.4 | 0 |
+| dposer_like_z | -1.13 +- 59.46 | 140.2 | -20595 / -2163 / 89.5 | 19 |
+
+The median is as good or better, but a few percent of the poses get thousands of nats wrong (and `abl_z` a maximum of
+766): the log jumps at angle pi from M_j, the probability flow passes there at large t, and the exact divergence there
+is meaningless. A smooth feature (vee(M_j^T x_j - x_j^T M_j) / 2 = sin(angle) axis) would avoid it; not done, since the
+input does not help completion.
+
 ## Conclusions
 
 1. Residual connections or LayerNorm are what a score network on SO(3) needs for score distillation at small noise:
@@ -327,12 +353,13 @@ better), within the spread of one seed seen in section 6. The validation loss of
 ## Where things are
 
 - Runs: `~/data/experiments/rsgm_posedflow_{abl_*,deep,deep_nores,res_norm,res_norm_z,timeres,timeres_small}_s10`,
+  `~/data/experiments/full/rsgm_posedflow_dposer_like_z_s10`,
   `~/data/experiments/full/rsgm_posedflow_dposer_like_s10` (on the Mac and on workstation1).
 - z statistics of section 9: `~/data/experiments/rsgm_z_statistics.json` on workstation1 (also in `model.json` of
   each z run).
 - The output lines behind the tables of sections 6-9: [2026-11-14_score_network_architectures_eval.txt](2026-11-14_score_network_architectures_eval.txt).
 - Scripts (from the root of the repository): `explore/evaluation/completion_diagnostics/eval_runs.sh` (valid loss,
-  hybrid, trajectory for a list of runs), `hybrid.py`, `trajectory.py`, `dflow_valid.py`; training configs in
+  hybrid, trajectory for a list of runs), `hybrid.py`, `trajectory.py`, `loglik_valid.py`, `dflow_valid.py`; training configs in
   `scripts/train_rsgm_posedflow.py`.
 - D-Flow rows: `~/data/experiments/completion/dflow_valid_arch_ws2.jsonl` and the log
   `~/data/experiments/dflow_valid_ws2.log` on workstation2.

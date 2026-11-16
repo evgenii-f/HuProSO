@@ -22,3 +22,4 @@ heun-edm50 | small std c10       |  95.2/ 7.65/ 46.2 | 113.0/ 8.76/ 67.1 | 117.8
 # section 9, 2026-11-16 (z-scored tangent input):
 rsgm_posedflow_abl_z_s10 | valid best 5.903 last 5.903 | hybrid: left_leg 106.0/8.83/51.7 | legs 127.3/10.20/76.1 | arms 130.0/7.29/85.1 | trunk 46.0/2.13/25.3 | RSGM err at steps 100,199 (left_leg, arms): 13.15 14.65 23.82 26.95
 rsgm_posedflow_res_norm_z_s10 | valid best 6.043 last 6.043 | hybrid: left_leg 108.0/7.48/57.3 | legs 127.5/8.91/79.6 | arms 126.8/6.57/83.4 | trunk 47.1/1.66/29.1 | RSGM err at steps 100,199 (left_leg, arms): 14.23 15.20 23.77 25.55
+full/rsgm_posedflow_dposer_like_z_s10 | valid best 6.065 last 6.066 | hybrid: left_leg 94.2/7.23/49.5 | legs 122.3/8.98/75.0 | arms 124.5/6.50/82.7 | trunk 42.7/1.71/25.1 | RSGM err at steps 100,199 (left_leg, arms): 13.22 13.25 24.06 25.62
