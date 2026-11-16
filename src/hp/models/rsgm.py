@@ -358,12 +358,15 @@ class RSGM(PoseModel):
         self.check_cond(cond, batch)
         if self.cond_mask == "random":
             cond = conditioning.hide_random(cond, generator)
-        t = self.loss_times(torch.rand(batch, dtype=torch.float64, generator=generator))
-        s = self.joint_s(t)  # [B, J], float64 on the CPU
+        # the noise and its target in float64 (the score of IGSO(3) is ~1/s large near s = 0), on the model's device
+        # where it has float64 (cuda), else on the CPU (mps); validation (fixed generator) on the CPU, as before
+        work = torch.device("cpu") if generator is not None or self.device.type == "mps" else self.device
+        t = self.loss_times(torch.rand(batch, dtype=torch.float64, device=work, generator=generator))
+        s = self.joint_s(t)  # [B, J], float64
         std = self.joint_std(t)
         omega = self.angles.sample(s, generator)
-        axis = igso3.random_axes((batch, joints), generator)
-        x0 = move(pose.detach().reshape(batch, joints, 3, 3), "cpu", torch.float64)
+        axis = igso3.random_axes((batch, joints), generator, device=work)
+        x0 = move(pose.detach().reshape(batch, joints, 3, 3), work, torch.float64)
         xt = exp_frame(x0, omega[..., None] * axis)
         target = std[..., None] * igso3.d_log_density(omega, s)[..., None] * axis
         dtype = self.dtype

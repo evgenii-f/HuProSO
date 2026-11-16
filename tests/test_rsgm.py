@@ -582,3 +582,23 @@ def test_the_brownian_time_of_a_joint_stops_at_the_cap():
     assert torch.allclose(s[:, 0], model.s(t)) and s[:, 1].max() == S_CAP
     assert beta[2, 1] == 0 and beta[0, 1] == 50 * model.beta(t[0])
     assert torch.isfinite(model.loss(roma.random_rotmat(64 * 2).reshape(64, 2, 3, 3)))
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs cuda")
+@pytest.mark.parametrize("weighting", ["std", "likelihood"])
+@pytest.mark.parametrize("joint_scale", [None, [1.0, 4.0, 9.0]])
+def test_the_training_loss_on_cuda_draws_its_noise_there_with_the_cpu_distribution(weighting, joint_scale):
+    """On cuda the times, angles and axes of the training loss are drawn on the device in float64: the same loss in
+    distribution as on the CPU (mean over many draws), and the validation loss (CPU generator) the same number."""
+    torch.manual_seed(0)
+    model = build_model("rsgm", num_joints=3, hidden=[32], weighting=weighting, joint_scale=joint_scale)
+    pose = roma.random_rotmat(512 * 3).reshape(512, 3, 3, 3)
+    cpu = [model.loss(pose).item() for _ in range(300)]
+    model.eval()
+    valid_cpu = model.loss(pose).item()
+    model.to("cuda").train()
+    gpu = [model.loss(pose.cuda()).item() for _ in range(300)]
+    model.eval()
+    assert model.loss(pose.cuda()).item() == pytest.approx(valid_cpu, rel=1e-5)
+    se = math.sqrt(torch.tensor(cpu).var() / 300 + torch.tensor(gpu).var() / 300)
+    assert abs(sum(gpu) / 300 - sum(cpu) / 300) < 4 * se
