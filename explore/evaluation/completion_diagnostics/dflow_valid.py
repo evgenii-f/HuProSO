@@ -48,6 +48,9 @@ MODELS = {
     "timeres": dict(run=E + "rsgm_posedflow_timeres_s10/run_0001"),
     "deep": dict(run=E + "rsgm_posedflow_deep_s10/run_0001"),
     "dposer like full": dict(run=E + "full/rsgm_posedflow_dposer_like_s10/run_0001"),
+    # with the per-joint Brownian time (joint_scale, section 10 of the report), trained with the GPU noise
+    "abl norm aniso": dict(run=E + "igso_speed/rsgm_posedflow_abl_norm_aniso_s10/run_0001"),
+    "dposer like aniso full": dict(run=E + "full/rsgm_posedflow_dposer_like_aniso_s10/run_0001"),
     # DPoser itself (Euclidean diffusion on axis-angle), as in evaluate_completion.py
     "DPoser full": dict(run=E + "full/dposer_posedflow_s10/run_0001"),
     "DPoser c10 RSGM budget": dict(run=E + "dposer_posedflow_rsgm_budget_s10/run_0001"),
