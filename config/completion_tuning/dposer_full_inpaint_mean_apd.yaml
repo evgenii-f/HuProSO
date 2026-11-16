@@ -1,0 +1,26 @@
+# Inpainting with the reverse process of DPoser (run(method="inpaint"), hp.models.inpainting.dposer_inpaint) on DPoser
+# trained on the full data (200k steps), with two objectives: mean MPVPE (minimized) and APD (maximized). The search
+# space, first trials, poses and seeds of dposer_c10_inpaint_mean_apd (guidance 0.1-3, z-scored axis-angle), so that
+# the two fronts differ by the training only; next to dposer_full_method_mean_apd (the same model, its own method) and
+# rsgm_inpaint_mean_apd_full_dposer_like (RSGM with DPoser's size, data and budget).
+# Rule for the test, fixed before it (the same as of rsgm_inpaint_mean_apd_*): among the points of the front with APD
+# not lower than that of D-Flow with Heun EDM 50 of small std c10 on the same 1000 validation poses (6.40 cm), take
+# the one with the lowest mean; if there is none, report that, and take the point with the highest APD of the front.
+model: ~/data/experiments/full/dposer_posedflow_s10/run_0001
+method: inpaint
+objective: mean_apd
+poses: 1000
+n_trials: 120
+params:
+  steps: [100, 200, 400]
+  guidance: {low: 0.1, high: 3.0, log: true}
+  resample: [1, 2, 3, 5]
+  replace: [true, false]
+fixed:
+  schedule: edm
+first:  # the best points of the smoke test
+  - {steps: 200, guidance: 0.5, resample: 5, replace: true}
+  - {steps: 200, guidance: 1.0, resample: 1, replace: false}
+  - {steps: 200, guidance: 2.0, resample: 5, replace: false}
+  - {steps: 200, guidance: 0.5, resample: 1, replace: true}
+  - {steps: 400, guidance: 0.5, resample: 5, replace: true}

@@ -16,8 +16,8 @@ in this module, and tests/test_igso3.py checks that they agree.
 
 The angle of a uniform rotation has the density (1 - cos omega) / pi on [0, pi]; the angle of IGSO(3) has f times it.
 
-Everything here works in float64 on the CPU: the score near s = 0 is 1/s large and the image terms underflow in
-float32. The model moves the results to its device.
+The densities and scores work in float64 on the CPU: the score near s = 0 is 1/s large and the image terms underflow
+in float32. Drawing angles (AngleSampler) only interpolates a table of quantiles and works on any device and dtype.
 """
 import math
 
@@ -103,26 +103,51 @@ class AngleSampler:
         frac = ((self.u - c0) / (c1 - c0).clamp_min(1e-300)).clamp(0, 1)
         self.table = w0 + frac * (w1 - w0)  # [levels, quantiles]
         self.s_min, self.s_max = s_min, s_max
+        self._tables = {}
 
-    def sample(self, s: torch.Tensor, generator: torch.Generator = None) -> torch.Tensor:
-        """One angle for every entry of s (float64, CPU)."""
-        s = torch.as_tensor(s, dtype=torch.float64)
+    def table_on(self, device, dtype) -> torch.Tensor:
+        """The quantile table on `device` as `dtype` (the float64 one on the CPU is the master; copies are cached)."""
+        key = (torch.device(device), dtype)
+        if key not in self._tables:
+            self._tables[key] = self.table.to(dtype).to(device)  # dtype on the CPU side: mps has no float64
+        return self._tables[key]
+
+    def sample(self, s: torch.Tensor, generator: torch.Generator = None, dtype=torch.float64) -> torch.Tensor:
+        """One angle for every entry of s, on the device of s (the CPU for a number or a list), as `dtype` (float32
+        on mps, which has no float64)."""
+        s = torch.as_tensor(s).to(dtype)
         if (s < self.s_min * (1 - 1e-9)).any() or (s > self.s_max * (1 + 1e-9)).any():
             raise ValueError(f"s must be in [{self.s_min}, {self.s_max}].")
-        position = (s.log() - self.log_s[0]) / (self.log_s[1] - self.log_s[0])
+        position = (s.log() - self.log_s[0].item()) / (self.log_s[1] - self.log_s[0]).item()
         lo = position.floor().long().clamp(0, len(self.log_s) - 2)
-        a = (position - lo).clamp(0, 1)
-        u = torch.rand(s.shape, dtype=torch.float64, generator=generator) * (len(self.u) - 1)
+        return self._draw(lo, (position - lo).clamp(0, 1), s.shape, s.device, dtype, generator)
+
+    def sample_at(self, s: float, shape, device="cpu", dtype=torch.float64,
+                  generator: torch.Generator = None) -> torch.Tensor:
+        """Angles [*shape] of one Brownian time s for all, on `device` as `dtype`. The level of s is found on the CPU,
+        so on a GPU nothing waits for the device (sample() checks the range of a tensor s, a synchronization)."""
+        s = float(s)
+        if not self.s_min * (1 - 1e-9) <= s <= self.s_max * (1 + 1e-9):
+            raise ValueError(f"s must be in [{self.s_min}, {self.s_max}].")
+        position = (math.log(s) - self.log_s[0].item()) / (self.log_s[1] - self.log_s[0]).item()
+        lo = min(max(math.floor(position), 0), len(self.log_s) - 2)
+        return self._draw(lo, min(max(position - lo, 0.0), 1.0), tuple(shape), device, dtype, generator)
+
+    def _draw(self, lo, a, shape, device, dtype, generator) -> torch.Tensor:
+        """Interpolation of the table between the levels lo and lo + 1 (weight a of the upper one) at uniform
+        probabilities: the inverse CDF method."""
+        table = self.table_on(device, dtype)
+        u = torch.rand(shape, device=device, dtype=dtype, generator=generator) * (len(self.u) - 1)
         j = u.floor().long().clamp(0, len(self.u) - 2)
         b = u - j
 
         def at(level):
-            return self.table[level, j] * (1 - b) + self.table[level, j + 1] * b
+            return table[level, j] * (1 - b) + table[level, j + 1] * b
 
         return at(lo) * (1 - a) + at(lo + 1) * a
 
 
-def random_axes(shape, generator: torch.Generator = None) -> torch.Tensor:
-    """Uniform unit vectors [*shape, 3] (float64, CPU)."""
-    v = torch.randn(*shape, 3, dtype=torch.float64, generator=generator)
+def random_axes(shape, generator: torch.Generator = None, device="cpu", dtype=torch.float64) -> torch.Tensor:
+    """Uniform unit vectors [*shape, 3] (float64 on the CPU by default)."""
+    v = torch.randn(*shape, 3, device=device, dtype=dtype, generator=generator)
     return v / v.norm(dim=-1, keepdim=True)
