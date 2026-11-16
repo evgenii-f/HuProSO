@@ -8,7 +8,7 @@
 A study is described by a YAML file in config/completion_tuning, and its name is the name of the file:
 
     model: ~/data/experiments/rsgm_posedflow_small_s10/run_0001     # a run folder
-    method: dposer          # DPoser's optimization (run(method="dposer")), dflow (D-Flow) or inpaint (RSGM)
+    method: dposer          # DPoser's optimization (run(method="dposer")), dflow (D-Flow) or inpaint (RSGM, DPoser)
     objective: mean         # mean: the mean over the occlusions of MPVPE mean; pareto: that and of MPVPE best of K;
                             # mean_apd: that and of APD (maximized)
     poses: 1000             # fixed random validation poses
@@ -21,7 +21,7 @@ A study is described by a YAML file in config/completion_tuning, and its name is
 
 The values of a trial (fixed and searched) are options of run(): for dposer all of them go to the optimization
 (dposer_complete or rsgm_complete, and start / scale / stats of run's RSGM starts); for inpaint, to rsgm_inpaint
-(steps, schedule, resample, guidance, replace); for dflow, lr, running_weight,
+or dposer_inpaint (steps, schedule, resample, guidance, replace); for dflow, lr, running_weight,
 steps and ode_steps go to run() and the others to the D-Flow prior (e.g. invert). t_min_fraction stands for
 t_min = t_max * t_min_fraction, and scale "none" for no scale.
 
