@@ -79,6 +79,20 @@ MODELS = {
     "DPoser: their c10, RSGM budget, DPoser method t3": dict(
         run="~/data/experiments/dposer_posedflow_rsgm_budget_s10/run_0001", method="dposer",
         prior=dict(lr=0.1, t_max=0.15, t_min=0.049999999999999996, iterations=3, steps_per_iter=200)),
+    # the models trained on the full data, one point per study (config/completion_tuning/*full*.yaml) by the same rule
+    "RSGM dposer-like: their full, inpaint t108": dict(
+        run="~/data/experiments/full/rsgm_posedflow_dposer_like_s10/run_0001", method="inpaint",
+        prior=dict(steps=200, schedule="edm", guidance=0.07182167279436949, resample=5, replace=False)),
+    "RSGM 512x4: their full, inpaint t16": dict(
+        run="~/data/experiments/full/rsgm_posedflow_small_s10/run_0001", method="inpaint",
+        prior=dict(steps=200, schedule="edm", guidance=0.06107655015655633, resample=5, replace=False)),
+    "DPoser: their full, inpaint t90": dict(
+        run="~/data/experiments/full/dposer_posedflow_s10/run_0001", method="inpaint",
+        prior=dict(steps=100, schedule="edm", guidance=0.9806648250542185, resample=5, replace=True)),
+    "DPoser: their full, DPoser method t28": dict(
+        run="~/data/experiments/full/dposer_posedflow_s10/run_0001", method="dposer",
+        prior=dict(lr=0.16364850392520697, t_max=0.1560343553378305, t_min=0.05502625394728783, iterations=3,
+                   steps_per_iter=100)),
 }
 
 
