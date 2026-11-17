@@ -137,6 +137,19 @@ CONFIGS["dposer_like_z"] = CONFIGS["dposer_like"] + Z_INPUT
 # noise only. For the full data, as dposer_like: --rotations ~/data/AMASS_rotations_posedflow --run-root ~/data/experiments/full
 CONFIGS["dposer_like_aniso"] = list(CONFIGS["dposer_like"])
 ANISO.add("dposer_like_aniso")
+# The full 2^5 factorial of section 13 of docs/experiments/2026-11-14_score_network_architectures.md: abl_base with
+# residual (R), LayerNorm (N), per-joint noise (A), dropout 0.1 (D) and width 1024 (W) each on or off. The name of a
+# cell is fact_ followed by the letters that are on, e.g. fact_NA (fact_0: all off, = abl_base). All of them
+# train with the batches sliced on the device.
+FACTORS = {"R": ["model.args.net_residual=true"], "N": ["model.args.net_norm=true"], "A": [],
+           "D": ["model.args.dropout=0.1"], "W": ["model.args.net_width=1024"]}
+for bits in range(2 ** len(FACTORS)):
+    on = [f for i, f in enumerate(FACTORS) if bits >> i & 1]
+    name = "fact_" + ("".join(on) or "0")
+    CONFIGS[name] = ABL_BASE + [o for f in on for o in FACTORS[f]] + ["train.data_on_device=true"]
+    if "A" in on:
+        ANISO.add(name)
+FACTORIAL = [c for c in CONFIGS if c.startswith("fact_")]
 # ----------------------------------------------------------------------------------------
 
 
