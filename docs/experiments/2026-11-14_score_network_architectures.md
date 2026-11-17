@@ -33,9 +33,12 @@ Updated 2026-11-16 (sections 6-12). Validation numbers only; no test was run for
   coordinates), the first phase moves from 13.2-14.3 to 12.1-12.3 deg (seed 10 and 11 agree), and it adds up with
   residual or LayerNorm. `abl_norm_aniso` (1.2M, 30k steps, c10) reaches 87.0 / 105.2 / 108.0 / 44.0 mm in the
   hybrid against DPoser's 79.4 / 103.3 / 110.6 / 43.5: better on the arms, 1.9 mm behind on the legs, 7.6 mm on the
-  left leg. The APD is lower than without it (5.8-6.8 against 7.3-9.5 cm).
-- Decision: train the RSGM networks with per-joint noise; test it in the completion protocols (inpainting, D-Flow)
-  and with DPoser's size and budget.
+  left leg. The APD is lower than without it (5.8-6.8 against 7.3-9.5 cm). It does not carry over to the completion
+  protocols: in D-Flow the mean drops by 1-4 mm with less diversity (APD 5.5-5.8 against 6.4-6.5 cm, best of 10 1-2
+  mm worse), and in inpainting at equal APD it is worse (2-3 mm on c10, 0.2-1.1 mm on full data; the completion
+  report, section 14).
+- Decision: per-joint noise helps score distillation at small noise (the first phase), not the whole reverse
+  process; the best completion of RSGM stays inpainting with isotropic networks.
 
 ## 1. The three networks
 
@@ -377,6 +380,36 @@ DPoser on the legs and better on the arms. The APD drops with the noise (left le
 the gain in the mean may be less diversity. The validation losses with c are not comparable to those without (the
 weighting std_j^2 differs per joint).
 
+Added the same day: `dposer_like_aniso` (`dposer_like` + c, full data, 200k x 5120; c from the z statistics of the
+full data), trained twice on workstation1: with the DataLoader and with `train.data_on_device` (section 12; the same
+seed, other order of the poses, so in effect two seeds). Hybrid and trajectory as above:
+
+| run | left_leg | legs | arms | trunk | valid loss best / last | left_leg 100 -> 199 | arms 100 -> 199 |
+|---|---|---|---|---|---|---|---|
+| RSGM dposer_like (full, 200k) | 94.8 / 7.30 / 49.3 | 124.0 / 8.75 / 78.3 | 125.5 / 6.74 / 83.0 | 42.6 / 1.69 / 25.3 | 5.986 / 6.010 | 13.4 -> 13.6 | 24.0 -> 25.5 |
+| dposer_like_aniso, DataLoader | 97.3 / 6.45 / 54.4 | 121.0 / 7.48 / 81.6 | 109.6 / 5.22 / 74.5 | 43.9 / 1.59 / 27.3 | 1.613 / 1.616 | 11.9 -> 13.1 | 22.4 -> 22.9 |
+| dposer_like_aniso, data on device | 97.4 / 6.28 / 55.5 | 122.9 / 7.57 / 81.7 | 115.0 / 5.07 / 80.5 | 44.8 / 1.57 / 27.9 | 1.610 / 1.612 | 12.0 -> 13.2 | 22.6 -> 23.4 |
+
+The two runs agree within 2 mm except the arms (5.4 mm). Against `dposer_like` the first phase moves the most of all
+networks (11.9 deg, 1.1 deg from DPoser) and the arms gain 10-16 mm, but the left leg and the trunk are 1-3 mm worse
+and the drift of the second phase is back (+1.2 deg): DPoser's size, data and budget do not beat `abl_norm_aniso`.
+
+D-Flow (Heun EDM 50, `dflow_valid.py` on workstation1) on the 1000 validation poses of section 8, MPVPE mean (mm) /
+APD (cm) / best of 10 (mm):
+
+| model | left_leg | legs | arms | trunk | mean / best of 10 | APD |
+|---|---|---|---|---|---|---|
+| RSGM 512x4 MLP, c10 (isotropic) | 95.2 / 7.65 / 46.2 | 113.0 / 8.76 / 67.1 | 117.8 / 7.12 / 69.4 | 47.4 / 2.06 / 27.0 | 93.33 / 52.43 | 6.40 |
+| RSGM dposer_like, full (isotropic) | 94.7 / 7.56 / 46.3 | 116.1 / 9.24 / 67.9 | 119.8 / 7.33 / 69.1 | 46.8 / 2.03 / 26.6 | 94.35 / 52.46 | 6.54 |
+| abl_norm_aniso | 96.0 / 6.98 / 51.7 | 110.6 / 7.64 / 69.9 | 112.5 / 6.46 / 68.5 | 49.4 / 2.15 / 27.6 | 92.12 / 54.42 | 5.81 |
+| dposer_like_aniso, data on device | 91.7 / 6.53 / 49.4 | 110.2 / 7.55 / 68.6 | 110.8 / 5.95 / 68.3 | 49.3 / 2.02 / 27.9 | 90.49 / 53.54 | 5.51 |
+
+The mean drops by 1-4 mm, but the APD drops too (5.5-5.8 against 6.4-6.5 cm) and the best of 10 is 1-2 mm worse:
+less diversity, which D-Flow cannot trade back, so no gain at equal APD can be read from it.
+
+Inpainting with per-joint noise: worse than isotropic, 2-3 mm on c10 (norm), 0.2-1.1 mm on full (dposer_like); see
+[the completion report](2026-11-13_pose_completion_rsgm_vs_dposer.md), section 14.
+
 ## 11. 2026-11-16: The IGSO(3) noise on the GPU
 
 Not a change of method: where the noise of RSGM is drawn (branch `experimental/igso_gpu`, commits 4e47e47 and 90c159a).
@@ -512,6 +545,9 @@ off (e.g. dposer_like, DataLoader, TF32, batch 20480). Thousands of poses per se
   `~/data/experiments/full/rsgm_posedflow_dposer_like_s10` (on the Mac and on workstation1).
 - z statistics of section 9: `~/data/experiments/rsgm_z_statistics.json` on workstation1 (also in `model.json` of
   each z run).
+- `dposer_like_aniso` of section 10: `~/data/experiments/full/rsgm_posedflow_dposer_like_aniso_s10` (DataLoader) and
+  `~/data/experiments/full_device/rsgm_posedflow_dposer_like_aniso_s10` (data on device); their D-Flow rows in
+  `~/data/experiments/completion/dflow_valid_aniso.jsonl`.
 - Throughput rows of section 12: `~/data/experiments/throughput_worstation.jsonl` on workstation1
   (`scripts/benchmark_training_throughput.py`); the CPU-path runs of section 11 in `~/data/experiments/cpu_noise/`.
 - The output lines behind the tables of sections 6-10: [2026-11-14_score_network_architectures_eval.txt](2026-11-14_score_network_architectures_eval.txt).
