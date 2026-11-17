@@ -1,0 +1,23 @@
+# D-Flow (run(method="dflow"), hp.models.dflow.ScorePrior) on RSGM dposer_like_aniso (full data, DPoser's size), with two
+# objectives: mean MPVPE (minimized) and APD (maximized). One of the six fronts of the comparison; RSGM x D-Flow is
+# searched on the two full-data networks of DPoser's size only (isotropic and per-joint noise), the other RSGM
+# networks enter the front with their single D-Flow points. The same search space, first trials, poses and seeds as
+# posedflow_dflow_mean_apd, at 50 network calls per ODE (Heun EDM, 25 steps; PoseD-Flow has their 100).
+# Test: N points spanning the front, chosen by a rule fixed before the test.
+model: ~/data/experiments/full/rsgm_posedflow_dposer_like_aniso_s10/run_0001
+method: dflow
+objective: mean_apd
+poses: 1000
+n_trials: 60
+params:
+  lr: {low: 0.01, high: 0.3, log: true}
+  running_weight: {low: 1.0e-5, high: 0.1, log: true}
+  steps: [50, 100, 200, 300]
+fixed:
+  ode_steps: 25
+  sampler: heun
+  schedule: edm
+first:
+  - {lr: 0.1, running_weight: 0.001, steps: 200}  # their protocol (at 50 network calls)
+  - {lr: 0.1, running_weight: 0.001, steps: 50}
+  - {lr: 0.03, running_weight: 0.001, steps: 100}

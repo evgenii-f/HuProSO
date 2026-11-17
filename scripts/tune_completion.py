@@ -4,10 +4,12 @@
     python scripts/tune_completion.py config/completion_tuning/rsgm_sds_pareto.yaml --summary
     python scripts/tune_completion.py config/completion_tuning/rsgm_sds_pareto.yaml --device cuda:0 --n-trials 120
     python scripts/tune_completion.py --study rsgm_sds_pareto --summary          # by name, without the file
+    python scripts/tune_completion.py config/completion_tuning/a.yaml config/completion_tuning/b.yaml --device cuda:1
+                                        # several studies, one after another in one process (one GPU)
 
 A study is described by a YAML file in config/completion_tuning, and its name is the name of the file:
 
-    model: ~/data/experiments/rsgm_posedflow_small_s10/run_0001     # a run folder
+    model: ~/data/experiments/rsgm_posedflow_small_s10/run_0001     # a run folder, or a .ckpt: their PoseD-Flow
     method: dposer          # DPoser's optimization (run(method="dposer")), dflow (D-Flow) or inpaint (RSGM, DPoser)
     objective: mean         # mean: the mean over the occlusions of MPVPE mean; pareto: that and of MPVPE best of K;
                             # mean_apd: that and of APD (maximized)
@@ -18,6 +20,7 @@ A study is described by a YAML file in config/completion_tuning, and its name is
       start: [noise, mean]
     fixed: {scale: std}     # the same in every trial
     first: [{lr: 0.05, start: noise}]                                # trials enqueued into a new study
+    batch: 500              # optional: validation poses per GPU batch (x K hypotheses); part of the study's seeds
 
 The values of a trial (fixed and searched) are options of run(): for dposer all of them go to the optimization
 (dposer_complete or rsgm_complete, and start / scale / stats of run's RSGM starts); for inpaint, to rsgm_inpaint
@@ -64,7 +67,7 @@ OBJECTIVES = {  # name: (the values of a trial, their directions)
     "mean_apd": (("mean", "apd"), ("minimize", "maximize")),
 }
 RUN_KEYS = ("lr", "running_weight", "steps", "ode_steps")  # dflow: arguments of run(), the others go to the prior
-KEYS = ("model", "method", "objective", "poses", "n_trials", "params", "fixed", "first")
+KEYS = ("model", "method", "objective", "poses", "n_trials", "params", "fixed", "first", "batch")
 
 
 def load_config(path: Path) -> dict:
@@ -104,27 +107,34 @@ def values_of(config: dict, trial) -> dict:
     return values
 
 
-def objective_of(config: dict, model, gt, body, commit: str, device: str):
+def model_spec(model: str) -> dict:
+    """The spec of build() for the model of a study: a .ckpt file is their pretrained PoseD-Flow, else a run folder."""
+    return {"posedflow": model} if str(model).endswith(".ckpt") else {"run": model}
+
+
+def objective_of(config: dict, model, gt, body, commit: str, device: str, tf32: bool = False):
     names = OBJECTIVES[config["objective"]][0]
     pareto = len(names) > 1
+    batch = config.get("batch", BATCH)
 
     def objective(trial):
         values = values_of(config, trial)
         trial.set_user_attr("git", commit)
         trial.set_user_attr("host", platform.node().split(".")[0])
         trial.set_user_attr("device", device)
+        trial.set_user_attr("tf32", tf32)
         start, values_of_occlusions = time.perf_counter(), {"mean": [], "best_of_k": [], "apd": []}
         for occlusion in OCCLUSIONS:
             if config["method"] in ("dposer", "inpaint"):
                 options = dict(values)
                 if config["method"] == "dposer" and (options.get("start", "rest") != "rest" or "scale" in options):
                     options.setdefault("stats", ROTATIONS)
-                pred = run(model, gt, occlusion, K, batch=BATCH, together=True, progress=False,
+                pred = run(model, gt, occlusion, K, batch=batch, together=True, progress=False,
                            method=config["method"], prior=options)
             else:
                 kwargs = {key: values[key] for key in RUN_KEYS if key in values}
                 prior = {key: value for key, value in values.items() if key not in RUN_KEYS}
-                pred = run(model, gt, occlusion, K, batch=BATCH, together=True, progress=False, prior=prior, **kwargs)
+                pred = run(model, gt, occlusion, K, batch=batch, together=True, progress=False, prior=prior, **kwargs)
             s = summary(metrics(pred, gt, occlusion, body))
             for key in ("mpvpe_mean", "mpvpe_min", "apd"):
                 trial.set_user_attr(f"{occlusion}_{key}", s[key])
@@ -170,7 +180,7 @@ def open_study(name: str, study_dir: Path, directions=None, attempts: int = 5):
 def check_or_record(study, config: dict, commit: str) -> None:
     """Record the configuration in a new study; refuse to continue a study made with another one (n_trials aside)."""
     made = {key: value for key, value in config.items() if key != "n_trials"}
-    made.update(k=K, batch=BATCH, rotations=ROTATIONS)
+    made.update(k=K, batch=config.get("batch", BATCH), rotations=ROTATIONS)
     if "config" not in study.user_attrs:
         if study.trials:
             raise SystemExit(f"study {study.study_name} has trials but no recorded configuration (made by an older "
@@ -223,21 +233,33 @@ def averages(trial) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("config", nargs="?", help="the YAML file of the study (config/completion_tuning/*.yaml)")
+    parser.add_argument("config", nargs="*",
+                        help="the YAML file(s) of the studies (config/completion_tuning/*.yaml), run one after another")
     parser.add_argument("--study", default=None, help="with --summary: a study by name, without its file")
     parser.add_argument("--study-dir", default=STUDY_DIR)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--summary", action="store_true", help="only print the trials so far")
     parser.add_argument("--n-trials", type=int, default=None,
                         help="finished trials to reach, instead of n_trials of the file (raises it, e.g. overnight)")
+    parser.add_argument("--tf32", action="store_true",
+                        help="TF32 matrix products on cuda (faster, lower precision; recorded per trial)")
     args = parser.parse_args()
     study_dir = Path(args.study_dir).expanduser()
-    if args.config is None:
+    if args.tf32:
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+    if not args.config:
         if not (args.summary and args.study):
             parser.error("give the YAML file of the study, or --summary --study <name>")
         report(open_study(args.study, study_dir), study_dir)
         return 0
-    path = Path(args.config)
+    for path in args.config:
+        tune(Path(path), study_dir, args)
+    return 0
+
+
+def tune(path: Path, study_dir: Path, args) -> None:
+    """Run (or continue, or with --summary only report) the study of one YAML file."""
     config, name, commit = load_config(path), path.stem, git_commit()
     if args.n_trials is not None:
         config["n_trials"] = args.n_trials
@@ -245,7 +267,7 @@ def main() -> int:
     check_or_record(study, config, commit)
     if args.summary:
         report(study, study_dir)
-        return 0
+        return
     if not study.trials:
         for params in config["first"]:
             study.enqueue_trial(params)
@@ -255,12 +277,15 @@ def main() -> int:
     if finished < config["n_trials"]:
         torch.manual_seed(SEED)
         gt, body = valid_poses(ROTATIONS, config["poses"]), Body()
-        model = build({"run": config["model"]}, args.device)
+        model = build(model_spec(config["model"]), args.device)
         print(f"study {name} ({commit}): {finished} of {config['n_trials']} trials done, {len(gt)} validation poses",
               flush=True)
-        study.optimize(objective_of(config, model, gt, body, commit, args.device), n_trials=config["n_trials"] - finished)
+        study.optimize(objective_of(config, model, gt, body, commit, args.device, args.tf32),
+                       n_trials=config["n_trials"] - finished)
+        del model
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
     report(study, study_dir)
-    return 0
 
 
 if __name__ == "__main__":
