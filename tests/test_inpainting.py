@@ -173,3 +173,21 @@ def test_dposer_inpainting_needs_replacement_or_guidance():
     with pytest.raises(ValueError):
         dposer_inpaint(small_dposer(), roma.random_rotmat(21).view(1, 21, 3, 3), torch.arange(21) < 5, steps=2,
                        replace=False)
+
+
+def test_with_per_joint_noise_the_hidden_joints_reach_the_point_mass(monkeypatch):
+    """As the point-mass test, for a model with per-joint noise (joint_scale): the score of the point mass at small s_j
+    is -log(x*^T x) / s_j(t), and replacement, resampling and guidance must all use the per-joint times."""
+    torch.manual_seed(0)
+    c = torch.linspace(1.0, 30.0, 19).tolist()
+    model = RSGM(19, hidden=(32, 32), joint_scale=c).eval()
+    target = roma.random_rotmat(19).view(1, 19, 3, 3)
+    monkeypatch.setattr(model, "score", lambda x, t: -roma.rotmat_to_rotvec(target.transpose(-1, -2) @ x)
+                        / model.joint_s(t)[..., None].to(x.dtype))
+    observed = roma.random_rotmat(3 * 19).view(3, 19, 3, 3)
+    visible = torch.zeros(19, dtype=torch.bool)
+    visible[:10] = True
+    torch.manual_seed(1)
+    out = rsgm_inpaint(model, observed, visible, steps=200, schedule="edm", resample=2, guidance=0.05)
+    assert angle(out[:, ~visible], target[:, ~visible].expand(3, -1, -1, -1)).max() < 0.01
+    assert torch.allclose(out[:, visible], observed[:, visible])

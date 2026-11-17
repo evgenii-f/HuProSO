@@ -119,6 +119,8 @@ def sample_sequence(model: RSGM, frames: int, cond: Optional[torch.Tensor] = Non
     with IGSO(3) to time t_start, and run the sampler from there (as SDEdit): the coarse course of the motion is kept,
     the product refines it at the noise levels below t_start."""
     model.check_cond(cond, frames)
+    if getattr(model, "joint_scale", None) is not None:
+        raise NotImplementedError("the coupled sampler assumes one Brownian time for all joints (no joint_scale).")
     dtype, device, joints = model.dtype, model.device, model.num_joints
     f = model.cond_features(cond, frames)
     if t_start < 1.0:

@@ -30,4 +30,6 @@ train:                           # the fields of hp.training.TrainConfig
   time_limit_minutes: null       # stop cleanly (with a checkpoint) after this long, then go on with resume=<run folder>
   device: auto                   # auto | cpu | mps | cuda:N (auto: as in config/paths.yaml)
   num_workers: 0
+  data_on_device: false          # the poses on the device, batches sliced there instead of a DataLoader (hp.training.trainer)
+  tf32: false                    # TF32 matrix products on cuda
   progress: true

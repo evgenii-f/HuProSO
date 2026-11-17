@@ -19,6 +19,10 @@ q(x_t^visible | y) is exact: the observed rotations noised by IGSO(3) of time s(
                   the gradient taken through the network in the tangent coordinates of x_t (DPS, Chung et al. 2023,
                   with their normalization by the norm of the residual)
 
+A model with per-joint noise (RSGM.joint_scale) has the Brownian time s_j(t) of every joint instead of s(t): the noise of
+the replacement and of the resampling, the one-step denoising and the drift and diffusion of the reverse step (beta_j)
+are then those of each joint; the isotropic model is unchanged.
+
 At the end the visible joints are replaced by the observation. Replacement and guidance can be used alone or
 together; with neither, the result is an unconditional sample of the prior with the observed joints pasted in.
 """
@@ -31,12 +35,38 @@ from hp.models import igso3
 from hp.models.rsgm import RSGM, exp_frame
 
 
-def _igso3_noise(model: RSGM, s: torch.Tensor, shape) -> torch.Tensor:
-    """Tangent coordinates [*shape, 3] of IGSO(3) noise of Brownian time s (broadcast to shape), on the CPU in float64.
-    s is clamped to the range of the model's angle table (the ends are far below and above any step that matters)."""
-    s = torch.as_tensor(s, dtype=torch.float64).expand(*shape)
+def _igso3_noise(model: RSGM, s: float, shape) -> torch.Tensor:
+    """Tangent coordinates [*shape, 3] of IGSO(3) noise of one Brownian time s, drawn on the model's device in its
+    dtype (the GPU does not wait for the CPU). s is clamped to the range of the model's angle table (the ends are far
+    below and above any step that matters). model.noise_on_cpu: drawn on the CPU in float64 and copied (the old way)."""
+    s = min(max(float(s), model.angles.s_min), model.angles.s_max)
+    device, dtype = model.device, model.dtype
+    if model.noise_on_cpu:
+        noise = model.angles.sample_at(s, shape)[..., None] * igso3.random_axes(tuple(shape))
+        return noise.to(device, dtype)
+    angles = model.angles.sample_at(s, shape, device, dtype)
+    return angles[..., None] * igso3.random_axes(tuple(shape), device=device, dtype=dtype)
+
+
+def _joint_noise(model: RSGM, s: torch.Tensor, n: int) -> torch.Tensor:
+    """Tangent coordinates [n, J', 3] of IGSO(3) noise with the Brownian time s[j] (float64 [J']) of every joint, the
+    same for the n poses: as _igso3_noise, for a model with per-joint noise."""
     s = s.clamp(model.angles.s_min, model.angles.s_max)
-    return model.angles.sample(s)[..., None] * igso3.random_axes(tuple(shape))
+    device, dtype = model.device, model.dtype
+    shape = (n, len(s))
+    if model.noise_on_cpu or device.type == "mps":  # mps: no float64 for the range check of the table
+        noise = model.angles.sample(s.expand(*shape))[..., None] * igso3.random_axes(shape)
+        return noise.to(device, dtype)
+    angles = model.angles.sample(s.to(device).expand(*shape), dtype=dtype)
+    return angles[..., None] * igso3.random_axes(shape, device=device, dtype=dtype)
+
+
+def _noise(model: RSGM, s, joints: torch.Tensor, n: int) -> torch.Tensor:
+    """IGSO(3) noise [n, J', 3] of the joints `joints` (bool [J]) for the Brownian time s: a number (isotropic model)
+    or the per-joint times [J] (float64)."""
+    if model.joint_scale is None:
+        return _igso3_noise(model, s, (n, int(joints.sum())))
+    return _joint_noise(model, s[joints.cpu()], n)
 
 
 def _guidance(model: RSGM, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor, vis: torch.Tensor):
@@ -46,7 +76,7 @@ def _guidance(model: RSGM, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor, vi
     with torch.enable_grad():
         xx = exp_frame(x, delta)
         score = model.score(xx, t)
-        x0_hat = exp_frame(xx, model.s(t)[:, None, None] * score)
+        x0_hat = exp_frame(xx, model.joint_s(t)[..., None] * score)
         loss = roma.rotmat_to_rotvec(x0_hat[:, vis].transpose(-1, -2) @ y[:, vis]).pow(2).sum((-1, -2))  # [B]
         (grad,) = torch.autograd.grad(loss.sum(), delta)
     return score.detach(), grad / loss.detach().sqrt().clamp_min(1e-12)[:, None, None]
@@ -80,11 +110,15 @@ def rsgm_inpaint(model: RSGM, observed: torch.Tensor, visible: torch.Tensor, ste
         t64, t_next64 = times[i], times[i + 1]
         t = t64.to(device, dtype).expand(n)
         dt = (t64 - t_next64).to(device, dtype)
-        beta = model.beta(t64).to(device, dtype)
+        if model.joint_scale is None:
+            beta, s_t, s_next = model.beta(t64).to(device, dtype), model.s(t64), model.s(t_next64)
+        else:  # per joint: beta_j [J, 1] and the Brownian times s_j [J] (float64, CPU)
+            beta = model.joint_beta(t64.reshape(1))[0].to(device, dtype)[:, None]
+            s_t, s_next = model.joint_s(t64.reshape(1))[0], model.joint_s(t_next64.reshape(1))[0]
+        everyone = torch.ones(joints, dtype=torch.bool)
         for r in range(resample):
             if replace and n_vis:
-                noise = _igso3_noise(model, model.s(t64), (n, n_vis)).to(device, dtype)
-                x[:, vis] = exp_frame(y[:, vis], noise)
+                x[:, vis] = exp_frame(y[:, vis], _noise(model, s_t, vis.cpu(), n))
             if guidance > 0:
                 score, grad = _guidance(model, x, t, y, vis)
             else:
@@ -94,8 +128,7 @@ def rsgm_inpaint(model: RSGM, observed: torch.Tensor, visible: torch.Tensor, ste
                 step = step - guidance * grad
             x = exp_frame(x, step)
             if r < resample - 1:  # back from t_next to t by the forward Brownian motion
-                back = _igso3_noise(model, model.s(t64) - model.s(t_next64), (n, joints)).to(device, dtype)
-                x = exp_frame(x, back)
+                x = exp_frame(x, _noise(model, s_t - s_next, everyone, n))
     return torch.where(seen, y, x)
 
 

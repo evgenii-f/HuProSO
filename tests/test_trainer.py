@@ -561,3 +561,46 @@ def test_the_best_checkpoints_survive_a_resume_and_nan_is_never_best(make_gaussi
     (run / "checkpoint_000012" / "metric.json").write_text('{"kind": "valid", "value": NaN}')
     assert best_checkpoint(run) != run / "checkpoint_000012"
     assert best_checkpoint(tmp_path) is None  # no checkpoints, no best
+
+
+# ---- data_on_device: the poses on the device, batches sliced there ----
+
+from hp.training.trainer import DeviceLoader  # noqa: E402
+
+
+class PoseTensor(Poses):
+    """Poses with the tensor `.data`, as the AMASS dataset has."""
+
+    @property
+    def data(self):
+        return self.poses
+
+    feat_for_conditioning = None
+
+
+def test_the_device_loader_gives_every_pose_once_per_pass_in_random_order():
+    data = PoseTensor(n=70)
+    loader = DeviceLoader(data, batch_size=16, shuffle=True, device="cpu")
+    torch.manual_seed(0)
+    first = list(loader)
+    assert len(first) == len(loader) == 5 and [len(b) for b in first] == [16, 16, 16, 16, 6]  # the last one smaller
+    rows = torch.cat(first)
+    order = [int((data.poses == r).all(-1).nonzero()) for r in rows]
+    assert sorted(order) == list(range(70)) and order != list(range(70))
+    assert not torch.equal(torch.cat(list(loader)), rows)  # a new permutation every pass
+    in_order = torch.cat(list(DeviceLoader(data, 16, False, "cpu")))
+    assert torch.equal(in_order, data.poses)
+
+
+def test_the_device_loader_refuses_conditioned_or_plain_datasets():
+    with pytest.raises(ValueError, match="data_on_device"):
+        DeviceLoader(Poses(), 16, True, "cpu")  # no .data
+    conditioned = PoseTensor(cond_dim=3)
+    conditioned.feat_for_conditioning = ["x"]
+    with pytest.raises(ValueError, match="data_on_device"):
+        DeviceLoader(conditioned, 16, True, "cpu")
+
+
+def test_training_on_the_device_takes_as_many_steps_and_learns(make_gaussian):
+    history = Trainer(make_gaussian(), PoseTensor(), PoseTensor(n=32), config(max_iterations=40, data_on_device=True)).fit()
+    assert len(history.loss) == 40 and history.valid_loss[-1] < history.valid_loss[0]
