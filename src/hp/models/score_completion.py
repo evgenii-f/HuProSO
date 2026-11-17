@@ -65,8 +65,9 @@ def dposer_complete(model: DPoser, observed: torch.Tensor, visible: torch.Tensor
 @torch.no_grad()
 def rsgm_denoise(model: RSGM, x_t: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
     """One-step denoising on SO(3)^J, the Tweedie step of the heat kernel at small times:
-    x0_hat = x_t exp(s(t) score(x_t, t)), s(t) the Brownian time (the variance of a coordinate), x_t [B, J, 3, 3]."""
-    return exp_frame(x_t, model.s(t)[:, None, None] * model.score(x_t, t))
+    x0_hat = x_t exp(s(t) score(x_t, t)), s(t) the Brownian time (the variance of a coordinate; per joint with
+    joint_scale), x_t [B, J, 3, 3]."""
+    return exp_frame(x_t, model.joint_s(t)[..., None] * model.score(x_t, t))
 
 
 def rsgm_complete(model: RSGM, observed: torch.Tensor, visible: torch.Tensor, init: torch.Tensor,
@@ -102,11 +103,11 @@ def rsgm_complete(model: RSGM, observed: torch.Tensor, visible: torch.Tensor, in
                 step = it * steps_per_iter + i
                 t = torch.full((n,), t_min + (total - step - 1) / total * (t_max - t_min), dtype=torch.float64)
                 x = exp_frame(start, scale * delta)
-                s = model.s(t)[:, None].expand(n, joints)
+                s = model.joint_s(t)
                 noise = model.angles.sample(s)[..., None] * igso3.random_axes((n, joints))
                 t = t.to(device, dtype)
                 x0_hat = rsgm_denoise(model, exp_frame(x.detach(), noise.to(device, dtype)), t)
-                weight = 0.5 * torch.sqrt(1 + 1 / model.std(t))[:, None]
+                weight = 0.5 * torch.sqrt(1 + 1 / model.joint_std(t))
                 prior = (weight * _angle2(x, x0_hat)).mean()
                 data = (_angle2(x[:, vis], y[:, vis])).sum() / (n * joints)
                 loss = data_weight / (1 + it) * data + prior_weight * (it + 1) * prior

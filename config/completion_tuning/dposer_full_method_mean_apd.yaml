@@ -1,0 +1,25 @@
+# DPoser's own optimization (run(method="dposer"), hp.models.score_completion.dposer_complete) on DPoser trained on the
+# full data (~/data/experiments/full/dposer_posedflow_s10), with two objectives: mean MPVPE (minimized) and APD
+# (maximized). The same search space, first trials, poses and seeds as dposer_c10_method_mean_apd, so that the two
+# fronts differ by the training only: a check of the c10 study, whose front is sparse between APD 4.2 and 7.0 cm, and
+# of the 3.8 mm between DPoser full and c10 with their defaults on the test (81.19 against 84.99).
+# Rule for the test, fixed before it (the same as of dposer_c10_method_mean_apd and rsgm_inpaint_mean_apd_*): among
+# the points of the front with APD not lower than that of D-Flow with Heun EDM 50 of small std c10 on the same 1000
+# validation poses (6.40 cm), take the one with the lowest mean; if there is none, report that, and take the point
+# with the highest APD of the front.
+model: ~/data/experiments/full/dposer_posedflow_s10/run_0001
+method: dposer
+objective: mean_apd
+poses: 1000
+n_trials: 120
+params:
+  lr: {low: 0.01, high: 0.3, log: true}
+  t_max: {low: 0.03, high: 0.5, log: true}
+  t_min_fraction: {low: 0.05, high: 0.9}
+  iterations: [1, 2, 3]
+  steps_per_iter: [50, 100, 200]
+first:  # their defaults (t_min 0.05 = t_max / 3), and around them
+  - {lr: 0.1, t_max: 0.15, t_min_fraction: 0.3333333333333333, iterations: 2, steps_per_iter: 100}
+  - {lr: 0.05, t_max: 0.15, t_min_fraction: 0.3333333333333333, iterations: 2, steps_per_iter: 100}
+  - {lr: 0.1, t_max: 0.3, t_min_fraction: 0.3333333333333333, iterations: 2, steps_per_iter: 100}
+  - {lr: 0.1, t_max: 0.15, t_min_fraction: 0.3333333333333333, iterations: 3, steps_per_iter: 200}

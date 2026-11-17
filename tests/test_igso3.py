@@ -59,3 +59,22 @@ def test_the_sampler_refuses_times_outside_its_table():
     sampler = igso3.AngleSampler(1e-3, 1.0, levels=16, angles=64, quantiles=65)
     with pytest.raises(ValueError, match="s must be in"):
         sampler.sample(torch.tensor([2.0]))
+
+
+@pytest.mark.parametrize("device", ["cpu", pytest.param("mps", marks=pytest.mark.skipif(
+    not torch.backends.mps.is_available(), reason="no mps")), pytest.param("cuda", marks=pytest.mark.skipif(
+    not torch.cuda.is_available(), reason="no cuda"))])
+@pytest.mark.parametrize("s", [1e-7, 1e-4, 0.07, 3.0])
+def test_the_angle_sampler_draws_from_igso3_in_float32_on_any_device(s, device):
+    """sample_at (one s for all, the level found on the CPU) in float32 on the device: the same distribution."""
+    sampler = igso3.AngleSampler(1e-7, 6.5)
+    torch.manual_seed(0)
+    angles = sampler.sample_at(s, (20_000,), device, torch.float32)
+    assert angles.device.type == device and angles.dtype == torch.float32
+    assert ks_distance(angles.cpu().double(), s) < 1.63 / math.sqrt(20_000)
+
+
+def test_sample_at_refuses_times_outside_its_table():
+    sampler = igso3.AngleSampler(1e-3, 1.0, levels=16, angles=64, quantiles=65)
+    with pytest.raises(ValueError, match="s must be in"):
+        sampler.sample_at(2.0, (3,))
