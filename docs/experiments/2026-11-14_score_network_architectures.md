@@ -503,6 +503,48 @@ off (e.g. dposer_like, DataLoader, TF32, batch 20480). Thousands of poses per se
   so runs that are paired with float32 runs keep it off.
 - Memory: the c10 poses on the device take about 1.3 GB, all frames (18.6M poses) about 13 GB in float32.
 
+## 13. 2026-11-17: Plan of a full factorial study of five components (written before any run)
+
+Question: which of the components of sections 6-10 matter, alone and together, for completion and for generation,
+and do the noise (first phase) and the stabilization of the network (drift) add up or interact? So far each component
+was changed alone on `abl_base`, one seed each; `res_norm` being worse than residual and LayerNorm alone was left
+open, and per-joint noise helped the hybrid but not inpainting.
+
+Design: a full 2^5 factorial, one run per cell (32 runs, seed 10). With one run per cell every main effect, every
+2-way and every 3-way interaction is estimated without aliasing, each as a difference of two means of 16 runs (its
+standard error 2 sigma / sqrt(32), about 1 mm for sigma = 3 mm per run); the six 4- and 5-way interactions estimate
+the noise, next to the spread of seeds known from sections 10-11 (about 2 mm with LayerNorm or residual, up to 7 mm
+for the plain MLP). A half fraction with two seeds would cost the same and alias the pairs with the triples. Two cells
+(the base and the predicted best) get a second seed as a direct check of the noise.
+
+| factor | low (-1) | high (+1) |
+|---|---|---|
+| R: residual blocks | off | on |
+| N: LayerNorm | off | on |
+| A: noise | isotropic | per joint (joint_scale, section 10) |
+| D: dropout | 0 | 0.1 |
+| W: width | 512 | 1024 |
+
+Everything else is `abl_base` (timeres with 2 blocks, the time as a scalar at the input, no zero init, lr 2e-3, 30k x
+4096, c10, std weighting), trained with the GPU noise and `train.data_on_device` (sections 11-12). Left out: the time
+conditioning and zero init (no effect alone, section 6), the z input (section 9), the size of DPoser and full data
+(section 7, later for the chosen cell).
+
+Responses of every run, on validation only:
+- completion: inpainting at one fixed point, the rule point of the isotropic `abl_norm` study (200 steps, guidance
+  0.095, resample 5, no replacement), 1000 validation poses, K = 10, four occlusions: MPVPE mean, best of 10, APD.
+  One point favours networks like `abl_norm`; the effects on the APD at this point show how the trade-off moves.
+- generation (the PoseD-Flow protocol on validation instead of test): 20 sets of 500 samples, FID against the joint
+  statistics of the validation poses (FID_val) and of the training poses (FID own), APD, dNN; the harness against
+  the validation poses: Wasserstein, recall, precision, log-likelihood of 1000 validation poses.
+- diagnostics: the hybrid (500 validation poses) and the trajectory (first phase at step 100, drift to step 199).
+
+Rule for the choice, fixed now: among the cells with an inpainting APD of at least 6.40 cm (as the rules of the
+completion studies) and an FID_val not worse than that of the cell R-N+A-D-W- (isotropic `abl_norm`) by more than the
+half-width of its 95% interval, the cell with the lowest inpainting mean. It and the cell R-N+A-D-W- get a second
+seed; the chosen cell is then tuned by an inpainting study (as section 14 of the completion report) and only its
+final point goes to the test.
+
 ## Conclusions
 
 1. Residual connections or LayerNorm are what a score network on SO(3) needs for score distillation at small noise:
