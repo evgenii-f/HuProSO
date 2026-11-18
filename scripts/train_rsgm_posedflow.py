@@ -150,6 +150,14 @@ for bits in range(2 ** len(FACTORS)):
     if "A" in on:
         ANISO.add(name)
 FACTORIAL = [c for c in CONFIGS if c.startswith("fact_")]
+# Outside the design: fact_NA with the small noise of the wide joints trained (section 13). With joint_scale the
+# smallest training noise of joint j is c_j s(loss_t_min), sqrt(c_j) times wider in angle than without it (1.4 deg for
+# the knees). tmin: loss_t_min = 2.2e-4, where max_j c_j s(t) equals s(0.002) of the isotropic networks; lik: the
+# likelihood weighting (more training at small t); tmin_lik: both.
+CONFIGS["fact_NA_tmin"] = CONFIGS["fact_NA"] + ["model.args.loss_t_min=2.2e-4"]
+CONFIGS["fact_NA_lik"] = CONFIGS["fact_NA"] + ["model.args.weighting=likelihood"]
+CONFIGS["fact_NA_tmin_lik"] = CONFIGS["fact_NA"] + ["model.args.loss_t_min=2.2e-4", "model.args.weighting=likelihood"]
+ANISO.update({"fact_NA_tmin", "fact_NA_lik", "fact_NA_tmin_lik"})
 # ----------------------------------------------------------------------------------------
 
 
