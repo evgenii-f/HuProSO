@@ -6,6 +6,8 @@
     python scripts/tune_completion.py --study rsgm_sds_pareto --summary          # by name, without the file
     python scripts/tune_completion.py config/completion_tuning/a.yaml config/completion_tuning/b.yaml --device cuda:1
                                         # several studies, one after another in one process (one GPU)
+    python scripts/tune_completion.py config/completion_tuning/a.yaml --n-trials 25 --enqueue '{"lr": 0.05}'
+                                        # 25 finished trials in all, the given settings first
 
 A study is described by a YAML file in config/completion_tuning, and its name is the name of the file:
 
@@ -66,6 +68,7 @@ OBJECTIVES = {  # name: (the values of a trial, their directions)
     "pareto": (("mean", "best_of_k"), ("minimize", "minimize")),
     "mean_apd": (("mean", "apd"), ("minimize", "maximize")),
 }
+FINISHED = (optuna.trial.TrialState.COMPLETE, optuna.trial.TrialState.PRUNED, optuna.trial.TrialState.FAIL)
 RUN_KEYS = ("lr", "running_weight", "steps", "ode_steps")  # dflow: arguments of run(), the others go to the prior
 KEYS = ("model", "method", "objective", "poses", "n_trials", "params", "fixed", "first", "batch")
 
@@ -241,6 +244,9 @@ def main() -> int:
     parser.add_argument("--summary", action="store_true", help="only print the trials so far")
     parser.add_argument("--n-trials", type=int, default=None,
                         help="finished trials to reach, instead of n_trials of the file (raises it, e.g. overnight)")
+    parser.add_argument("--enqueue", nargs="+", default=[], metavar="JSON",
+                        help='trials to run next, before the sampler, e.g. \'{"lr": 0.05, "steps": 100}\' (the values '
+                             'missing are drawn); skipped if the study has them already')
     parser.add_argument("--tf32", action="store_true",
                         help="TF32 matrix products on cuda (faster, lower precision; recorded per trial)")
     args = parser.parse_args()
@@ -271,6 +277,8 @@ def tune(path: Path, study_dir: Path, args) -> None:
     if not study.trials:
         for params in config["first"]:
             study.enqueue_trial(params)
+    for params in args.enqueue:
+        study.enqueue_trial(json.loads(params), skip_if_exists=True)
     # seeded by the trials so far: a restarted study does not draw the random trials of its first start again
     study.sampler = optuna.samplers.TPESampler(seed=SEED + len(study.trials), multivariate=True, n_startup_trials=15)
     finished = sum(t.state.is_finished() for t in study.trials)
@@ -280,8 +288,11 @@ def tune(path: Path, study_dir: Path, args) -> None:
         model = build(model_spec(config["model"]), args.device)
         print(f"study {name} ({commit}): {finished} of {config['n_trials']} trials done, {len(gt)} validation poses",
               flush=True)
+        # several processes may work on one study (e.g. one per GPU): every one stops when the study has n_trials
+        # finished trials in all; start them a little apart, as the sampler is seeded by the trials so far
+        stop = optuna.study.MaxTrialsCallback(config["n_trials"], states=FINISHED)
         study.optimize(objective_of(config, model, gt, body, commit, args.device, args.tf32),
-                       n_trials=config["n_trials"] - finished)
+                       n_trials=config["n_trials"] - finished, callbacks=[stop])
         del model
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
