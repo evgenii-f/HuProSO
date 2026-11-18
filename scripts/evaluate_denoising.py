@@ -45,6 +45,12 @@ MODELS = {
     # RSGM in DPoser's optimization (score distillation on SO(3)^J), the procedure we tune: settings per noise level
     # chosen on validation with RSGM 512x4 c10 (config/denoising_tuning/rsgm_sds_<mm>mm.yaml) and used for every RSGM
     **{f"{name}, DPoser method": dict(run=run, method="dposer", settings=SDS) for name, run in RUNS.items()},
+    # the first guess of the settings (10 validation sequences at 40 mm), before the Optuna studies; its test was run
+    # by mistake with the commit before the tuned settings (2026-11-17), and is reported as such
+    **{f"{name}, DPoser method, first guess": dict(run=run, method="dposer",
+                                                   settings={sigma: dict(t_max=0.05, t_min=0.01, sds_weight=10.0)
+                                                             for sigma in (0.04, 0.1)})
+       for name, run in RUNS.items()},
     "RSGM 512x4: their c10, DPoser method, DPoser's steps": dict(run=RUNS["RSGM 512x4: their c10"], method="dposer",
                                                                 settings=SDS_DPOSER_STEPS),
     # DPoser retrained on their full data: its own optimization (the DPoser rows of their table) and D-Flow
