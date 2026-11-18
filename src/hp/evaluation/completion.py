@@ -301,7 +301,8 @@ def _results_settings(settings: dict) -> dict:
 def cached_run(cache: Path, label: str, spec: dict, gt: torch.Tensor, occlusion: str, device: str, k: int = 10,
                rotations: str = "", **options) -> Optional[torch.Tensor]:
     """The completions of cache/<label>/<occlusion>.pt if they were made with these settings (whatever the SPEED
-    settings were); otherwise made and saved (device=None: only read, None if missing)."""
+    settings were); otherwise made and saved (device=None: only read, None if missing). spec["dflow"], if given, holds
+    arguments of run() for D-Flow (steps, lr, running_weight; e.g. a point of an Optuna study)."""
     path = cache_path(cache, label, occlusion)
     settings = json.loads(json.dumps({"model": identity(spec), "poses": len(gt), "rotations": rotations, "k": k,
                                       "method": METHOD, **options}))
@@ -313,7 +314,7 @@ def cached_run(cache: Path, label: str, spec: dict, gt: torch.Tensor, occlusion:
     if device is None:
         return None
     pred = run(build(spec, device), gt, occlusion, k, prior=spec.get("prior"), method=spec.get("method", "dflow"),
-               **options)
+               **spec.get("dflow", {}), **options)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(".tmp")
     torch.save({"pred": pred.half(), "settings": json.dumps(settings)}, temporary)

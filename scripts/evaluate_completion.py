@@ -93,6 +93,11 @@ MODELS = {
         run="~/data/experiments/full/dposer_posedflow_s10/run_0001", method="dposer",
         prior=dict(lr=0.16364850392520697, t_max=0.1560343553378305, t_min=0.05502625394728783, iterations=3,
                    steps_per_iter=100)),
+    # PoseD-Flow with D-Flow settings of its Optuna study (config/completion_tuning/posedflow_dflow_mean_apd.yaml),
+    # trial 17: better than their protocol (trial 0) on validation in mean, best of 10 and APD; 200 steps for all
+    "PoseD-Flow: their checkpoint, D-Flow t17": dict(
+        posedflow="~/data/posedflow_ckpt/checkpoints/epoch-009_step-0_loss-0.0000.ckpt",
+        dflow=dict(lr=0.05, running_weight=0.001, steps=200)),
 }
 
 
