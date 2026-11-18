@@ -1,0 +1,34 @@
+# D-Flow on their pretrained PoseD-Flow with the weight of the guess in the start searched too:
+# start = projx(sqrt(w) guess + sqrt(1 - w) noise), theirs w = 0.25 (hp/models/dflow.py). The other knobs narrowed
+# by posedflow_dflow_mean_apd (25 trials, w = 0.25):
+#   - running_weight: the front lies at 3e-4..1e-3; >= 4e-3 collapses the hypotheses (best of 10 63-84 mm), <= 1e-4
+#     costs 15-30 mm of mean and, with lr >= 0.14, failed (3 trials): [3e-4, 2e-3];
+#   - lr: 0.03..0.1 on the front at running weight 1e-3, 0.11 at 3e-4: [0.03, 0.15];
+#   - steps: lr and steps move a trial along one front (t14 100 steps 87.83 mm / APD 5.36, t17 200 steps 86.34 /
+#     5.10 at half the speed); fixed at 100, so that w, not fewer steps, buys the diversity.
+# First the grid of w at trial 14 (lr 0.1, running weight 1e-3; its w = 0.25 not repeated), a slice through w alone;
+# then random and TPE trials over the three (the 15 first trials are the startup of TPE). The trials of the first study
+# inside this space (w = 0.25) are copied in, not run again: they count among n_trials and the startup.
+model: ~/data/posedflow_ckpt/checkpoints/epoch-009_step-0_loss-0.0000.ckpt
+method: dflow
+objective: mean_apd
+poses: 1000
+n_trials: 20
+params:
+  guess_weight: {low: 0.0, high: 0.6}
+  lr: {low: 0.03, high: 0.15, log: true}
+  running_weight: {low: 3.0e-4, high: 2.0e-3, log: true}
+fixed:
+  steps: 100
+  ode_steps: 100
+import:
+  study: posedflow_dflow_mean_apd
+  trials: [2, 14, 15, 16]  # lr 0.03, 0.1, 0.05, 0.07; running weight 1e-3, 100 steps
+  params: {guess_weight: 0.25}
+first:
+  - {guess_weight: 0.0, lr: 0.1, running_weight: 0.001}
+  - {guess_weight: 0.05, lr: 0.1, running_weight: 0.001}
+  - {guess_weight: 0.1, lr: 0.1, running_weight: 0.001}
+  - {guess_weight: 0.15, lr: 0.1, running_weight: 0.001}
+  - {guess_weight: 0.4, lr: 0.1, running_weight: 0.001}
+  - {guess_weight: 0.6, lr: 0.1, running_weight: 0.001}

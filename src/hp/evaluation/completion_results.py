@@ -93,6 +93,8 @@ def load_study(path: Union[str, Path], name: Optional[str] = None) -> List[dict]
         if trial.state != optuna.trial.TrialState.COMPLETE:
             continue
         attrs = trial.user_attrs
+        if "imported_from" in attrs:  # a copy of a trial of another study (tune_completion.py import), loaded there
+            continue
         if not all(f"{o}_{key}" in attrs for o in OCCLUSIONS for _, key in _KEYS):
             continue
         cells = {o: {key: attrs[f"{o}_{key}"] for _, key in _KEYS} for o in OCCLUSIONS}

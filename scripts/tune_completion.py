@@ -23,6 +23,10 @@ A study is described by a YAML file in config/completion_tuning, and its name is
     fixed: {scale: std}     # the same in every trial
     first: [{lr: 0.05, start: noise}]                                # trials enqueued into a new study
     batch: 500              # optional: validation poses per GPU batch (x K hypotheses); part of the study's seeds
+    import:                 # optional: finished trials of another study copied into a new one, not run again
+      study: rsgm_sds_old   # (same model, method, poses, batch; their settings inside this one's space)
+      trials: [2, 14]
+      params: {scale: std}  # values of this study's params that the other one did not search
 
 The values of a trial (fixed and searched) are options of run(): for dposer all of them go to the optimization
 (dposer_complete or rsgm_complete, and start / scale / stats of run's RSGM starts); for inpaint, to rsgm_inpaint
@@ -70,7 +74,7 @@ OBJECTIVES = {  # name: (the values of a trial, their directions)
 }
 FINISHED = (optuna.trial.TrialState.COMPLETE, optuna.trial.TrialState.PRUNED, optuna.trial.TrialState.FAIL)
 RUN_KEYS = ("lr", "running_weight", "steps", "ode_steps")  # dflow: arguments of run(), the others go to the prior
-KEYS = ("model", "method", "objective", "poses", "n_trials", "params", "fixed", "first", "batch")
+KEYS = ("model", "method", "objective", "poses", "n_trials", "params", "fixed", "first", "batch", "import")
 
 
 def load_config(path: Path) -> dict:
@@ -97,6 +101,50 @@ def suggest(trial, name: str, spec):
     if spec.get("int"):
         return trial.suggest_int(name, spec["low"], spec["high"], log=spec.get("log", False))
     return trial.suggest_float(name, spec["low"], spec["high"], log=spec.get("log", False))
+
+
+def distribution(spec):
+    """The Optuna distribution of a param of the YAML file (as suggest draws it)."""
+    if isinstance(spec, list):
+        return optuna.distributions.CategoricalDistribution(spec)
+    if spec.get("int"):
+        return optuna.distributions.IntDistribution(spec["low"], spec["high"], log=spec.get("log", False))
+    return optuna.distributions.FloatDistribution(spec["low"], spec["high"], log=spec.get("log", False))
+
+
+def import_trials(study, config: dict, study_dir: Path) -> None:
+    """Copy the trials config["import"] names from another study into the new `study`: their results, with the params
+    of this study (the other's values, or those of import.params) and the attribute imported_from. Refused unless the
+    other study has the same model, method, poses, K, batch and validation set, every trial finished, its values of
+    this study's fixed settings the same and its params inside this study's space."""
+    spec = config["import"]
+    path = study_dir / f"{spec['study']}.db"
+    if not path.is_file():  # optuna.load_study would create an empty file
+        raise SystemExit(f"import: no study file {path}")
+    other = open_study(spec["study"], study_dir)
+    theirs = other.user_attrs.get("config") or {}
+    ours = dict(config, k=K, batch=config.get("batch", BATCH), rotations=ROTATIONS)
+    for key in ("model", "method", "poses", "k", "batch", "rotations", "objective"):
+        if theirs.get(key) != ours.get(key):
+            raise SystemExit(f"import: {spec['study']} differs in {key}: {theirs.get(key)} != {ours.get(key)}")
+    distributions = {name: distribution(p) for name, p in config["params"].items()}
+    by_number = {t.number: t for t in other.trials}
+    for number in spec["trials"]:
+        trial = by_number.get(number)
+        if trial is None or trial.state != optuna.trial.TrialState.COMPLETE:
+            raise SystemExit(f"import: trial {number} of {spec['study']} is not a finished trial")
+        values = {**(theirs.get("fixed") or {}), **trial.params, **(spec.get("params") or {})}
+        for key, value in config["fixed"].items():
+            if values.get(key) != value:
+                raise SystemExit(f"import: trial {number} has {key}={values.get(key)}, this study fixes {value}")
+        params = {name: values[name] for name in distributions}
+        for name, value in params.items():
+            if not distributions[name]._contains(distributions[name].to_internal_repr(value)):
+                raise SystemExit(f"import: trial {number} has {name}={value} outside {config['params'][name]}")
+        study.add_trial(optuna.trial.create_trial(
+            params=params, distributions=distributions, values=trial.values,
+            user_attrs={**trial.user_attrs, "imported_from": f"{spec['study']}:{number}"}))
+    print(f"imported trials {spec['trials']} of {spec['study']}", flush=True)
 
 
 def values_of(config: dict, trial) -> dict:
@@ -275,6 +323,8 @@ def tune(path: Path, study_dir: Path, args) -> None:
         report(study, study_dir)
         return
     if not study.trials:
+        if config.get("import"):
+            import_trials(study, config, study_dir)
         for params in config["first"]:
             study.enqueue_trial(params)
     for params in args.enqueue:
