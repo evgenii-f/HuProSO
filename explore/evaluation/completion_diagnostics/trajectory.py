@@ -3,15 +3,16 @@ the spread of the K hypotheses (deg) and the mean |x - x0_hat|, with DPoser's ow
 of hybrid.py), on 300 validation poses, left_leg and arms:
     PYTHONPATH=src python explore/evaluation/completion_diagnostics/trajectory.py <RSGM run folder> [rsgm]
 With a second argument only RSGM's denoiser runs."""
-import sys, time, torch, roma
+import os, sys, time, torch, roma
 from hp.evaluation.completion import KEEP, OCCLUSIONS, TOES, Body, at_rest, build, metrics, summary, valid_poses
 from hp.models import igso3
 from hp.models.rsgm import exp_frame
 from hp.models.score_completion import one_step_denoise, rsgm_denoise
 
 K = 10
-dp = build(dict(run="~/data/experiments/full/dposer_posedflow_s10/run_0001"), "mps")
-rs = build(dict(run=sys.argv[1]), "mps")
+DEVICE = os.environ.get("DEVICE", "mps")  # e.g. DEVICE=cuda:0 on a server
+dp = build(dict(run="~/data/experiments/full/dposer_posedflow_s10/run_0001"), DEVICE)
+rs = build(dict(run=sys.argv[1]), DEVICE)
 dev = dp.device
 data_std = dp.data_std
 sampler = igso3.AngleSampler(1e-7, 1.0)

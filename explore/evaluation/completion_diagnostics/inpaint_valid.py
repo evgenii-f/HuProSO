@@ -52,6 +52,8 @@ VARIANTS = {
     # above D-Flow's after ~60 trials), to see them per occlusion next to the baselines (baselines_valid.py)
     "residual-trial59": dict(steps=400, schedule="edm", replace=False, guidance=0.05457452885996979, resample=5),
     "residual-trial16": dict(steps=200, schedule="edm", replace=False, guidance=0.06107655015655633, resample=5),
+    # the test point of abl residual (trial 81, "RSGM abl residual: their c10, inpaint t81" of evaluate_completion.py)
+    "residual-t81": dict(steps=400, schedule="edm", replace=False, guidance=0.04934967328387599, resample=5),
 }
 
 

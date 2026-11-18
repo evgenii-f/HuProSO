@@ -47,6 +47,10 @@ MODELS = {
     "timeres small": dict(run=E + "rsgm_posedflow_timeres_small_s10/run_0001"),
     "timeres": dict(run=E + "rsgm_posedflow_timeres_s10/run_0001"),
     "deep": dict(run=E + "rsgm_posedflow_deep_s10/run_0001"),
+    # abl residual trained with more of the loss at small noise (likelihood weighting, log-normal noise levels)
+    "abl residual lik": dict(run=E + "rsgm_posedflow_abl_residual_lik_s10/run_0001"),
+    "abl residual ln m3": dict(run=E + "rsgm_posedflow_abl_residual_ln_m3_s10/run_0001"),
+    "abl residual ln m4": dict(run=E + "rsgm_posedflow_abl_residual_ln_m4_s10/run_0001"),
     "dposer like full": dict(run=E + "full/rsgm_posedflow_dposer_like_s10/run_0001"),
     # DPoser itself (Euclidean diffusion on axis-angle), as in evaluate_completion.py
     "DPoser full": dict(run=E + "full/dposer_posedflow_s10/run_0001"),

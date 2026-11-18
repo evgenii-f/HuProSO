@@ -2,7 +2,8 @@
 # One line per RSGM run for the architecture ablation (docs/experiments/2026-11-14_score_network_architectures.md):
 # the best and last validation loss (history.json), the hybrid of hybrid.py on 500 validation poses (MPVPE mean / APD /
 # best of 10 per occlusion) and the hidden-joint error of trajectory.py at steps 100 and 199 (left_leg, arms; deg).
-# Run from the root of the repository on the Mac (env amass); run names are relative to ~/data/experiments:
+# Run from the root of the repository on the Mac (env amass), or on a server with DEVICE=cuda:0; run names are relative
+# to ~/data/experiments:
 #     zsh explore/evaluation/completion_diagnostics/eval_runs.sh rsgm_posedflow_abl_base_s10 full/rsgm_posedflow_dposer_like_s10
 D=explore/evaluation/completion_diagnostics
 export PYTHONPATH=$PWD/src HUPROSO_BODY_MODELS=${HUPROSO_BODY_MODELS:-~/data/body_models}

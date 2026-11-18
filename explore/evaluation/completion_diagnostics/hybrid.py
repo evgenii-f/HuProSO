@@ -12,8 +12,9 @@ from hp.models.rsgm import exp_frame
 from hp.models.score_completion import one_step_denoise, rsgm_denoise
 
 N, K = int(sys.argv[1]) if len(sys.argv) > 1 else 500, 10
-dp = build(dict(run="~/data/experiments/full/dposer_posedflow_s10/run_0001"), "mps")
-rs = build(dict(run=os.environ.get("RS", "~/data/experiments/rsgm_posedflow_small_s10/run_0001")), "mps")
+DEVICE = os.environ.get("DEVICE", "mps")  # e.g. DEVICE=cuda:0 on a server
+dp = build(dict(run="~/data/experiments/full/dposer_posedflow_s10/run_0001"), DEVICE)
+rs = build(dict(run=os.environ.get("RS", "~/data/experiments/rsgm_posedflow_small_s10/run_0001")), DEVICE)
 dev = dp.device
 data_std = dp.data_std
 sampler = igso3.AngleSampler(1e-7, 1.0)
