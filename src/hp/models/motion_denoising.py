@@ -140,9 +140,12 @@ def dposer_denoise(body_model, noisy: torch.Tensor, init: torch.Tensor, prior=No
                 if isinstance(prior, RSGM):  # the same on SO(3)^J (rsgm_complete): squared angles, RSGM's times
                     tt = t_min + (total - step - 1) / total * (t_max - t_min)
                     x = roma.rotvec_to_rotmat(pose.view(-1, 21, 3))[:, keep]
-                    t64 = torch.full((s * t,), tt, dtype=torch.float64)
-                    angles = prior.angles.sample(prior.s(t64)[:, None].expand(s * t, len(keep)))[..., None]
-                    noise = (angles * igso3.random_axes((s * t, len(keep)))).to(device, x.dtype)
+                    # IGSO(3) noise of the Brownian time of every joint (per joint with joint_scale), drawn on the
+                    # device where it has float64 (cuda), else on the CPU (mps)
+                    work = device if torch.device(device).type == "cuda" else torch.device("cpu")
+                    t64 = torch.full((s * t,), tt, dtype=torch.float64, device=work)
+                    angles = prior.angles.sample(prior.joint_s(t64))[..., None]
+                    noise = (angles * igso3.random_axes((s * t, len(keep)), device=work)).to(device, x.dtype)
                     x0_hat = rsgm_denoise(prior, exp_frame(x.detach(), noise), t64.to(device, x.dtype))
                     sds = (0.5 * _angle2(x, x0_hat)).sum() / t
                     losses.append(0.1 * (1 + it) * sds_weight * sds)
