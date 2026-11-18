@@ -8,7 +8,7 @@ puts the three networks side by side and proposes the one to try.
 
 ## Summary
 
-Updated 2026-11-16 (sections 6-12). Validation numbers only; no test was run for this line of work.
+Updated 2026-11-18 (sections 6-13). Validation numbers only; no test was run for this line of work.
 
 - **Skip connections or LayerNorm in the score network remove the drift of SDS at the smallest noise** and improve the
   hybrid (DPoser's optimization with the RSGM denoiser) by 15-17 mm on the legs and 10-14 mm on the arms over a plain
@@ -37,8 +37,15 @@ Updated 2026-11-16 (sections 6-12). Validation numbers only; no test was run for
   protocols: in D-Flow the mean drops by 1-4 mm with less diversity (APD 5.5-5.8 against 6.4-6.5 cm, best of 10 1-2
   mm worse), and in inpainting at equal APD it is worse (2-3 mm on c10, 0.2-1.1 mm on full data; the completion
   report, section 14).
+- **The full 2^5 factorial of residual, LayerNorm, per-joint noise, dropout and width** (section 13, 32 runs, all
+  responses on validation): per-joint noise is the largest effect of all, good for the hybrid (-12 to -15 mm, first
+  phase -1.2 deg) and bad for generation (FID_val +0.021 on about 0.035, Wasserstein +3.0 deg, sample APD 17.2-17.4
+  cm against 16.4 of the data) and inpainting (best of 10 +1.4 mm); width 1024 and residual help inpainting (-2.0 and
+  -1.3 mm) and generation a little; residual and LayerNorm together are worse than their sum (+2.0 mm in inpainting,
+  +7 mm in the hybrid). The rule of the plan picks the isotropic LayerNorm cell (`abl_norm`, 88.63 / 49.22 / 6.49).
 - Decision: per-joint noise helps score distillation at small noise (the first phase), not the whole reverse
-  process; the best completion of RSGM stays inpainting with isotropic networks.
+  process nor generation; the best completion of RSGM stays inpainting with isotropic networks, and none of the 32
+  combinations of the five components beats `abl_norm` by the rule.
 
 ## 1. The three networks
 
@@ -545,6 +552,59 @@ half-width of its 95% interval, the cell with the lowest inpainting mean. It and
 seed; the chosen cell is then tuned by an inpainting study (as section 14 of the completion report) and only its
 final point goes to the test.
 
+### Results (2026-11-18)
+
+The 32 cells trained on workstation2 (GPU noise, data on the device), all responses by
+`scripts/evaluate_factorial.py` on workstation1 (cuda; one hybrid call failed once, likely out of GPU memory next to
+another job, and went through on the second try), effects by `explore/evaluation/factorial_effects.py`. The standard
+errors come from the six 4- and 5-way interactions; they imply a spread of about 0.7 mm per run in inpainting and 2.4
+mm in the hybrid, as the seeds of sections 10-11. Main effects (the change from off to on, averaged over the other
+factors):
+
+| response | R residual | N LayerNorm | A per-joint noise | D dropout | W width 1024 | SE |
+|---|---|---|---|---|---|---|
+| inpainting mean (mm) | **-1.34** | +0.34 | +0.60 | +0.77 | **-1.96** | 0.25 |
+| inpainting best of 10 (mm) | -0.01 | +0.37 | **+1.38** | -0.61 | -0.73 | 0.13 |
+| inpainting APD (cm) | -0.33 | 0.00 | -0.25 | +0.34 | -0.28 | 0.03 |
+| FID_val | -0.002 | -0.001 | **+0.021** | +0.004 | -0.003 | 0.001 |
+| sample APD (cm; validation poses 16.43) | -0.14 | -0.11 | **+2.40** | +0.35 | -0.16 | 0.05 |
+| Wasserstein (deg) | -0.25 | -0.05 | **+3.04** | +0.58 | -0.35 | 0.03 |
+| precision (deg) | -0.32 | -0.04 | **+3.75** | +0.73 | -0.42 | 0.04 |
+| recall (deg) | -0.07 | -0.06 | **+2.22** | +0.21 | -0.15 | 0.01 |
+| log-likelihood (nats) | +0.43 | -0.47 | +0.10 | -0.73 | **+1.14** | 0.09 |
+| first phase (deg, left leg at step 100) | +0.06 | +0.08 | **-1.21** | +0.06 | -0.35 | 0.04 |
+| drift (deg, step 100 -> 199) | -0.22 | -0.29 | -0.29 | -0.54 | -0.18 | 0.09 |
+| hybrid left leg (mm) | -2.4 | -1.8 | **-11.7** | -2.8 | -4.2 | 0.8 |
+| hybrid legs (mm) | +0.3 | -0.7 | **-14.9** | -4.1 | -2.7 | 0.4 |
+| hybrid arms (mm) | -1.6 | -2.4 | **-12.5** | -1.8 | -1.6 | 0.9 |
+
+The largest 2-way interactions: residual x LayerNorm in every completion response (inpainting mean +1.98, |t| 7.9;
+hybrid legs +7.5; drift +0.72), residual x dropout (inpainting mean -1.68) and dropout x width (-1.22): dropout
+helps only together with residual or width. Per-joint noise interacts little (|AD|, |NA|, |RA| <= 0.5 mm in
+inpainting). The 3-way interactions are at most 0.5 mm in inpainting; main effects and pairs describe the cells.
+
+- Per-joint noise does two things: it moves the first phase of score distillation (as in section 10) and it spreads
+  the samples. The generated poses get wider than the data (sample APD 17.2-17.4 against 16.4 cm; the isotropic
+  networks are at about 15.0, narrower than the data) and farther from it (FID_val, Wasserstein, precision, dNN all
+  worse by large margins), and inpainting loses accuracy at its best hypothesis. So the gain in the hybrid is not a
+  better prior: it is a prior whose score pulls harder at small noise.
+- Width and residual are the components that help inpainting and generation together; LayerNorm helps the hybrid
+  and does little elsewhere; residual and LayerNorm should not be combined.
+- The rule picks `fact_N`, the isotropic LayerNorm cell, which is `abl_norm` itself. 12 of 32 cells pass the
+  conditions (inpainting APD >= 6.40, FID_val <= 0.0384):
+
+| cell | inpainting mean / best of 10 / APD | FID_val | Wasserstein | log-likelihood |
+|---|---|---|---|---|
+| fact_N (LayerNorm) | **88.63** / 49.22 / 6.49 | 0.0364 | 14.55 | 135.64 |
+| fact_RNDW | 89.57 / 49.32 / 6.64 | 0.0335 | 14.74 | 136.65 |
+| fact_RD | 89.64 / 49.51 / 6.62 | 0.0351 | 14.87 | 135.45 |
+| fact_R | 89.73 / 49.89 / 6.47 | 0.0357 | 14.54 | 136.21 |
+| fact_0 (abl_base, for reference) | 91.28 / 50.24 / 6.76 | 0.0350 | 14.63 | 136.00 |
+
+Cells outside the rule: `fact_RDW` has the lowest inpainting mean (87.40) at an APD of 6.30, and `fact_DW` the
+lowest FID_val (0.0326) at an inpainting APD of 7.08; both are candidates for an inpainting study, which compares at
+equal APD, unlike the one fixed point.
+
 ## Conclusions
 
 1. Residual connections or LayerNorm are what a score network on SO(3) needs for score distillation at small noise:
@@ -557,10 +617,18 @@ final point goes to the test.
    isotropy within a joint, score against noise prediction, or the hybrid's schedule, which is DPoser's.
 3. In D-Flow the network does not matter either (512x4 MLP = dposer_like).
 4. Next: completion with the whole reverse process of RSGM (inpainting on SO(3)), where the hidden joints are pulled
-   at large noise, which training covers, instead of extrapolating the score at small noise; and per-joint noise in
-   every RSGM network: inpainting and D-Flow with `abl_norm_aniso`, and DPoser's size and budget with it.
+   at large noise, which training covers, instead of extrapolating the score at small noise. Per-joint noise was
+   tried there and does not help (sections 10, 13).
+5. Of the five components of the factorial (section 13), width and residual help both completion and generation,
+   per-joint noise helps only score distillation and hurts generation, and residual with LayerNorm is worse than
+   either. No combination beats `abl_norm` by the rule fixed before; the open candidates are `fact_RDW` and
+   `fact_DW`, to be compared at equal APD by an inpainting study.
 
 ## What it does not show
+
+- The factorial (section 13): one seed per cell (the noise estimated from the 4- and 5-way interactions; the second
+  seeds of the plan are not run yet); inpainting at one fixed point, chosen on `abl_norm`, so the comparison of the
+  mean is not at equal APD and favours that cell; no D-Flow; c10 and 30k steps only.
 
 - One training seed per network; the noise between seeds is estimated only from near-identical runs (1-2 mm) and
   from `res_norm` (up to 9 mm). A 2^4 factorial study with 3 seeds was planned and dropped as polishing a secondary
@@ -579,6 +647,10 @@ final point goes to the test.
   model's, so the hybrid of an aniso model also uses DPoser-like noise per joint.
 
 ## Where things are
+
+- The factorial of section 13: runs in `~/data/experiments/factorial/rsgm_posedflow_fact_*_s10` (on the Mac and on
+  workstation1), the responses in `~/data/experiments/factorial/responses.jsonl`, the effects in
+  [2026-11-14_score_network_architectures_factorial.txt](2026-11-14_score_network_architectures_factorial.txt).
 
 - Runs: `~/data/experiments/rsgm_posedflow_{abl_*,deep,deep_nores,res_norm,res_norm_z,timeres,timeres_small}_s10`,
   `~/data/experiments/full/rsgm_posedflow_dposer_like_z_s10`; the GPU-noise runs of section 10 in
