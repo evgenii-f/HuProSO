@@ -10,6 +10,9 @@ Parts (--parts, default all):
               validation poses (FID_val) and of the training poses (FID own), APD, dNN against the training poses; and
               the harness (hp.evaluation.evaluate) against the validation poses: Wasserstein, recall, precision and the
               log-likelihood of 1000 validation poses
+  generation_ode  the same with the sampler ODE_SAMPLER (Heun on the EDM grid, 50 steps) instead of the model's own
+              (Euler-Maruyama, 100 uniform steps), without the log-likelihood (it does not depend on the sampler): the
+              uniform grid leaves noise on the joints of large joint_scale (section 13 of the report)
   inpaint     inpainting at the fixed point INPAINT on the 1000 validation poses of the completion studies, K = 10,
               the four occlusions: MPVPE mean, best of K and APD per occlusion and their means
   hybrid      explore/evaluation/completion_diagnostics/hybrid.py (500 validation poses) and trajectory.py (300), as
@@ -46,9 +49,10 @@ HARNESS = EvalConfig(n_likelihood=1000)
 N_CONTRAST = 100_000
 # the rule point of the isotropic abl_norm inpainting study (trial 118 of rsgm_inpaint_mean_apd_norm)
 INPAINT = dict(steps=200, schedule="edm", guidance=0.09515197497012039, resample=5, replace=False)
-PARTS = ("generation", "inpaint", "hybrid")
+ODE_SAMPLER = dict(sampler="heun", schedule="edm", sample_steps=50)
+PARTS = ("generation", "generation_ode", "inpaint", "hybrid")
 DIAG = ROOT / "explore" / "evaluation" / "completion_diagnostics"
-CELL = re.compile(r"rsgm_posedflow_(fact_[A-Z0-9]+)_s(\d+)")
+CELL = re.compile(r"rsgm_posedflow_(fact_[A-Za-z0-9_]+?)_s(\d+)")  # also cells outside the design (fact_NA_tmin)
 GROUP = r"(\d+\.\d+)/(\d+\.\d+)/(\d+\.\d+)"
 
 
@@ -56,7 +60,7 @@ def run_folder(path: Path) -> Path:
     return path if (path / "model.json").is_file() else sorted(path.glob("run_[0-9][0-9][0-9][0-9]"))[-1]
 
 
-def generation(model, valid, train, train_dev, skeleton, stats) -> dict:
+def generation(model, valid, train, train_dev, skeleton, stats, likelihood: bool = True) -> dict:
     out = {"FID_val": [], "FID_own": [], "APD": [], "dNN": []}
     torch.manual_seed(0)
     for _ in range(SETS):
@@ -68,6 +72,8 @@ def generation(model, valid, train, train_dev, skeleton, stats) -> dict:
         out["dNN"].append(nearest_neighbour_distance(poses, train_dev).mean().item())
     result = {name: confidence(values) for name, values in out.items()}
     contrast = train[torch.from_numpy(np.random.default_rng(0).choice(len(train), N_CONTRAST, replace=False))]
+    if not likelihood:
+        model.has_log_prob = False  # this instance only: the harness then skips the likelihood
     report = evaluate(model, valid, HARNESS, contrast=contrast)
     ll = report["likelihood"]
     result["harness"] = {"wasserstein_deg": report["wasserstein"]["generated"]["joint_mean_deg"]["mean"],
@@ -141,7 +147,7 @@ def main() -> int:
 
     todo = [(r, p) for r in runs for p in args.parts if (str(r), p) not in done]
     print(f"{len(runs)} runs, {len(todo)} parts to do, device {args.device}", flush=True)
-    if any(p == "generation" for _, p in todo):
+    if any(p.startswith("generation") for _, p in todo):
         valid = load_reference("valid", ROTATIONS, "posedflow")
         train = load_reference("train", ROTATIONS, "posedflow")
         skeleton = SmplSkeleton(args.skeleton)
@@ -156,9 +162,12 @@ def main() -> int:
     for run, part in todo:
         match = CELL.search(str(run))
         start = time.perf_counter()
-        if part == "generation":
+        if part.startswith("generation"):
             model = load_model(run, device=args.device, weights="weights_ema").eval()
-            result = generation(model, valid, train, train_dev, skeleton, stats)
+            if part == "generation_ode":
+                for key, value in ODE_SAMPLER.items():
+                    setattr(model, key, value)
+            result = generation(model, valid, train, train_dev, skeleton, stats, likelihood=part == "generation")
             brief = ", ".join(f"{k} {result[k]['mean']:.4f}" for k in ("FID_val", "FID_own", "APD", "dNN"))
             h = result["harness"]
             brief += (f", W {h['wasserstein_deg']:.2f}, recall {h['recall_deg']:.2f}, precision {h['precision_deg']:.2f}, "
@@ -177,7 +186,7 @@ def main() -> int:
         print(f"{run.parent.name} {part} ({seconds / 60:.1f} min): {brief}", flush=True)
         row = dict(run=str(run), cell=match.group(1) if match else None, seed=int(match.group(2)) if match else None,
                    part=part, result=result, seconds=seconds, device=args.device, smoke=args.smoke,
-                   settings=dict(inpaint=INPAINT, sets=SETS, set_size=SET_SIZE, harness=HARNESS.__dict__,
+                   settings=dict(inpaint=INPAINT, ode_sampler=ODE_SAMPLER, sets=SETS, set_size=SET_SIZE, harness=HARNESS.__dict__,
                                  rotations=ROTATIONS))
         out.parent.mkdir(parents=True, exist_ok=True)
         with out.open("a") as f:

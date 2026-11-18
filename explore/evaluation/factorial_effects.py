@@ -14,6 +14,7 @@ import argparse
 import itertools
 import json
 import math
+import re
 from pathlib import Path
 
 import numpy as np
@@ -53,13 +54,16 @@ def responses(rows) -> dict:
         d, res = out.setdefault((r["cell"], r["seed"]), {}), r["result"]
         if r["part"] == "inpaint":
             d.update(inpaint_mean=res["mean"], inpaint_best=res["best"], inpaint_apd=res["apd"])
-        elif r["part"] == "generation":
+        elif r["part"] in ("generation", "generation_ode"):
+            sfx = "" if r["part"] == "generation" else "_ode"  # _ode: Heun on the EDM grid instead of the model's sampler
             for k in ("FID_val", "FID_own", "APD", "dNN"):
-                d[k] = res[k]["mean"]
-            d["FID_val_half"] = res["FID_val"].get("ci95", math.nan)
+                d[k + sfx] = res[k]["mean"]
+            d["FID_val_half" + sfx] = res["FID_val"].get("ci95", math.nan)
             h = res["harness"]
-            d.update(wasserstein=h["wasserstein_deg"], recall=h["recall_deg"], precision=h["precision_deg"],
-                     log_likelihood=h["log_likelihood"] if h["log_likelihood"] is not None else math.nan)
+            d.update({"wasserstein" + sfx: h["wasserstein_deg"], "recall" + sfx: h["recall_deg"],
+                      "precision" + sfx: h["precision_deg"]})
+            if not sfx:
+                d["log_likelihood"] = h["log_likelihood"] if h["log_likelihood"] is not None else math.nan
         elif r["part"] == "hybrid":
             for occ, m in res["hybrid"].items():
                 d[f"hybrid_{occ}"] = m["mpvpe_mean"]
@@ -75,11 +79,13 @@ def main() -> int:
     parser.add_argument("--order", type=int, default=3, help="the highest order of interaction printed")
     args = parser.parse_args()
     data = responses(json.loads(l) for l in Path(args.jsonl).expanduser().read_text().splitlines() if l.strip())
-    main_cells = {cell: d for (cell, seed), d in data.items() if seed == 10}
+    design = re.compile(r"fact_(0|[RNADW]+)")  # the 32 cells; others (e.g. fact_NA_tmin) are listed apart
+    main_cells = {cell: d for (cell, seed), d in data.items() if seed == 10 and design.fullmatch(cell)}
+    extra = {(cell, seed): d for (cell, seed), d in data.items() if not design.fullmatch(cell)}
     if not main_cells:
         print("no seed-10 rows of the factorial (smoke rows are left out)")
         return 1
-    names = args.responses or sorted(set.intersection(*(set(d) for d in main_cells.values())) - {"FID_val_half"})
+    names = args.responses or sorted(set.intersection(*(set(d) for d in main_cells.values())) - {"FID_val_half", "FID_val_half_ode"})
     for name in names:
         table = {c: d[name] for c, d in main_cells.items() if name in d}
         try:
@@ -96,6 +102,14 @@ def main() -> int:
         repeats = [(c, s, d[name]) for (c, s), d in data.items() if s != 10 and name in d]
         for c, s, v in repeats:
             print(f"  seed {s} of {c}: {v:.3f} (seed 10: {table.get(c, math.nan):.3f})")
+
+    if extra:
+        keys = [k for k in ("inpaint_mean", "inpaint_best", "inpaint_apd", "FID_val", "FID_val_ode", "APD_ode",
+                            "wasserstein_ode", "log_likelihood", "first_phase", "drift", "hybrid_legs")]
+        print("\ncells outside the design, next to fact_N and fact_NA:")
+        for cell, seed in [("fact_N", 10), ("fact_NA", 10)] + sorted(extra):
+            d = data.get((cell, seed), {})
+            print(f"  {cell:18s} s{seed}: " + ", ".join(f"{k} {d[k]:.4g}" for k in keys if k in d))
 
     # the rule of section 13
     need = ("inpaint_mean", "inpaint_apd", "FID_val")
