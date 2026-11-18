@@ -89,15 +89,25 @@ def inpaint(run: Path, device: str, gt, body) -> dict:
                                     for name, key in (("mean", "mpvpe_mean"), ("best", "mpvpe_min"), ("apd", "apd"))}}
 
 
+class PartFailed(RuntimeError):
+    pass
+
+
+def _call(command, env) -> str:
+    """The stdout of a diagnostic script; its stderr in the error if it fails."""
+    done = subprocess.run(command, env=env, cwd=ROOT, capture_output=True, text=True)
+    if done.returncode:
+        raise PartFailed(f"{Path(command[1]).name} exited with {done.returncode}:\n" + "\n".join(done.stderr.splitlines()[-15:]))
+    return done.stdout
+
+
 def hybrid(run: Path, device: str, poses: int = 500) -> dict:
     env = {**os.environ, "PYTHONPATH": str(ROOT / "src"), "HP_DEVICE": device, "RS": str(run)}
-    out = subprocess.run([sys.executable, str(DIAG / "hybrid.py"), str(poses), "rsgm"], env=env, cwd=ROOT,
-                         capture_output=True, text=True, check=True).stdout
+    out = _call([sys.executable, str(DIAG / "hybrid.py"), str(poses), "rsgm"], env)
     line = next(l for l in out.splitlines() if l.startswith("rsgm"))
     groups = {occ: dict(zip(("mpvpe_mean", "apd", "mpvpe_min"), map(float, m)))
               for occ, *m in re.findall(r"(\w+) " + GROUP, line)}
-    out = subprocess.run([sys.executable, str(DIAG / "trajectory.py"), str(run)], env=env, cwd=ROOT,
-                         capture_output=True, text=True, check=True).stdout
+    out = _call([sys.executable, str(DIAG / "trajectory.py"), str(run)], env)
     err = [float(l.split()[7]) for l in out.splitlines() if re.match(r"^ +(100|199) ", l)]  # as eval_runs.sh
     names = ("left_leg_100", "left_leg_199", "arms_100", "arms_199")
     return {"hybrid": groups, "trajectory": dict(zip(names, err)), "raw": line}
@@ -157,7 +167,11 @@ def main() -> int:
             result = inpaint(run, args.device, gt, body)
             brief = f"mean {result['mean']:.2f}, best {result['best']:.2f}, APD {result['apd']:.2f}"
         else:
-            result = hybrid(run, args.device, n_hybrid)
+            try:
+                result = hybrid(run, args.device, n_hybrid)
+            except PartFailed as e:  # no row: a later call tries it again; the other runs go on
+                print(f"{run.parent.name} hybrid FAILED, skipped:\n{e}", flush=True)
+                continue
             brief = result["raw"] + " | traj " + " ".join(f"{v:.2f}" for v in result["trajectory"].values())
         seconds = time.perf_counter() - start
         print(f"{run.parent.name} {part} ({seconds / 60:.1f} min): {brief}", flush=True)
