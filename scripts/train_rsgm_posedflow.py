@@ -158,6 +158,8 @@ CONFIGS["fact_NA_tmin"] = CONFIGS["fact_NA"] + ["model.args.loss_t_min=2.2e-4"]
 CONFIGS["fact_NA_lik"] = CONFIGS["fact_NA"] + ["model.args.weighting=likelihood"]
 CONFIGS["fact_NA_tmin_lik"] = CONFIGS["fact_NA"] + ["model.args.loss_t_min=2.2e-4", "model.args.weighting=likelihood"]
 ANISO.update({"fact_NA_tmin", "fact_NA_lik", "fact_NA_tmin_lik"})
+# fact_RDW one step further along width, the strongest factor of the factorial for inpainting
+CONFIGS["fact_RDW_w2048"] = CONFIGS["fact_RDW"] + ["model.args.net_width=2048"]
 # ----------------------------------------------------------------------------------------
 
 
