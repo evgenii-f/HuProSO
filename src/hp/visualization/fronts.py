@@ -87,13 +87,18 @@ def place_labels(fig, labels: Dict[object, List[Tuple[float, float, str]]], font
 
 
 def highlight(hits, name):
-    """Ring the points of `name` on every plot and fade the others (name None: all as drawn); hits are (artist, x, y,
-    name) of the drawn points. Only changes the artists, so a click does not lay out the figure again. Returns the
-    rings, to remove them at the next call."""
+    """Ring the points of `name` on every plot and fade the others (name None: all with the alpha they were drawn
+    with); hits are (artist, x, y, name) of the drawn points. Only changes the artists, so a click does not lay out
+    the figure again. Returns the rings, to remove them at the next call."""
     rings = []
     for artist, x, y, point_name in hits:
-        artist.set_alpha(1 if name is None or point_name == name else 0.25)
+        if not hasattr(artist, "base_alpha"):  # the alpha it was drawn with, kept for the calls to come
+            artist.base_alpha = 1 if artist.get_alpha() is None else artist.get_alpha()
+        if name is None:
+            artist.set_alpha(artist.base_alpha)
+        else:
+            artist.set_alpha(1 if point_name == name else 0.25 * artist.base_alpha)
         if point_name == name:
-            rings += artist.axes.plot(*artist.get_data(), marker="o", ms=22, ls="", mfc="none", mec="black", mew=2,
+            rings += artist.axes.plot(*artist.get_data(), marker="o", ms=12, ls="", mfc="none", mec="black", mew=1.5,
                                       zorder=5)
     return rings
