@@ -16,6 +16,8 @@ poses, K = 10, all four occlusions:
     mean, best_of_k, apd      the means over the occlusions of MPVPE mean (mm), best of K (mm), APD (cm)
     occlusions  {occlusion: {"mean", "best_of_k", "apd"}}
     seconds     the time of all four occlusions (None if not known)
+    configured  (studies only) whether the study recorded its configuration: the candidates of the test rule
+                (scripts/select_test_points.py)
     device      where it ran ("cuda:0", "mps", ...; with the host if known; None if not known)
 
 Only records of the same poses compare: the numbers on 100 poses are not those on 1000.
@@ -102,8 +104,9 @@ def load_study(path: Union[str, Path], name: Optional[str] = None) -> List[dict]
         device = attrs.get("device")
         if device and attrs.get("host"):
             device = f"{attrs['host']} {device}"
-        out.append(_record(f"{path.name}:{name}", run, run, method, f"trial {trial.number}",
-                           {**fixed, **trial.params}, poses, cells, None if minutes is None else 60 * minutes, device))
+        out.append(dict(_record(f"{path.name}:{name}", run, run, method, f"trial {trial.number}",
+                                {**fixed, **trial.params}, poses, cells, None if minutes is None else 60 * minutes,
+                                device), configured=bool(config)))
     return out
 
 

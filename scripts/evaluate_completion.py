@@ -6,6 +6,8 @@ server:
     python scripts/evaluate_completion.py --models "PoseD-Flow: their checkpoint" --occlusions left_leg trunk
     python scripts/evaluate_completion.py --poses 20 --device mps     # a quick check, cached apart
     python scripts/evaluate_completion.py --device cuda:0 --together --batch 250   # faster: 2500 rows per GPU call
+    python scripts/evaluate_completion.py --points config/completion_test_points.yaml --fronts "RSGM dflow" \
+        --device cuda:0 --together      # the points of fronts chosen by scripts/select_test_points.py
 
 --together runs the 10 hypotheses of --batch poses as one batch: fewer, larger GPU calls, other random draws than
 theirs, the same method. The memory grows with --batch * 10 * the ODE steps (the gradients go through all of them).
@@ -103,7 +105,10 @@ MODELS = {
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--models", nargs="+", default=list(MODELS), choices=list(MODELS))
+    parser.add_argument("--models", nargs="+", default=None, help="labels of MODELS (or of --points); default all")
+    parser.add_argument("--points", default=None,
+                        help="a YAML file of scripts/select_test_points.py: its points instead of MODELS")
+    parser.add_argument("--fronts", nargs="+", default=None, help='with --points: only these fronts, e.g. "RSGM dflow"')
     parser.add_argument("--occlusions", nargs="+", default=list(OCCLUSIONS), choices=list(OCCLUSIONS))
     parser.add_argument("--poses", type=int, default=None, help="the first n test poses (default: their 5000)")
     parser.add_argument("--device", default="mps")
@@ -112,14 +117,31 @@ def main() -> int:
     parser.add_argument("--batch", type=int, default=BATCH, help=f"poses per batch (theirs: {BATCH})")
     parser.add_argument("--together", action="store_true", help="the hypotheses of a batch in one GPU batch")
     args = parser.parse_args()
+    models = MODELS
+    if args.points:
+        import yaml
+        fronts = yaml.safe_load(Path(args.points).read_text())
+        unknown = set(args.fronts or []) - set(fronts)
+        if unknown:
+            parser.error(f"no fronts {sorted(unknown)} in {args.points}; there are {list(fronts)}")
+        models = {p["label"]: p["spec"] for name, points in fronts.items() if not args.fronts or name in args.fronts
+                  for p in points}
+        clash = [label for label, spec in models.items() if label in MODELS and MODELS[label] != spec]
+        if clash:
+            parser.error(f"labels of MODELS with another spec in {args.points}: {clash}")
+    if args.models:
+        missing = set(args.models) - set(models)
+        if missing:
+            parser.error(f"unknown models {sorted(missing)}")
+        models = {name: models[name] for name in args.models}
     speed = {"batch": args.batch, "together": True} if args.together else ({"batch": args.batch} if args.batch != BATCH else {})
 
     gt = test_poses(args.rotations, args.poses)
-    print(f"{len(gt)} test poses, {len(args.models)} model(s) x {len(args.occlusions)} occlusion(s)", flush=True)
-    for name in args.models:
+    print(f"{len(gt)} test poses, {len(models)} model(s) x {len(args.occlusions)} occlusion(s)", flush=True)
+    for name in models:
         for occlusion in args.occlusions:
             start = time.perf_counter()
-            cached_run(Path(args.cache), name, MODELS[name], gt, occlusion, args.device, rotations=args.rotations, **speed)
+            cached_run(Path(args.cache), name, models[name], gt, occlusion, args.device, rotations=args.rotations, **speed)
             print(f"{name} / {occlusion}: {(time.perf_counter() - start) / 60:.1f} min", flush=True)
     return 0
 
