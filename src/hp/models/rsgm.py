@@ -170,6 +170,9 @@ class RSGM(PoseModel):
         schedule_rho: float = 7.0,  # rho of the "edm" schedule
         likelihood_steps: int = 100,
         weighting: str = "std",  # of the loss over time: "std" (std(t)^2, as the JAX code) or "likelihood" (beta(t))
+        # or "lognormal": the std loss at log s(t) ~ N(loss_log_s_mean, loss_log_s_std^2), truncated (loss_times)
+        loss_log_s_mean: float = -3.0,
+        loss_log_s_std: float = 2.0,
         condition: Optional[str] = None,  # None (unconditional), "3D" or "2D": keypoints of hp.data.conditions
         cond_hidden: int = 64,  # the hidden layer of the condition MLP
         cond_features: int = 64,  # its output, concatenated to the input of the score network
@@ -212,9 +215,12 @@ class RSGM(PoseModel):
         self.condition, self.cond_mask = condition, cond_mask
         self.beta_0, self.beta_f, self.eps, self.loss_t_min = beta_0, beta_f, eps, loss_t_min
         self.sample_steps, self.likelihood_steps = sample_steps, likelihood_steps
-        if weighting not in ("std", "likelihood"):
-            raise ValueError(f"Unknown weighting '{weighting}'. Use 'std' or 'likelihood'.")
+        if weighting not in ("std", "likelihood", "lognormal"):
+            raise ValueError(f"Unknown weighting '{weighting}'. Use 'std', 'likelihood' or 'lognormal'.")
+        if loss_log_s_std <= 0:
+            raise ValueError(f"loss_log_s_std must be > 0, got {loss_log_s_std}.")
         self.weighting = weighting
+        self.loss_log_s_mean, self.loss_log_s_std = float(loss_log_s_mean), float(loss_log_s_std)
         self.sampler, self.schedule, self.schedule_rho = sampler, schedule, schedule_rho
         self.check_sampler()
         self.inputs, self.time_features = inputs, time_features
@@ -305,10 +311,20 @@ class RSGM(PoseModel):
         makes it a bound on the negative log-likelihood (Song et al. 2021, "Maximum likelihood training of score-based
         diffusion models"). It is done by importance sampling: t is drawn with the density q(t) proportional to
         beta(t) / std(t)^2, so the loss itself stays the same (up to a constant factor, to which Adam is blind).
-        In the Brownian time s the density is 1 / (1 - exp(-s)), with the CDF log(exp(s) - 1), inverted in closed form."""
+        In the Brownian time s the density is 1 / (1 - exp(-s)), with the CDF log(exp(s) - 1), inverted in closed form.
+        "lognormal": log s(t) ~ N(loss_log_s_mean, loss_log_s_std^2) truncated to [s(loss_t_min), s(1)], by the inverse
+        CDF (EDM's log-normal noise levels, Karras et al. 2022); the loss keeps the std(t)^2 weighting, so only where
+        it is evaluated changes. The default N(-3, 2^2) puts 21% at s < 0.01 and 7% at s > 1 (std: 6% and 42%)."""
         if self.weighting == "std":
             return self.loss_t_min + (1 - self.loss_t_min) * u
         t_lo = torch.tensor(self.loss_t_min, dtype=torch.float64)
+        if self.weighting == "lognormal":
+            m, sd = self.loss_log_s_mean, self.loss_log_s_std
+            ends = torch.log(torch.stack([self.s(t_lo), self.s(torch.ones_like(t_lo))]))
+            p_lo, p_hi = torch.special.ndtr((ends - m) / sd)
+            p = (p_lo + u * (p_hi - p_lo)).clamp(1e-300, 1 - 1e-16)
+            t = self.t_of_s(torch.exp(m + sd * torch.special.ndtri(p)))
+            return t.clamp(self.loss_t_min, 1.0)
         lo, hi = torch.log(torch.expm1(self.s(t_lo))), torch.log(torch.expm1(self.s(torch.ones_like(t_lo))))
         return self.t_of_s(torch.log1p(torch.exp(lo + u * (hi - lo))))
 

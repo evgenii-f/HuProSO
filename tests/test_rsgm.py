@@ -602,3 +602,22 @@ def test_the_training_loss_on_cuda_draws_its_noise_there_with_the_cpu_distributi
     assert model.loss(pose.cuda()).item() == pytest.approx(valid_cpu, rel=1e-5)
     se = math.sqrt(torch.tensor(cpu).var() / 300 + torch.tensor(gpu).var() / 300)
     assert abs(sum(gpu) / 300 - sum(cpu) / 300) < 4 * se
+
+
+def test_lognormal_weighting_draws_log_s_from_the_truncated_normal():
+    model = build_model("rsgm", num_joints=1, hidden=[8], weighting="lognormal", loss_log_s_mean=-4.0, loss_log_s_std=1.5)
+    u = torch.rand(100_000, dtype=torch.float64, generator=torch.Generator().manual_seed(0))
+    t = model.loss_times(u)
+    assert t.min() >= model.loss_t_min - 1e-12 and t.max() <= 1 + 1e-12
+    log_s = torch.log(model.s(t))
+    lo, hi = math.log(float(model.s(torch.tensor(model.loss_t_min, dtype=torch.float64)))), math.log(float(model.s(torch.tensor(1.0, dtype=torch.float64))))
+    # truncated normal: compare the empirical CDF with the truncated normal CDF
+    normal = torch.distributions.Normal(-4.0, 1.5)
+    p_lo, p_hi = normal.cdf(torch.tensor(lo)), normal.cdf(torch.tensor(hi))
+    x = log_s.sort().values.float()
+    cdf = (normal.cdf(x) - p_lo) / (p_hi - p_lo)
+    empirical = torch.arange(1, len(x) + 1) / len(x)
+    assert (cdf - empirical).abs().max() < 1.63 / math.sqrt(len(x)) + 1e-4
+    assert abs(float(log_s.median()) + 4.0) < 0.05  # the median of N(-4, 1.5^2) lies well inside the range
+    with pytest.raises(ValueError, match="loss_log_s_std"):
+        build_model("rsgm", num_joints=1, hidden=[8], weighting="lognormal", loss_log_s_std=0.0)

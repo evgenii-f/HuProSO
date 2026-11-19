@@ -118,6 +118,16 @@ CONFIGS["res_norm_z"] = CONFIGS["res_norm"] + Z_INPUT
 # Per-joint noise (joint_scale, hp.models.rsgm): the Brownian time c_j s(t) with c_j proportional to the spread of joint
 # j (fit_joint_scale of the z statistics), as DPoser's noise in z-scored coordinates; with abl_base, the pair differs by
 # the noise only. The configs in ANISO get model.args.joint_scale from the statistics.
+# Where the loss is evaluated (docs: the noise levels of training), with the network of abl_residual: the
+# likelihood weighting (about log-uniform in s at small s) and EDM's log-normal noise levels in s, narrow and wide
+CONFIGS["abl_residual_lik"] = CONFIGS["abl_residual"] + ["model.args.weighting=likelihood"]
+# share of the loss at s < 0.01 / s > 1: std 6% / 42%, likelihood 51% / 16%, ln_m3 21% / 7%, ln_m4 38% / 2%
+CONFIGS["abl_residual_ln_m3"] = CONFIGS["abl_residual"] + ["model.args.weighting=lognormal",
+                                                           "model.args.loss_log_s_mean=-3.0",
+                                                           "model.args.loss_log_s_std=2.0"]
+CONFIGS["abl_residual_ln_m4"] = CONFIGS["abl_residual"] + ["model.args.weighting=lognormal",
+                                                           "model.args.loss_log_s_mean=-4.0",
+                                                           "model.args.loss_log_s_std=2.0"]
 CONFIGS["abl_aniso"] = list(ABL_BASE)
 # and with the two components that stop the drift of the second phase, one at a time (as abl_residual and abl_norm)
 CONFIGS["abl_residual_aniso"] = ABL_BASE + ABLATION["residual"]

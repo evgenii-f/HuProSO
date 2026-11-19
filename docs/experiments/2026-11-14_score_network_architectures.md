@@ -34,6 +34,9 @@ Updated 2026-11-16 (sections 6-11). Validation numbers only; no test was run for
   residual or LayerNorm. `abl_norm_aniso` (1.2M, 30k steps, c10) reaches 87.0 / 105.2 / 108.0 / 44.0 mm in the
   hybrid against DPoser's 79.4 / 103.3 / 110.6 / 43.5: better on the arms, 1.9 mm behind on the legs, 7.6 mm on the
   left leg. The APD is lower than without it (5.8-6.8 against 7.3-9.5 cm).
+- **Where the loss is evaluated does not matter** (section 14, negative): moving 21-51% of the loss to s < 0.01
+  (likelihood weighting, log-normal noise levels) leaves the first phase at 13.2-13.5 deg and improves neither the
+  hybrid, inpainting nor denoising of `abl_residual`.
 - Decision: train the RSGM networks with per-joint noise; test it in the completion protocols (inpainting, D-Flow)
   and with DPoser's size and budget.
 
@@ -384,6 +387,68 @@ Not a change of method: the seed-11 and GPU-noise runs of section 10 drew the no
 inpainting are unchanged. The separate report is
 [2026-11-16_igso3_noise_on_gpu.md](2026-11-16_igso3_noise_on_gpu.md).
 
+## 14. 2026-11-18: Where the loss is evaluated (noise levels of training)
+
+Question: is the slow first phase of SDS, and the gap at small noise, a matter of how little of the training sees small
+noise? With the std weighting t is uniform and s(t) is about 3.75 t^2, so 6% of the loss falls at s < 0.01 and 42% at
+s > 1. The likelihood weighting moved the loss to small noise and helped SDS but hurt D-Flow (pose completion report,
+sections 6-7); EDM's log-normal noise levels are the usual compromise.
+
+`weighting="lognormal"` (`hp/models/rsgm.py`, `loss_times`): log s(t) ~ N(loss_log_s_mean, loss_log_s_std^2),
+truncated to [s(0.002), s(1)] by the inverse CDF; the std(t)^2 weighting stays, only where the loss is evaluated
+changes. Configs of `scripts/train_rsgm_posedflow.py`, all `abl_residual` (30k x 4096, c10, seed 10, branch
+`experimental/denoising-aniso`, workstation1, 11.8-11.9 min each):
+
+| config | time distribution | loss at s < 0.01 | loss at s > 1 |
+|---|---|---|---|
+| `abl_residual` | std (t uniform) | 6% | 42% |
+| `abl_residual_lik` | likelihood (about log-uniform s at small s) | 51% | 16% |
+| `abl_residual_ln_m3` | log-normal N(-3, 2^2) | 21% | 5% |
+| `abl_residual_ln_m4` | log-normal N(-4, 2^2) | 38% | 2% |
+
+A first choice N(-4, 1.5^2) was dropped before training: 0.4% at s > 1 would starve the large noise that inpainting
+starts from. The rule, written before the runs: a variant is better if it improves the hybrid on the left leg and SDS
+denoising at 100 mm, and loses at most 1 mm in the mean of inpainting. All evaluation on workstation1 (`DEVICE=cuda:0`),
+validation only.
+
+Hybrid (500 validation poses, K = 10, MPVPE mean (mm) / APD (cm) / best of 10 (mm)) and the hidden-joint error of the
+trajectory (300 validation poses, deg); `eval_runs.sh`:
+
+| run | left_leg | legs | arms | trunk | left_leg 100 -> 199 | arms 100 -> 199 |
+|---|---|---|---|---|---|---|
+| abl_residual | **96.6** / 7.27 / 50.9 | **121.6** / 8.72 / 76.6 | **123.3** / 6.37 / 83.0 | 45.4 / 1.86 / 26.2 | **13.2** -> 14.1 | **23.4** -> 24.8 |
+| abl_residual_lik | 99.3 / 8.07 / 48.7 | 121.7 / 9.42 / 73.2 | 126.0 / 6.89 / 83.5 | 48.0 / 2.02 / 27.5 | 13.5 -> 14.1 | 23.6 -> 25.3 |
+| abl_residual_ln_m3 | 97.7 / 6.43 / 54.9 | 128.6 / 8.25 / 83.7 | 128.1 / 6.64 / 83.2 | **43.6** / 1.46 / 28.1 | 13.4 -> 14.2 | 24.2 -> 26.2 |
+| abl_residual_ln_m4 | 102.2 / 6.99 / 56.6 | 123.3 / 8.17 / 80.0 | 130.2 / 6.68 / 86.1 | 47.4 / 1.56 / 30.5 | 13.5 -> 14.1 | 23.9 -> 26.1 |
+
+Inpainting at the test point of `abl_residual` (`residual-t81`: 400 EDM steps, guidance 0.049, resample 5, no
+replacement), 1000 validation poses, K = 10, means over the four occlusions (`inpaint_valid.py`):
+
+| run | mean (mm) | best of 10 (mm) | APD (cm) |
+|---|---|---|---|
+| abl_residual | 88.56 | **49.04** | 6.45 |
+| abl_residual_lik | 91.99 | 50.87 | 6.71 |
+| abl_residual_ln_m3 | **87.90** | 50.82 | 5.97 |
+| abl_residual_ln_m4 | 89.43 | 51.72 | 6.09 |
+
+SDS motion denoising (100 validation sequences, the SDS settings tuned for RSGM 512x4 c10, MPJPE / MPVPE in mm;
+`scripts/evaluate_denoising.py`):
+
+| run | 40 mm | 100 mm |
+|---|---|---|
+| abl_residual | 18.63 / 37.97 | **30.81** / 51.26 |
+| abl_residual_lik | **18.61** / 37.90 | 30.88 / 51.27 |
+| abl_residual_ln_m3 | 18.73 / 37.95 | 30.83 / 51.34 |
+| abl_residual_ln_m4 | 18.76 / 38.00 | 30.85 / 51.24 |
+
+No variant meets the rule; a negative result. The likelihood weighting is worse in the hybrid and 3.4 mm worse in the
+mean of inpainting. `ln_m3` has a 0.7 mm lower inpainting mean only with less diversity (APD 5.97 against 6.45 cm) and
+a 1.8 mm worse best of 10, and is worse in the hybrid on the left leg; `ln_m4` is worse everywhere. The first phase
+stays at 13.2-13.5 deg whether 6% or 51% of the loss is at small noise: it moved only with per-joint noise (section
+10, 12.1-12.3 deg), so it is the geometry of the noise, not the amount of training at small noise. Denoising hardly
+depends on the prior here (all within 0.15 mm). The validation losses are not comparable across time distributions.
+Keep `weighting="std"`.
+
 ## Conclusions
 
 1. Residual connections or LayerNorm are what a score network on SO(3) needs for score distillation at small noise:
@@ -412,6 +477,8 @@ inpainting are unchanged. The separate report is
 - The likelihood weighting with the new networks.
 - The z input (section 9): one seed per run, the z input alone (without the matrices) not tried, and the noise of the
   hybrid stays isotropic in the angle, so the network gets the joints' scale only at the input.
+- Noise levels of training (section 14): one seed per variant, one network (`abl_residual`), no per-joint noise;
+  the SDS settings of denoising and the inpainting point were tuned for other models, not for each variant.
 - Per-joint noise (section 10): two seeds for `abl_aniso` only, one for the residual and LayerNorm variants; one scale
   per joint (the noise is isotropic within a joint, IGSO(3) has no anisotropic heat kernel in closed form); only the
   hybrid, not the completion protocols; the mean at equal APD not compared; the noise of the hybrid is matched to the
