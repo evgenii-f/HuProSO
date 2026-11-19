@@ -48,7 +48,10 @@ def rsgm_hat(x, t_d):
     s = (s_dp / c).mean(1)
     R = dp.denormalize(x)                                                        # [B, 19, 3, 3]
     b = len(x)
-    noise = sampler.sample(s[:, None] * c)[..., None] * igso3.random_axes((b, 19))
+    if rs.joint_axes is None:
+        noise = sampler.sample(s[:, None] * c)[..., None] * igso3.random_axes((b, 19))
+    else:  # per-axis noise (joint_cov): the wrapped normal of covariance s c_j K_j
+        noise = rs.tangent_noise(s[:, None] * c)
     Rt = exp_frame(R.cpu().double(), noise).float().to(dev)
     t_r = rs.t_of_s(s).float().to(dev)
     R0 = rsgm_denoise(rs, Rt, t_r)

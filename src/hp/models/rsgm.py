@@ -41,6 +41,20 @@ network still gets the one time t. c is normalized to min c_j = 1, so that at t 
 to uniform as in the isotropic model. s_j stops at S_CAP (beta_j = 0 from there on): IGSO(3) of time 20 is uniform to
 about exp(-20), and the numerics of the heat kernel fail far above it (c_j s(1) reaches about 160 for the knees).
 
+Per-joint, per-axis noise (`joint_cov`, aniso_x; needs joint_scale): within a joint the spread is far from isotropic
+(the knee bends about one axis: 89% of the variance of log(M_j^T x_j) on its first principal axis), and DPoser's
+z-scoring of each coordinate gives its noise that shape. With joint_cov (the covariance of log(M_j^T x_j), J x 3 x 3)
+the noise of joint j at Brownian time s_j is x0 exp(eps), eps ~ N(0, s_j K_j(s_j)) in the frame of x0: K_j has the
+principal axes V_j of the covariance and the eigenvalues k = 1 + w (lambda - 1), lambda its eigenvalues over their mean
+(so tr K = 3 and c_j keeps its meaning), w = 1 for s_j <= S_ANISO and 0 for s_j >= S_ISO, log-linear in between.
+Below S_ISO this is the wrapped normal (the push-forward of the Gaussian by exp); its score, the target of the loss, is
+taken by autograd from its density, a sum over the preimages of exp (wrapped_normal_score). Above S_ISO the noise is
+the exact IGSO(3) of time s_j as without joint_cov (the wrapped normal of a large variance is singular at the
+identity). The network outputs the scaled score in whitened coordinates: score = K^(-1/2) out / std_j. These kernels
+are not the transitions of one SDE, so the samplers (the reverse SDE and the ODE with beta_j K_j) are approximate and
+there is no exact likelihood (has_log_prob is False); the loss, the one-step denoising x_t exp(s_j K_j score) and
+DPoser's optimization (score distillation) are what it is for.
+
 Inputs of the score network. The rotations of a pose are relative to the parent joints, so the orientation of a
 hand is a product along the chain root-spine-shoulder-arm-elbow-hand, which a plain MLP has to learn to multiply.
 inputs = "local+global" also gives it these products (the forward kinematics along the SMPL tree, no root rotation),
@@ -76,6 +90,8 @@ class Sin(nn.Module):
 
 ACTIVATIONS = {"sin": Sin, "silu": nn.SiLU, "relu": nn.ReLU}
 S_CAP = 20.0  # the largest Brownian time of a joint with joint_scale (see the module doc)
+S_ANISO, S_ISO = 0.05, 1.0  # joint_cov: the full shape of K_j below S_ANISO, IGSO(3) from S_ISO on (module doc)
+IMAGES = 3  # the preimages of exp on each side in the density of the wrapped normal
 SAMPLERS = {"euler_maruyama": 1, "euler": 1, "heun": 2}  # and the network calls of a step
 
 
@@ -139,6 +155,48 @@ def z_statistics(poses: torch.Tensor, iterations: int = 50, chunk: int = 1_000_0
     return roma.rotmat_to_rotvec(m).reshape(-1).tolist(), std.reshape(-1).tolist()
 
 
+def joint_covariance(poses: torch.Tensor, z_mean, chunk: int = 500_000) -> list:
+    """The covariance (N - 1) [J * 9] of log(M_j^T x_j) of every joint over training poses [N, J, 3, 3], M_j the rotation
+    vectors z_mean [3J] of z_statistics (the Karcher means): the argument joint_cov of RSGM (aniso_x)."""
+    m = roma.rotvec_to_rotmat(torch.as_tensor(z_mean, dtype=torch.float64).reshape(-1, 3))
+    n, joints = len(poses), m.shape[0]
+    first = torch.zeros(joints, 3, dtype=torch.float64)
+    second = torch.zeros(joints, 3, 3, dtype=torch.float64)
+    for i in range(0, n, chunk):
+        v = roma.rotmat_to_rotvec(m.transpose(-1, -2) @ poses[i:i + chunk].double())
+        first += v.sum(0)
+        second += torch.einsum("nja,njb->jab", v, v)
+    mean = first / n
+    return ((second - n * mean[:, :, None] * mean[:, None, :]) / (n - 1)).reshape(-1).tolist()
+
+
+def wrapped_normal_score(eps: torch.Tensor, s: torch.Tensor, axes: torch.Tensor, k: torch.Tensor,
+                         images: int = IMAGES) -> torch.Tensor:
+    """The score [..., 3] (coordinates in the frame of x_t) of the wrapped normal at x_t = x0 exp(eps): the density of
+    exp(e), e ~ N(0, s V diag(k) V^T) (s [...], the axes V [..., 3, 3] as columns, k [..., 3]), with respect to the
+    Haar measure, sum over the preimages e_m = u (theta + 2 pi m) of exp of N(e_m) / J(e_m), J(e) = 4 sin^2(theta / 2)
+    / |e|^2, theta and u the angle and axis of x_t relative to x0. In float64; the gradient d/d delta of the log density
+    at x_t exp(delta), by autograd."""
+    with torch.enable_grad():
+        delta = torch.zeros_like(eps, requires_grad=True)
+        v = log_rotations(roma.rotvec_to_rotmat(eps) @ roma.rotvec_to_rotmat(delta))
+        theta = v.norm(dim=-1).clamp_min(1e-9)
+        u = v / theta[..., None]
+        var = s[..., None] * k
+        terms = []
+        for m in range(-images, images + 1):
+            phi = theta + 2 * math.pi * m
+            y = (axes.transpose(-1, -2) @ (u * phi[..., None])[..., None])[..., 0]  # coordinates on the principal axes
+            if m == 0:  # J -> 1 at theta -> 0: 2 log sinc
+                log_j = 2 * torch.log(torch.sinc(theta / (2 * math.pi)))
+            else:
+                log_j = torch.log(4 * torch.sin(theta / 2) ** 2) - torch.log(phi ** 2)
+            terms.append(-0.5 * (y ** 2 / var).sum(-1) - log_j)
+        log_p = torch.logsumexp(torch.stack(terms), dim=0)
+        (grad,) = torch.autograd.grad(log_p.sum(), delta)
+    return grad
+
+
 def fit_joint_scale(z_std) -> list:
     """joint_scale c [J] from the per-coordinate std [3J] of z_statistics: c_j = sigma_j^2 / min_k sigma_k^2, sigma_j
     the RMS of the three stds of joint j (the RMS angle of the joint around its mean)."""
@@ -192,6 +250,7 @@ class RSGM(PoseModel):
         net_norm: bool = True,  # norm,
         net_zero_init: bool = True,  # zero_init
         joint_scale: Optional[Sequence[float]] = None,  # c [J]: the Brownian time c_j s(t) per joint (module doc)
+        joint_cov: Optional[Sequence[float]] = None,  # [J * 9]: the noise of each joint shaped by it (aniso_x, module doc)
     ):
         if representation != "matrix":
             raise ValueError("RSGM works on rotation matrices directly; use representation='matrix'.")
@@ -248,6 +307,20 @@ class RSGM(PoseModel):
                 raise ValueError(f"joint_scale must have {num_joints} positive entries, got {c.tolist()}.")
             c = c.float()
         self.register_buffer("joint_scale", c)
+        axes = shape = None  # joint_cov: buffers of the principal axes [J, 3, 3] and the eigenvalues over their mean [J, 3]
+        if joint_cov is not None:
+            if joint_scale is None:
+                raise ValueError("joint_cov needs joint_scale (its eigenvalues give the shape, c_j the size).")
+            cov = torch.as_tensor(joint_cov, dtype=torch.float64).reshape(-1, 3, 3)
+            if cov.shape[0] != num_joints:
+                raise ValueError(f"joint_cov must have {9 * num_joints} entries (3 x 3 per joint), got {cov.numel()}.")
+            lam, vec = torch.linalg.eigh(0.5 * (cov + cov.transpose(-1, -2)))
+            if not (lam > 0).all():
+                raise ValueError("joint_cov must be positive definite.")
+            axes, shape = vec.float(), (lam / lam.mean(-1, keepdim=True)).float()
+            self.has_log_prob = False  # this instance: the kernels are not the transitions of one SDE (module doc)
+        self.register_buffer("joint_axes", axes)
+        self.register_buffer("joint_shape", shape)
         c_lo, c_hi = (1.0, 1.0) if joint_scale is None else (float(c.min()), float(c.max()))
         s_lo, s_hi = c_lo * self.s(torch.tensor(min(eps, loss_t_min))), c_hi * self.s(torch.tensor(1.0))
         s_hi = s_hi if joint_scale is None else min(s_hi, torch.tensor(S_CAP))
@@ -292,6 +365,45 @@ class RSGM(PoseModel):
         if c is None:
             return b.expand(-1, self.num_joints)
         return torch.where(self.s(t)[:, None] * c < S_CAP, b * c, torch.zeros_like(b * c))
+
+    def joint_k(self, s: torch.Tensor) -> torch.Tensor:
+        """The eigenvalues k [B, J, 3] of the shape K_j(s_j) of the noise at the Brownian times s [B, J] (joint_cov)."""
+        w = ((math.log(S_ISO) - torch.log(s)) / math.log(S_ISO / S_ANISO)).clamp(0, 1)
+        return 1 + w[..., None] * (self.joint_shape.to(s.device).to(s.dtype) - 1)
+
+    def shape_apply(self, v: torch.Tensor, s: torch.Tensor, power: float = 1.0) -> torch.Tensor:
+        """K_j(s_j)^power v for tangent coordinates v [B, J, 3] and Brownian times s [B, J]; v itself without
+        joint_cov."""
+        if self.joint_axes is None:
+            return v
+        axes = self.joint_axes.to(v.device).to(v.dtype)
+        y = torch.einsum("jca,bjc->bja", axes, v)
+        return torch.einsum("jca,bja->bjc", axes, self.joint_k(s.to(v.dtype)) ** power * y)
+
+    def tangent_noise(self, s: torch.Tensor, generator: torch.Generator = None) -> torch.Tensor:
+        """Noise eps [B, J, 3] (float64, on the device of s) of the Brownian times s [B, J]: x_t = x0 exp(eps), IGSO(3)
+        without joint_cov, the wrapped normal of covariance s K_j(s) below S_ISO with it (module doc)."""
+        # with joint_cov IGSO(3) is used only from S_ISO on: drawn there (also for times below the range of `angles`)
+        omega = self.angles.sample(s if self.joint_axes is None else s.clamp_min(S_ISO), generator)
+        iso = omega[..., None] * igso3.random_axes(s.shape, generator, device=s.device)
+        if self.joint_axes is None:
+            return iso
+        g = torch.randn(*s.shape, 3, generator=generator, device=s.device, dtype=torch.float64)
+        gauss = self.shape_apply(s.sqrt()[..., None] * g, s, 0.5)
+        return torch.where((s < S_ISO)[..., None], gauss, iso)
+
+    def noise_score(self, eps: torch.Tensor, s: torch.Tensor) -> torch.Tensor:
+        """The score [B, J, 3] of the noise kernel at x_t = x0 exp(eps) in the frame of x_t, for eps of tangent_noise
+        (float64)."""
+        omega = eps.norm(dim=-1)
+        iso_s = s if self.joint_axes is None else s.clamp_min(S_ISO)  # with joint_cov only used from S_ISO on
+        iso = igso3.d_log_density(omega, iso_s)[..., None] * eps / omega.clamp_min(1e-12)[..., None]
+        if self.joint_axes is None:
+            return iso
+        axes = self.joint_axes.to(eps.device).double().expand(*s.shape, 3, 3)
+        small = s < S_ISO
+        wrapped = wrapped_normal_score(eps, s.clamp_max(S_ISO), axes, self.joint_k(s))
+        return torch.where(small[..., None], wrapped, iso)
 
     def t_of_s(self, s: torch.Tensor) -> torch.Tensor:
         """The time t of the Brownian time s: s = beta_0 t + (beta_f - beta_0) t^2 / 2, solved for t."""
@@ -344,10 +456,14 @@ class RSGM(PoseModel):
         return self._unscale(self.net(features), t, x.dtype)
 
     def _unscale(self, out: torch.Tensor, t: torch.Tensor, dtype) -> torch.Tensor:
-        """The output [B, 3J] of the network divided by std (per joint with joint_scale), as [B, J, 3]."""
+        """The output [B, 3J] of the network divided by std (per joint with joint_scale), as [B, J, 3]; with joint_cov
+        it is read in whitened coordinates: K_j^(-1/2) out / std_j."""
         if self.joint_scale is None:
             return (out / self.std(t)[:, None].to(dtype)).reshape(out.shape[0], self.num_joints, 3)
-        return out.reshape(out.shape[0], self.num_joints, 3) / self.joint_std(t.to(dtype))[..., None]
+        out = out.reshape(out.shape[0], self.num_joints, 3)
+        if self.joint_axes is not None:
+            out = self.shape_apply(out, self.joint_s(t.to(dtype)), -0.5)
+        return out / self.joint_std(t.to(dtype))[..., None]
 
     def loss(self, pose: torch.Tensor, cond: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Denoising score matching: E || std(t) * (score(x_t, t) - grad log p_t(x_t | x_0)) ||^2.
@@ -368,14 +484,21 @@ class RSGM(PoseModel):
         t = self.loss_times(torch.rand(batch, dtype=torch.float64, device=work, generator=generator))
         s = self.joint_s(t)  # [B, J], float64
         std = self.joint_std(t)
-        omega = self.angles.sample(s, generator)
-        axis = igso3.random_axes((batch, joints), generator, device=work)
         x0 = move(pose.detach().reshape(batch, joints, 3, 3), work, torch.float64)
-        xt = exp_frame(x0, omega[..., None] * axis)
-        target = std[..., None] * igso3.d_log_density(omega, s)[..., None] * axis
+        if self.joint_axes is None:
+            omega = self.angles.sample(s, generator)
+            axis = igso3.random_axes((batch, joints), generator, device=work)
+            xt = exp_frame(x0, omega[..., None] * axis)
+            target = std[..., None] * igso3.d_log_density(omega, s)[..., None] * axis
+        else:  # whitened: std K^(1/2) (score - target), the weighting of the covariance (module doc)
+            eps = self.tangent_noise(s, generator)
+            xt = exp_frame(x0, eps)
+            target = std[..., None] * self.shape_apply(self.noise_score(eps, s), s, 0.5)
         dtype = self.dtype
-        xt, target, t, std = (move(v, self.device, dtype) for v in (xt, target, t, std))
+        xt, target, t, std, s = (move(v, self.device, dtype) for v in (xt, target, t, std, s))
         scaled = self.score(xt, t, self.cond_features(cond, batch)) * std[..., None]
+        if self.joint_axes is not None:
+            scaled = self.shape_apply(scaled, s, 0.5)
         return ((scaled - target) ** 2).sum(dim=(1, 2)).mean()
 
     # ---- sampling: the time reversal, by geodesic Euler-Maruyama or the probability flow ODE ----
@@ -414,7 +537,9 @@ class RSGM(PoseModel):
             h = t_next - t  # negative: the ODE runs backwards in time
             if self.sampler == "euler_maruyama":
                 dt, beta = -h, self.joint_beta(t.expand(n))[..., None]
-                step = beta * self.score(x, t.expand(n), f) * dt + torch.sqrt(beta * dt) * torch.randn(n, self.num_joints, 3, device=self.device, dtype=dtype)
+                s_j = self.joint_s(t.expand(n))  # joint_cov: K_j(s_j) shapes the drift and the noise (approximate)
+                noise = self.shape_apply(torch.randn(n, self.num_joints, 3, device=self.device, dtype=dtype), s_j, 0.5)
+                step = beta * self.shape_apply(self.score(x, t.expand(n), f), s_j) * dt + torch.sqrt(beta * dt) * noise
                 x = exp_frame(x, step)
                 continue
             v = self.velocity(x, t.expand(n), f)
@@ -445,8 +570,9 @@ class RSGM(PoseModel):
     # ---- the likelihood: probability flow ODE with the exact divergence ----
 
     def velocity(self, x: torch.Tensor, t: torch.Tensor, f: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """The probability flow -beta_j(t)/2 * score, coordinates [B, J, 3] in the frame of x."""
-        return -0.5 * self.joint_beta(t)[..., None] * self.score(x, t, f)
+        """The probability flow -beta_j(t)/2 * score (K_j score with joint_cov, approximate), coordinates [B, J, 3] in
+        the frame of x."""
+        return -0.5 * self.joint_beta(t)[..., None] * self.shape_apply(self.score(x, t, f), self.joint_s(t))
 
     def velocity_and_divergence(self, x: torch.Tensor, t: torch.Tensor, f: Optional[torch.Tensor] = None):
         """The velocity and its Riemannian divergence [B]. The frame fields x @ hat(e_i) are divergence free
@@ -468,6 +594,8 @@ class RSGM(PoseModel):
         """log p(pose) relative to the uniform distribution on SO(3)^J (log p(pose | cond) for a conditional model):
         midpoint steps of the ODE from eps to 1, log p_eps(x) = log p_1(x_1) + int div, with p_1 taken as uniform
         (log p_1 = 0)."""
+        if self.joint_axes is not None:
+            raise NotImplementedError("no exact likelihood with joint_cov: its kernels are not one SDE (module doc).")
         self.check_cond(cond, len(pose))
         dtype = self.dtype
         x = move(pose.reshape(-1, self.num_joints, 3, 3), self.device, dtype)

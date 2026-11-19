@@ -95,6 +95,8 @@ def rsgm_inpaint(model: RSGM, observed: torch.Tensor, visible: torch.Tensor, ste
         raise ValueError(f"steps and resample must be >= 1, got {steps}, {resample}.")
     if not replace and guidance <= 0:
         raise ValueError("use replace=True, guidance > 0 or both: with neither the observation is not used.")
+    if model.joint_axes is not None:
+        raise NotImplementedError("rsgm_inpaint has no per-axis noise (joint_cov) yet.")
     device, dtype = model.device, model.dtype
     n, joints = observed.shape[:2]
     y = observed.to(device, dtype)

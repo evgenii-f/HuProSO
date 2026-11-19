@@ -21,7 +21,6 @@ from typing import Optional
 import roma
 import torch
 
-from hp.models import igso3
 from hp.models.dposer import DPoser
 from hp.models.rsgm import RSGM, exp_frame
 
@@ -68,8 +67,9 @@ def dposer_complete(model: DPoser, observed: torch.Tensor, visible: torch.Tensor
 def rsgm_denoise(model: RSGM, x_t: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
     """One-step denoising on SO(3)^J, the Tweedie step of the heat kernel at small times:
     x0_hat = x_t exp(s(t) score(x_t, t)), s(t) the Brownian time (the variance of a coordinate; per joint with
-    joint_scale), x_t [B, J, 3, 3]."""
-    return exp_frame(x_t, model.joint_s(t)[..., None] * model.score(x_t, t))
+    joint_scale; s_j K_j score with joint_cov), x_t [B, J, 3, 3]."""
+    s = model.joint_s(t)
+    return exp_frame(x_t, model.shape_apply(s[..., None] * model.score(x_t, t), s))
 
 
 def rsgm_complete(model: RSGM, observed: torch.Tensor, visible: torch.Tensor, init: torch.Tensor,
@@ -106,7 +106,7 @@ def rsgm_complete(model: RSGM, observed: torch.Tensor, visible: torch.Tensor, in
                 t = torch.full((n,), t_min + (total - step - 1) / total * (t_max - t_min), dtype=torch.float64)
                 x = exp_frame(start, scale * delta)
                 s = model.joint_s(t)
-                noise = model.angles.sample(s)[..., None] * igso3.random_axes((n, joints))
+                noise = model.tangent_noise(s)
                 t = t.to(device, dtype)
                 x0_hat = rsgm_denoise(model, exp_frame(x.detach(), noise.to(device, dtype)), t)
                 weight = 0.5 * torch.sqrt(1 + 1 / model.joint_std(t))

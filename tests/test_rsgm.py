@@ -602,3 +602,126 @@ def test_the_training_loss_on_cuda_draws_its_noise_there_with_the_cpu_distributi
     assert model.loss(pose.cuda()).item() == pytest.approx(valid_cpu, rel=1e-5)
     se = math.sqrt(torch.tensor(cpu).var() / 300 + torch.tensor(gpu).var() / 300)
     assert abs(sum(gpu) / 300 - sum(cpu) / 300) < 4 * se
+
+
+# ---- per-axis noise (joint_cov, aniso_x) ----
+
+def _cov(lams, seed=0):
+    """A covariance [3, 3] of eigenvalues lams on random principal axes."""
+    v = roma.random_rotmat(1, generator=torch.Generator().manual_seed(seed), dtype=torch.float64)[0]
+    return v @ torch.diag(torch.tensor(lams, dtype=torch.float64)) @ v.T
+
+
+def aniso_model(**kwargs):
+    torch.manual_seed(0)
+    cov = torch.stack([_cov([2.5, 0.4, 0.1], 0), _cov([1.0, 1.0, 1.0], 1)])
+    return build_model("rsgm", num_joints=2, hidden=[32, 32], joint_scale=[1.0, 1.0],
+                       joint_cov=cov.reshape(-1).tolist(), **kwargs).eval()
+
+
+def _stein(model, s_value, n=200_000, proj=None):
+    """E[score . w + div w] for x_t = exp(eps) of tangent_noise, w(R) = P vee(R - R^T) / 2 = P sin(theta) u (smooth on
+    SO(3); P = proj [3, 3] or I), div w = sum_i d/d delta_i w_i(R exp(delta)): 0 for the exact score of the
+    distribution of x_t."""
+    p = torch.eye(3, dtype=torch.float64) if proj is None else proj
+    g = torch.Generator().manual_seed(1)
+    s = torch.full((n, 2), s_value, dtype=torch.float64)
+    eps = model.tangent_noise(s, g)
+    score = model.noise_score(eps, s)
+    r = roma.rotvec_to_rotmat(eps)
+
+    def w(rot):
+        a = rot - rot.transpose(-1, -2)
+        return torch.stack([a[..., 2, 1], a[..., 0, 2], a[..., 1, 0]], -1) / 2 @ p.T
+
+    delta = torch.zeros_like(eps, requires_grad=True)
+    ww = w(r @ roma.rotvec_to_rotmat(delta))
+    div = sum(torch.autograd.grad(ww[..., i].sum(), delta, retain_graph=True)[0][..., i] for i in range(3))
+    terms = (score * w(r)).sum(-1) + div  # [n, 2]
+    return terms.mean(0), terms.std(0) / n ** 0.5, div.mean(0)
+
+
+@pytest.mark.parametrize("s_value", [0.02, 0.3, 2.0])  # the full shape, the blend, IGSO(3)
+def test_the_score_of_the_per_axis_noise_satisfies_steins_identity(s_value):
+    mean, sem, scale = _stein(aniso_model(), s_value)
+    assert (mean.abs() < 5 * sem + 1e-3 * scale.abs()).all(), (mean, sem, scale)
+
+
+def test_a_wrong_score_breaks_steins_identity():
+    m = aniso_model()
+    axis = m.joint_axes[0, :, 2].double()  # the first principal axis of joint 0 (eigenvalue 2.5)
+    m.noise_score = lambda eps, s: -eps / s[..., None]  # the isotropic Gaussian score: wrong for the shaped joint
+    mean, sem, _ = _stein(m, 0.02, n=50_000, proj=torch.outer(axis, axis))
+    assert mean[0].abs() > 10 * sem[0]
+    assert _stein(aniso_model(), 0.02, n=50_000, proj=torch.outer(axis, axis))[0][0].abs() < 5 * sem[0]
+
+
+def test_the_wrapped_normal_is_igso3_at_small_times_and_gaussian_for_a_shape():
+    from hp.models.rsgm import wrapped_normal_score
+
+    s = torch.full((1000,), 1e-3, dtype=torch.float64)
+    eye = torch.eye(3, dtype=torch.float64).expand(1000, 3, 3)
+    eps = torch.randn(1000, 3, dtype=torch.float64, generator=torch.Generator().manual_seed(0)) * s.sqrt()[:, None]
+    omega = eps.norm(dim=-1)
+    exact = igso3.d_log_density(omega, s)[:, None] * eps / omega[:, None]
+    wrapped = wrapped_normal_score(eps, s, eye, torch.ones(1000, 3, dtype=torch.float64))
+    assert ((wrapped - exact).norm(dim=-1) / exact.norm(dim=-1)).max() < 1e-2
+    axes = roma.random_rotmat(1, generator=torch.Generator().manual_seed(3), dtype=torch.float64)[0].expand(1000, 3, 3)
+    k = torch.tensor([2.5, 0.4, 0.1], dtype=torch.float64).expand(1000, 3)
+    eps = (axes @ ((k * s[:, None]).sqrt() * torch.randn(1000, 3, dtype=torch.float64))[..., None])[..., 0]
+    gauss = -(axes @ ((axes.transpose(-1, -2) @ eps[..., None])[..., 0] / (k * s[:, None]))[..., None])[..., 0]
+    gauss = gauss - 0.5 * torch.linalg.cross(eps, gauss)  # to the frame of x_t: J_r^(-1)(eps)^T = I - hat(eps) / 2 + ...
+    wrapped = wrapped_normal_score(eps, s, axes, k)
+    assert ((wrapped - gauss).norm(dim=-1) / gauss.norm(dim=-1)).max() < 1e-2
+
+
+def test_the_shape_is_full_below_s_aniso_and_isotropic_from_s_iso():
+    from hp.models.rsgm import S_ANISO, S_ISO
+
+    m = aniso_model()
+    k = m.joint_k(torch.tensor([[S_ANISO / 2, S_ANISO / 2], [S_ISO, S_ISO], [5.0, 5.0]], dtype=torch.float64))
+    lam = torch.tensor([0.1, 0.4, 2.5], dtype=torch.float64)
+    assert torch.allclose(k[0, 0], lam / lam.mean(), atol=1e-6) and torch.allclose(k[0, 1], torch.ones(3, dtype=torch.float64))
+    assert torch.allclose(k[1:], torch.ones(2, 2, 3, dtype=torch.float64))
+    v, s = torch.randn(4, 2, 3, dtype=torch.float64), torch.full((4, 2), 0.01, dtype=torch.float64)
+    m = m.double()
+    assert torch.allclose(m.shape_apply(m.shape_apply(v, s, 0.5), s, -0.5), v)
+    assert torch.allclose(m.shape_apply(m.shape_apply(v, s, 0.5), s, 0.5), m.shape_apply(v, s))
+
+
+def test_per_axis_noise_trains_and_denoises_but_has_no_likelihood():
+    from hp.models.inpainting import rsgm_inpaint
+    from hp.models.score_completion import rsgm_denoise
+
+    m = aniso_model()
+    pose = roma.random_rotmat(16 * 2, generator=torch.Generator().manual_seed(0)).reshape(16, 2, 3, 3)
+    m.train()
+    loss = m.loss(pose)
+    loss.backward()
+    assert torch.isfinite(loss) and all(torch.isfinite(p.grad).all() for p in m.parameters())
+    m.eval()
+    t = torch.full((16,), 0.05)
+    s = m.joint_s(t)
+    with torch.no_grad():
+        expected = exp_frame(pose, m.shape_apply(s[..., None] * m.score(pose, t), s))
+    assert torch.allclose(rsgm_denoise(m, pose, t), expected)
+    assert not m.has_log_prob and RSGM.has_log_prob
+    with pytest.raises(NotImplementedError):
+        m.log_prob(pose[:2])
+    with pytest.raises(NotImplementedError):
+        rsgm_inpaint(m, pose[:2], torch.tensor([True, False]), steps=2)
+    assert m.sample(3).shape == (3, 2, 3, 3)
+    with pytest.raises(ValueError, match="joint_scale"):
+        build_model("rsgm", num_joints=2, hidden=[32], joint_cov=[1.0] * 18)
+
+
+def test_joint_covariance_is_the_covariance_of_the_logs_around_the_means():
+    from hp.models.rsgm import joint_covariance, z_statistics
+
+    poses = roma.random_rotmat(300 * 2, generator=torch.Generator().manual_seed(0)).reshape(300, 2, 3, 3)
+    poses = exp_frame(poses[:1].expand(300, 2, 3, 3), 0.3 * roma.rotmat_to_rotvec(poses))  # spread around a mean
+    z_mean, _ = z_statistics(poses)
+    cov = torch.tensor(joint_covariance(poses, z_mean, chunk=70), dtype=torch.float64).reshape(2, 3, 3)
+    m = roma.rotvec_to_rotmat(torch.tensor(z_mean, dtype=torch.float64).reshape(2, 3))
+    v = roma.rotmat_to_rotvec(m.transpose(-1, -2) @ poses.double())
+    assert torch.allclose(cov, torch.stack([torch.cov(v[:, j].T) for j in range(2)]))

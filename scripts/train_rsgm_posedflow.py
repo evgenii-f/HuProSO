@@ -35,7 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from hp.evaluation.data import load_reference  # noqa: E402
 from hp.models.io import load_model  # noqa: E402
-from hp.models.rsgm import fit_joint_scale, z_statistics  # noqa: E402
+from hp.models.rsgm import fit_joint_scale, joint_covariance, z_statistics  # noqa: E402
 from hp.training import cli  # noqa: E402
 from hp.training.config import load_config  # noqa: E402
 
@@ -158,6 +158,14 @@ CONFIGS["fact_NA_tmin"] = CONFIGS["fact_NA"] + ["model.args.loss_t_min=2.2e-4"]
 CONFIGS["fact_NA_lik"] = CONFIGS["fact_NA"] + ["model.args.weighting=likelihood"]
 CONFIGS["fact_NA_tmin_lik"] = CONFIGS["fact_NA"] + ["model.args.loss_t_min=2.2e-4", "model.args.weighting=likelihood"]
 ANISO.update({"fact_NA_tmin", "fact_NA_lik", "fact_NA_tmin_lik"})
+# Per-axis noise (joint_cov, aniso_x, hp.models.rsgm): the noise of every joint shaped by the covariance of
+# log(M_j^T x_j) on its principal axes at small noise, as DPoser's z-scoring of each coordinate; with fact_NA
+# (fact_NA: per-joint noise and LayerNorm, the factorial cell of abl_norm_aniso, the best hybrid of section 10) the
+# pair fact_NA / fact_NA_x differs by the shape of the noise within the joints only. The configs in ANISO_X get
+# model.args.joint_cov from the statistics (fitted_z_statistics, key z_cov).
+CONFIGS["fact_NA_x"] = list(CONFIGS["fact_NA"])
+ANISO.add("fact_NA_x")
+ANISO_X = {"fact_NA_x"}
 # fact_RDW one step further along width, the strongest factor of the factorial for inpainting
 CONFIGS["fact_RDW_w2048"] = CONFIGS["fact_RDW"] + ["model.args.net_width=2048"]
 # ----------------------------------------------------------------------------------------
@@ -191,10 +199,13 @@ def fitted_z_statistics(rotations: str, split: str, run_root: str, frames: int) 
     now (and written there) when the file is missing or of other data."""
     path = Path(run_root).expanduser() / "rsgm_z_statistics.json"
     stats = json.loads(path.read_text()) if path.is_file() else None
-    if stats is None or (stats["rotations"], stats["split"], stats["poses"]) != (rotations, split, frames):
+    if stats is None or (stats["rotations"], stats["split"], stats["poses"]) != (rotations, split, frames) \
+            or "z_cov" not in stats:
         train = load_reference("train", rotations, split)
-        mean, std = z_statistics(train)
-        stats = {"rotations": rotations, "split": split, "poses": len(train), "z_mean": mean, "z_std": std}
+        if stats is None or (stats["rotations"], stats["split"], stats["poses"]) != (rotations, split, frames):
+            mean, std = z_statistics(train)
+            stats = {"rotations": rotations, "split": split, "poses": len(train), "z_mean": mean, "z_std": std}
+        stats["z_cov"] = joint_covariance(train, stats["z_mean"])  # added to a file from before it
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(stats, indent=1))
         print(f"z statistics fitted on {len(train):,} training poses, written to {path}", flush=True)
@@ -226,6 +237,9 @@ def quick_check(run: Path, device: str, rotations: str, split: str, n: int, seed
     orthogonality = (samples.transpose(-1, -2) @ samples - torch.eye(3, dtype=torch.float64)).abs().max()
     valid = load_reference("valid", rotations, split)
     poses = valid[torch.randperm(len(valid), generator=torch.Generator().manual_seed(seed))[:n]]
+    if not model.has_log_prob:  # per-axis noise (joint_cov): no exact likelihood
+        print(f"  check: max |R^T R - I| = {orthogonality:.1e} (no likelihood: the model has none)", flush=True)
+        return
     with torch.no_grad():
         ll = torch.cat([model.log_prob(poses[i:i + 250].to(model.device)).cpu() for i in range(0, len(poses), 250)])
     print(f"  check: max |R^T R - I| = {orthogonality:.1e}, valid log-likelihood {ll.mean():.2f} +- "
@@ -266,6 +280,8 @@ def main() -> int:
         if config in ANISO:
             stats = fitted_z_statistics(rotations, split, args.run_root, frames)
             argv += [f"model.args.joint_scale={json.dumps(fit_joint_scale(stats['z_std']))}"]
+            if config in ANISO_X:
+                argv += [f"model.args.joint_cov={json.dumps(stats['z_cov'])}"]
         runs = runs_of(Path(args.run_root).expanduser() / name)
         done = [r for r in runs if finished(r)]
         stopped = [r for r in runs if resumable(r)]
@@ -288,7 +304,8 @@ def main() -> int:
             plan = f"resuming {stopped[-1]}; " + plan
         if args.dry_run:
             shown = [a.split("=")[0] + "=[...]" if a.startswith(("model.args.z_mean=", "model.args.z_std=",
-                                                                  "model.args.joint_scale=")) else a for a in argv]
+                                                                  "model.args.joint_scale=", "model.args.joint_cov="))
+                     else a for a in argv]
             print(f"{head}: {plan}\n  would run scripts/train_model.py {' '.join(shown)}", flush=True)
             continue
         print(f"\n{head}: {plan}; started {time.strftime('%H:%M')}, {minutes(time.perf_counter() - started)} into the script",
