@@ -1,0 +1,22 @@
+# RSGM abl_residual_aniso (per-joint noise, c_j = 1 ... 42.8, c10) in DPoser's optimization, noise 100 mm,
+# 100 validation sequences. The space of rsgm_sds_100mm.yaml (RSGM 512x4 c10, isotropic) with the noise window
+# moved down: joint j gets the Brownian time c_j s(t), so the same t means about 12.7 times (geometric mean of c)
+# more noise. The first trial is the isotropic best (trial 29: t_max 0.0515, t_min_fraction 0.881, weight 4.38, lr 0.0422, 133 steps, 30.87 mm)
+# with t mapped so that a joint with c_j = 12.7 gets the noise of the isotropic model. At 100 mm the aniso model gave
+# MPJPE 41.1 mm with the isotropic settings unchanged and 32.8 mm with the mapped t (isotropic abl_residual
+# 30.83 mm at the isotropic best settings).
+# Rule, fixed before the study: abl_residual_aniso is better in denoising if its best validation MPJPE is below that
+# of abl_residual at the isotropic best settings (30.83 mm); no test before that.
+model: ~/data/experiments/igso_speed/rsgm_posedflow_abl_residual_aniso_s10/run_0001
+method: dposer
+sigma: 0.1
+sequences: 100
+n_trials: 30
+params:
+  t_max: {low: 0.005, high: 0.15, log: true}
+  t_min_fraction: {low: 0.05, high: 0.9}
+  sds_weight: {low: 1.0, high: 100.0, log: true}
+  lr: {low: 0.01, high: 0.1, log: true}
+  steps_per_iter: [80, 133, 267]
+first:
+  - {t_max: 0.0144, t_min_fraction: 0.881, sds_weight: 4.38, lr: 0.0422, steps_per_iter: 133}

@@ -144,11 +144,13 @@ def run(model, gt: torch.Tensor, occlusion: str, k: int = 10, steps: Optional[in
     the D-Flow prior (hp.models.dflow.prior_of), e.g. the ODE of RSGM: dict(sampler="heun", schedule="edm", ode_steps=25).
     method="dposer": DPoser's own optimization (hp.models.score_completion) instead of D-Flow, for DPoser or, on
     SO(3), for RSGM; prior then holds the options of the optimization (e.g. dict(t_max=0.025, t_min=0.003, lr=0.02)),
-    and steps, ode_steps, lr and running_weight do not apply."""
-    if method == "dposer":
-        return _run_dposer(model, gt, occlusion, k, batch, together, progress, prior or {})
+    and steps, ode_steps, lr and running_weight do not apply. method="inpaint": the reverse process of RSGM or DPoser
+    with the visible joints kept consistent (hp.models.inpainting.rsgm_inpaint, dposer_inpaint); prior holds its
+    options (e.g. dict(steps=200, resample=5, guidance=0.1))."""
+    if method in ("dposer", "inpaint"):
+        return _run_dposer(model, gt, occlusion, k, batch, together, progress, prior or {}, inpaint=method == "inpaint")
     if method != "dflow":
-        raise ValueError(f"Unknown completion method '{method}'. Use 'dflow' or 'dposer'.")
+        raise ValueError(f"Unknown completion method '{method}'. Use 'dflow', 'dposer' or 'inpaint'.")
     from hp.models.dflow import complete, prior_of
 
     prior = dict(prior or {})
@@ -183,20 +185,33 @@ def run(model, gt: torch.Tensor, occlusion: str, k: int = 10, steps: Optional[in
 
 
 def _run_dposer(model, gt: torch.Tensor, occlusion: str, k: int, batch: int, together: bool, progress: bool,
-                options: dict) -> torch.Tensor:
+                options: dict, inpaint: bool = False) -> torch.Tensor:
     """run() with DPoser's optimization (options: of dposer_complete or rsgm_complete). As their test script, the
     start of the hidden entries is drawn once per batch (torch.manual_seed(first pose of the batch), on the CPU) and
     shared by the K hypotheses, which differ by the noise of the optimization: torch.manual_seed(k) for hypothesis k,
     or the seed of the batch with together=True. DPoser starts the hidden entries at N(0, I) in its normalized space,
     as theirs. RSGM takes two more options: start="rest" (the identity, default), "mean" (the mean pose of the
     training data) or "noise" (DPoser's start: axis-angle mean + std * N(0, I)), and scale="std" (rsgm_complete's
-    scale from the spread of the training data; default none); the statistics come from pose_statistics(stats)."""
+    scale from the spread of the training data; default none); the statistics come from pose_statistics(stats).
+    inpaint=True: rsgm_inpaint for RSGM or dposer_inpaint for DPoser instead (options: their own), with the same
+    seeds; it has no start."""
     from hp.models.dposer import DPoser
+    from hp.models.inpainting import dposer_inpaint, rsgm_inpaint
     from hp.models.rsgm import RSGM
     from hp.models.score_completion import dposer_complete, rsgm_complete
 
     options = dict(options)
-    if isinstance(model, DPoser):
+    if inpaint:
+        if not isinstance(model, (RSGM, DPoser)):
+            raise TypeError(f"method='inpaint' needs an RSGM or DPoser model, got {type(model).__name__}.")
+        inpaint_of = rsgm_inpaint if isinstance(model, RSGM) else dposer_inpaint
+
+        def fill(model, observed, visible, init, **kwargs):
+            return inpaint_of(model, observed, visible, **kwargs)
+
+        def start_of(b, j):
+            return torch.zeros(b, j)  # not used
+    elif isinstance(model, DPoser):
         fill, start_of = dposer_complete, lambda b, j: torch.randn(b, 3 * j)
     elif isinstance(model, RSGM):
         kind, scale = options.pop("start", "rest"), options.pop("scale", None)

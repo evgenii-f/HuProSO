@@ -42,6 +42,11 @@ RUNS = {
     "RSGM 1536x6: their c10": "~/data/experiments/rsgm_posedflow_s10/run_0001",
     "RSGM 512x4: their full": "~/data/experiments/full/rsgm_posedflow_small_s10/run_0001",
     "RSGM res_norm: their c10": "~/data/experiments/rsgm_posedflow_res_norm_s10/run_0001",
+    # abl residual and the same trained with more of the loss at small noise (likelihood, log-normal noise levels)
+    "RSGM abl residual: their c10": "~/data/experiments/rsgm_posedflow_abl_residual_s10/run_0001",
+    "RSGM abl residual lik: their c10": "~/data/experiments/rsgm_posedflow_abl_residual_lik_s10/run_0001",
+    "RSGM abl residual ln m3: their c10": "~/data/experiments/rsgm_posedflow_abl_residual_ln_m3_s10/run_0001",
+    "RSGM abl residual ln m4: their c10": "~/data/experiments/rsgm_posedflow_abl_residual_ln_m4_s10/run_0001",
 }
 MODELS = {
     # DPoser's optimization without its prior term: the "w/o prior" row

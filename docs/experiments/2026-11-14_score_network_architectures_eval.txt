@@ -19,3 +19,25 @@ full/rsgm_posedflow_dposer_like_s10 | valid best 5.986 last 6.010 | hybrid: left
 # log ~/data/experiments/dflow_valid_ws2.log, rows in ~/data/experiments/completion/dflow_valid_arch_ws2.jsonl there):
 heun-edm50 | dposer like full    |  94.7/ 7.56/ 46.3 | 116.1/ 9.24/ 67.9 | 119.8/ 7.33/ 69.1 |  46.8/ 2.03/ 26.6 | mean 94.35 best 52.46 | 1366s
 heun-edm50 | small std c10       |  95.2/ 7.65/ 46.2 | 113.0/ 8.76/ 67.1 | 117.8/ 7.12/ 69.4 |  47.4/ 2.06/ 27.0 | mean 93.33 best 52.43 | 400s
+# section 9, 2026-11-16 (z-scored tangent input):
+rsgm_posedflow_abl_z_s10 | valid best 5.903 last 5.903 | hybrid: left_leg 106.0/8.83/51.7 | legs 127.3/10.20/76.1 | arms 130.0/7.29/85.1 | trunk 46.0/2.13/25.3 | RSGM err at steps 100,199 (left_leg, arms): 13.15 14.65 23.82 26.95
+rsgm_posedflow_res_norm_z_s10 | valid best 6.043 last 6.043 | hybrid: left_leg 108.0/7.48/57.3 | legs 127.5/8.91/79.6 | arms 126.8/6.57/83.4 | trunk 47.1/1.66/29.1 | RSGM err at steps 100,199 (left_leg, arms): 14.23 15.20 23.77 25.55
+full/rsgm_posedflow_dposer_like_z_s10 | valid best 6.065 last 6.066 | hybrid: left_leg 94.2/7.23/49.5 | legs 122.3/8.98/75.0 | arms 124.5/6.50/82.7 | trunk 42.7/1.71/25.1 | RSGM err at steps 100,199 (left_leg, arms): 13.22 13.25 24.06 25.62
+# section 10, 2026-11-16 (per-joint noise):
+rsgm_posedflow_abl_aniso_s10 | valid best 1.539 last 1.539 | hybrid: left_leg 93.4/6.68/51.4 | legs 116.3/8.02/74.4 | arms 121.6/6.12/82.2 | trunk 47.8/2.06/26.5 | RSGM err at steps 100,199 (left_leg, arms): 12.26 13.94 23.14 25.54
+igso_speed/rsgm_posedflow_abl_aniso_s11 | valid best 1.549 last 1.549 | hybrid: left_leg 93.0/6.83/49.6 | legs 114.1/7.92/71.6 | arms 121.7/5.92/82.1 | trunk 47.3/1.97/26.8 | RSGM err at steps 100,199 (left_leg, arms): 12.15 13.47 23.10 25.41
+igso_speed/rsgm_posedflow_abl_residual_aniso_s10 | valid best 1.550 last 1.551 | hybrid: left_leg 89.6/6.03/50.4 | legs 107.6/6.66/71.3 | arms 115.7/4.96/82.6 | trunk 46.6/1.74/28.7 | RSGM err at steps 100,199 (left_leg, arms): 12.28 12.83 22.70 23.09
+igso_speed/rsgm_posedflow_abl_norm_aniso_s10 | valid best 1.556 last 1.556 | hybrid: left_leg 87.0/5.81/49.3 | legs 105.2/6.40/70.6 | arms 108.0/4.87/75.0 | trunk 44.0/1.61/26.5 | RSGM err at steps 100,199 (left_leg, arms): 12.07 12.29 22.44 22.58
+# section 14, 2026-11-18 (noise levels of training; workstation1, DEVICE=cuda:0):
+rsgm_posedflow_abl_residual_s10 | valid best 5.906 last 5.913 | hybrid: left_leg 96.6/7.27/50.9 | legs 121.6/8.72/76.6 | arms 123.3/6.37/83.0 | trunk 45.4/1.86/26.2 | RSGM err at steps 100,199 (left_leg, arms): 13.23 14.09 23.40 24.76
+rsgm_posedflow_abl_residual_lik_s10 | valid best 25.452 last 25.602 | hybrid: left_leg 99.3/8.07/48.7 | legs 121.7/9.42/73.2 | arms 126.0/6.89/83.5 | trunk 48.0/2.02/27.5 | RSGM err at steps 100,199 (left_leg, arms): 13.51 14.12 23.61 25.34
+rsgm_posedflow_abl_residual_ln_m3_s10 | valid best 18.431 last 18.550 | hybrid: left_leg 97.7/6.43/54.9 | legs 128.6/8.25/83.7 | arms 128.1/6.64/83.2 | trunk 43.6/1.46/28.1 | RSGM err at steps 100,199 (left_leg, arms): 13.42 14.15 24.17 26.16
+rsgm_posedflow_abl_residual_ln_m4_s10 | valid best 24.975 last 25.457 | hybrid: left_leg 102.2/6.99/56.6 | legs 123.3/8.17/80.0 | arms 130.2/6.68/86.1 | trunk 47.4/1.56/30.5 | RSGM err at steps 100,199 (left_leg, arms): 13.52 14.13 23.94 26.08
+abl residual | residual-t81           |  85.7/ 6.83/ 42.8 | 109.1/ 8.79/ 64.7 | 114.6/ 8.13/ 63.6 |  44.8/ 2.06/ 25.1 | mean 88.56 best 49.04 | 362s
+abl residual lik | residual-t81           |  90.6/ 7.12/ 46.0 | 113.2/ 9.20/ 67.4 | 116.5/ 8.28/ 64.5 |  47.6/ 2.26/ 25.6 | mean 91.99 best 50.87 | 366s
+abl residual ln m3 | residual-t81           |  85.7/ 6.11/ 46.1 | 109.5/ 8.39/ 66.1 | 113.1/ 7.77/ 64.4 |  43.3/ 1.60/ 26.7 | mean 87.90 best 50.82 | 362s
+abl residual ln m4 | residual-t81           |  87.4/ 6.29/ 47.4 | 108.9/ 8.30/ 67.3 | 114.8/ 7.98/ 63.9 |  46.6/ 1.78/ 28.3 | mean 89.43 best 51.72 | 366s
+RSGM abl residual: their c10, DPoser method        18.63 /  37.97 ( 63.7)   30.81 /  51.26 (159.3)
+RSGM abl residual lik: their c10, DPoser method    18.61 /  37.90 ( 63.7)   30.88 /  51.27 (159.3)
+RSGM abl residual ln m3: their c10, DPoser method   18.73 /  37.95 ( 63.7)   30.83 /  51.34 (159.3)
+RSGM abl residual ln m4: their c10, DPoser method   18.76 /  38.00 ( 63.7)   30.85 /  51.24 (159.3)

@@ -1,0 +1,43 @@
+# scripts/benchmark_igso_noise.py (untrained MLP 512 x 4, 19 joints, uniform random poses)
+
+# bigmama, idle RTX 4090, 2026-11-16, dev at 1c9f029:
+#   python scripts/benchmark_igso_noise.py --device cuda:0
+torch 2.14.1+cu130, NVIDIA GeForce RTX 4090, 16 CPU threads, MLP [512, 512, 512, 512], 19 joints
+| measurement | noise on CPU | noise on device | speed-up |
+|---|---|---|---|
+| train step, batch 4096 | 82.2 it/s | 519.8 it/s | 6.32x |
+| train step, batch 16384 | 18.8 it/s | 183.2 it/s | 9.74x |
+| inpainting, 5000 poses, guidance 0.0, resample 3 | 7.91 ms/call | 1.29 ms/call | 6.11x |
+| inpainting, 5000 poses, guidance 0.1, resample 1 | 12.62 ms/call | 9.25 ms/call | 1.36x |
+| inpainting, 20000 poses, guidance 0.0, resample 3 | 25.56 ms/call | 3.38 ms/call | 7.56x |
+| inpainting, 20000 poses, guidance 0.1, resample 1 | 42.64 ms/call | 27.04 ms/call | 1.58x |
+
+# Mac (Apple silicon, mps), 2026-11-16, the same code (66d0006):
+#   python scripts/benchmark_igso_noise.py --device mps --train-repeats 20
+torch 2.13.0, mps, 5 CPU threads, MLP [512, 512, 512, 512], 19 joints
+| measurement | noise on CPU | noise on device | speed-up |
+|---|---|---|---|
+| train step, batch 4096 | 53.1 it/s | 51.9 it/s | 0.98x |
+| train step, batch 16384 | 18.9 it/s | 18.7 it/s | 0.99x |
+| inpainting, 5000 poses, guidance 0.0, resample 3 | 12.99 ms/call | 5.67 ms/call | 2.29x |
+| inpainting, 5000 poses, guidance 0.1, resample 1 | 22.63 ms/call | 18.49 ms/call | 1.22x |
+| inpainting, 20000 poses, guidance 0.0, resample 3 | 46.97 ms/call | 23.84 ms/call | 1.97x |
+| inpainting, 20000 poses, guidance 0.1, resample 1 | 86.42 ms/call | 74.71 ms/call | 1.16x |
+
+# CUDA tests on bigmama (the cases skipped on the Mac):
+#   python -m pytest -q tests/test_rsgm.py tests/test_igso3.py -k cuda
+8 passed, 70 deselected in 5.92s
+
+# explore/evaluation/igso_noise/sampler_precision.py --device mps (Mac):
+table: s in [3.50e-07, 3.75], 400,000 draws per s, device mps
+| s | median angle (deg) | max abs. error (deg) | max rel. error | mean rel. error | KS float64 (cpu) | KS float32 (device) |
+|---|---|---|---|---|---|---|
+| 3.53e-07 | 0.0523 | 1.7e-05 | 1.1e-04 | 6.1e-08 | 0.0008 | 0.0017 |
+| 1.00e-05 | 0.2784 | 8.9e-05 | 1.1e-04 | 5.9e-08 | 0.0008 | 0.0017 |
+| 1.00e-04 | 0.8804 | 2.8e-04 | 1.1e-04 | 5.4e-08 | 0.0008 | 0.0017 |
+| 1.00e-03 | 2.7839 | 9.0e-04 | 1.1e-04 | 6.1e-08 | 0.0008 | 0.0017 |
+| 1.00e-02 | 8.8003 | 2.8e-03 | 1.1e-04 | 5.4e-08 | 0.0008 | 0.0017 |
+| 1.00e-01 | 27.7243 | 8.9e-03 | 1.1e-04 | 6.4e-08 | 0.0008 | 0.0017 |
+| 1.00e+00 | 84.3772 | 4.2e-05 | 2.5e-07 | 4.0e-08 | 0.0008 | 0.0017 |
+| 3.72e+00 | 129.0429 | 2.8e-05 | 2.0e-07 | 3.7e-08 | 0.0008 | 0.0017 |
+KS 1% critical value for n = 400,000: 0.0026
