@@ -8,7 +8,7 @@ puts the three networks side by side and proposes the one to try.
 
 ## Summary
 
-Updated 2026-11-18 (sections 6-13). Validation numbers only; no test was run for this line of work.
+Updated 2026-11-19 (sections 6-13). Validation numbers only; no test was run for this line of work.
 
 - **Skip connections or LayerNorm in the score network remove the drift of SDS at the smallest noise** and improve the
   hybrid (DPoser's optimization with the RSGM denoiser) by 15-17 mm on the legs and 10-14 mm on the arms over a plain
@@ -38,14 +38,25 @@ Updated 2026-11-18 (sections 6-13). Validation numbers only; no test was run for
   mm worse), and in inpainting at equal APD it is worse (2-3 mm on c10, 0.2-1.1 mm on full data; the completion
   report, section 14).
 - **The full 2^5 factorial of residual, LayerNorm, per-joint noise, dropout and width** (section 13, 32 runs, all
-  responses on validation): per-joint noise is the largest effect of all, good for the hybrid (-12 to -15 mm, first
-  phase -1.2 deg) and bad for generation (FID_val +0.021 on about 0.035, Wasserstein +3.0 deg, sample APD 17.2-17.4
-  cm against 16.4 of the data) and inpainting (best of 10 +1.4 mm); width 1024 and residual help inpainting (-2.0 and
-  -1.3 mm) and generation a little; residual and LayerNorm together are worse than their sum (+2.0 mm in inpainting,
-  +7 mm in the hybrid). The rule of the plan picks the isotropic LayerNorm cell (`abl_norm`, 88.63 / 49.22 / 6.49).
+  responses on validation): per-joint noise is the largest effect in the hybrid (-12 to -15 mm, first phase -1.2
+  deg) and hurts inpainting (best of 10 +1.3 mm) and, a little, generation. Its large penalty in generation with the
+  model's own sampler (FID_val +0.021, Wasserstein +3.0 deg) is mostly the sampler: with Heun on the EDM grid it is
+  +0.008 and +0.2 deg. Width 1024 and residual help inpainting (-2.0 and -1.3 mm) and generation; residual and
+  LayerNorm together are worse than their sum (+2.0 mm in inpainting, +7 mm in the hybrid). Second seeds of two
+  cells reproduce every response (inpainting within 0.1-0.6 mm, FID_val within 0.001).
+- **No single network is the best for all three uses** (section 13, 2026-11-19): inpainting wants no per-joint
+  noise, the hybrid wants it, generation wants width and residual. The rule of the plan picks the isotropic LayerNorm
+  cell (`fact_N` = `abl_norm`, 88.92 / 49.64 / 6.50), but the next four cells are within 0.9 mm, less than twice the
+  spread of its two seeds. `fact_RADW` is the best compromise (hybrid 84.4 mm on average over the four occlusions
+  against 94.7 for `fact_N`, FID_val with Heun 0.0349 against 0.0347, inpainting mean 88.08) but its hypotheses are
+  narrower (inpainting APD 5.87 cm, hybrid APD 4.3 against 6.2).
+- Two fixes of the generation of per-joint noise were tried and fail the criterion fixed before (FID_val with Heun
+  <= 0.038): a smaller minimal training time for the wide joints (0.0432) and likelihood weighting (0.0446; both
+  0.0751).
 - Decision: per-joint noise helps score distillation at small noise (the first phase), not the whole reverse
-  process nor generation; the best completion of RSGM stays inpainting with isotropic networks, and none of the 32
-  combinations of the five components beats `abl_norm` by the rule.
+  process; the best completion of RSGM stays inpainting with isotropic networks. Next: an inpainting study at equal
+  APD of `fact_N`, `fact_RDW` and `fact_RADW`, since the fixed point of the rule cannot compare networks of
+  different spread.
 
 ## 1. The three networks
 
@@ -587,7 +598,11 @@ inpainting). The 3-way interactions are at most 0.5 mm in inpainting; main effec
   the samples. The generated poses get wider than the data (sample APD 17.2-17.4 against 16.4 cm; the isotropic
   networks are at about 15.0, narrower than the data) and farther from it (FID_val, Wasserstein, precision, dNN all
   worse by large margins), and inpainting loses accuracy at its best hypothesis. So the gain in the hybrid is not a
-  better prior: it is a prior whose score pulls harder at small noise.
+  better prior: it is a prior whose score pulls harder at small noise. (Corrected 2026-11-19: the spread of the
+  samples is mostly the sampler, 100 uniform Euler-Maruyama steps, which leaves noise on the joints of large
+  joint_scale; with Heun on the EDM grid the sample APD of the per-joint cells without dropout is 14.4-15.0 cm, as
+  the isotropic cells, and the FID_val penalty of per-joint noise drops from +0.021 to +0.008. See the next
+  subsection.)
 - Width and residual are the components that help inpainting and generation together; LayerNorm helps the hybrid
   and does little elsewhere; residual and LayerNorm should not be combined.
 - The rule picks `fact_N`, the isotropic LayerNorm cell, which is `abl_norm` itself. 12 of 32 cells pass the
@@ -605,6 +620,103 @@ Cells outside the rule: `fact_RDW` has the lowest inpainting mean (87.40) at an 
 lowest FID_val (0.0326) at an inpainting APD of 7.08; both are candidates for an inpainting study, which compares at
 equal APD, unlike the one fixed point.
 
+### Sampler check, second seeds and extra cells (2026-11-19)
+
+All 32 cells were evaluated a second time on workstation2 (three hybrid calls on workstation1), now with a fourth
+part, generation with Heun on the EDM grid (50 steps, 100 network calls; `generation_ode` of
+`scripts/evaluate_factorial.py`), next to the six runs below. This evaluation replaces the one above in
+`responses.jsonl` and in [the effects file](2026-11-14_score_network_architectures_factorial.txt). Generation is
+reproduced (FID_val within 0.0003); inpainting is 0.1-0.3 mm higher than in the first evaluation (another GPU; the main effects move
+by at most 0.1 mm: inpainting mean R -1.34, N +0.36, A +0.51, D +0.81, W -2.01, SE 0.24). The tables above keep the
+numbers of the first evaluation.
+
+**The sampler.** The model's sampler (Euler-Maruyama, 100 uniform steps) leaves noise on the joints of large
+joint_scale, whose Brownian time is up to 42.8 times larger. `explore/evaluation/factorial_sampler_check.py` (Mac, 10
+sets of 500 samples):
+
+| cell | sampler | network calls | FID_val | sample APD (cm) |
+|---|---|---|---|---|
+| fact_N | Euler-Maruyama, 100 uniform | 100 | 0.0375 | 14.79 |
+| fact_N | Euler-Maruyama, 1000 uniform | 1000 | 0.0420 | 14.46 |
+| fact_N | Euler-Maruyama, 200 EDM | 200 | 0.0370 | 14.79 |
+| fact_N | Heun, 50 EDM | 100 | **0.0353** | 15.16 |
+| fact_NA | Euler-Maruyama, 100 uniform | 100 | 0.0505 | 17.13 |
+| fact_NA | Euler-Maruyama, 1000 uniform | 1000 | 0.0461 | 14.19 |
+| fact_NA | Euler-Maruyama, 200 EDM | 200 | **0.0431** | 14.29 |
+| fact_NA | Heun, 50 EDM | 100 | 0.0446 | 14.27 |
+
+The too wide samples of per-joint noise are the sampler; its FID_val stays 0.004-0.013 above the isotropic cell with
+every sampler. In the factorial with Heun (main effects; SE 0.001 for FID_val, 0.06 for Wasserstein):
+
+| effect | FID_val, model's sampler | FID_val, Heun | Wasserstein, model's sampler | Wasserstein, Heun |
+|---|---|---|---|---|
+| A per-joint noise | +0.021 | +0.008 | +3.04 | +0.19 |
+| D dropout | +0.004 | +0.008 | +0.58 | +1.53 |
+| W width 1024 | -0.003 | -0.007 | -0.35 | -0.66 |
+| R residual | -0.002 | -0.005 | -0.25 | -0.54 |
+| D x W | -0.003 | -0.007 | -0.21 | -0.52 |
+
+With Heun dropout is the component that hurts generation, unless with width 1024 or residual.
+
+**Second seeds** (seed 11; the plan asked for the chosen cell and `fact_N`, the same cell here, so the second one
+went to `fact_RDW`, the lowest inpainting mean):
+
+| cell | seed | inpainting mean / best / APD | FID_val (Heun) | first phase (deg) | hybrid mean of 4 (mm) |
+|---|---|---|---|---|---|
+| fact_N | 10 | 88.92 / 49.64 / 6.50 | 0.0347 | 13.31 | 94.7 |
+| fact_N | 11 | 89.56 / 49.82 / 6.53 | 0.0356 | 13.50 | 94.8 |
+| fact_RDW | 10 | 87.63 / 48.82 / 6.31 | 0.0327 | 12.93 | 92.9 |
+| fact_RDW | 11 | 87.73 / 48.67 / 6.34 | 0.0327 | 12.74 | 93.1 |
+
+The seeds agree within the SE of the factorial; one hybrid occlusion moves by up to 3 mm between seeds, the mean of
+four by 0.2.
+
+**The rule** (inpainting APD >= 6.40, FID_val <= 0.0384) passes 13 cells and picks `fact_N` again (88.92); the
+next are `fact_NW` 89.65, `fact_RNDW` 89.72, `fact_RD` 89.78, `fact_R` 89.80, within 0.9 mm, while the two seeds of
+`fact_N` differ by 0.64 mm. The rule does not separate them.
+
+**Per-joint noise with a smaller minimal noise for the wide joints** (written before the runs: it passes if FID_val
+with Heun <= 0.038 with the first phase about 12.1 deg). The hypothesis: the smallest training noise is in t
+(loss_t_min), so the wide joints never see noise as small as the narrow ones, by sqrt(c_j). Three runs on `fact_NA`:
+`fact_NA_tmin` (loss_t_min 2.2e-4 instead of 0.002, where the widest joint gets the smallest noise of the
+isotropic networks), `fact_NA_lik` (likelihood
+weighting, which weights the small noise more) and both:
+
+| cell | FID_val (Heun) | first phase (deg) | inpainting mean / best / APD | log-likelihood |
+|---|---|---|---|---|
+| fact_NA | 0.0439 | 12.12 | 91.03 / 51.91 / 6.33 | 135.64 |
+| fact_NA_tmin | 0.0432 | 12.24 | 92.48 / 51.20 / 6.79 | 137.48 |
+| fact_NA_lik | 0.0446 | 11.87 | 94.32 / 53.19 / 6.67 | 132.81 |
+| fact_NA_tmin_lik | 0.0751 | 11.85 | 99.66 / 54.78 / 7.50 | 135.38 |
+
+All three fail: the small noise of the wide joints is not why per-joint noise generates worse.
+
+**Width 2048** (`fact_RDW_w2048`): inpainting 85.80 / 48.73 / 5.98, FID_val with Heun 0.0333,
+hybrid mean 92.4, first phase 13.36. The mean drops by 1.8 mm against `fact_RDW` with the APD by 0.33 cm; at the
+fixed point the two cannot be told apart from a narrower prior.
+
+**What each use wants.** The hybrid ranks the cells by per-joint noise: the 18 best of the 38 runs all have it
+(hybrid mean 84.3-91.7 mm against 92.4-106.4 without; only `fact_A` alone, 96.2, falls among the isotropic ones),
+with narrower hypotheses (hybrid APD 4.3-6.2 against 5.2-7.6 cm). Candidates side by side:
+
+| cell | inpainting mean / best / APD | FID_val (Heun) | Wasserstein (Heun) | first phase | hybrid mean / APD |
+|---|---|---|---|---|---|
+| fact_N | 88.92 / 49.64 / 6.50 | 0.0347 | 14.87 | 13.31 | 94.7 / 6.22 |
+| fact_RDW | 87.63 / 48.82 / 6.31 | 0.0327 | 15.19 | 12.93 | 92.9 / 5.66 |
+| fact_RDW_w2048 | 85.80 / 48.73 / 5.98 | 0.0333 | 15.04 | 13.36 | 92.4 / 5.24 |
+| fact_RADW | 88.08 / 50.65 / 5.87 | 0.0349 | 15.49 | 11.96 | 84.4 / 4.29 |
+| fact_NAW | 89.53 / 51.32 / 6.14 | 0.0406 | 14.64 | 11.74 | 84.3 / 4.60 |
+| fact_0 | 91.45 / 50.61 / 6.77 | 0.0334 | 14.97 | 13.52 | 106.4 / 7.56 |
+
+- Inpainting: residual and width help, per-joint noise and residual with LayerNorm hurt.
+- The hybrid: per-joint noise, then width and dropout; residual with LayerNorm hurts.
+- Generation (Heun): width and residual help, per-joint noise (+0.008) and dropout without width hurt.
+
+No cell is the best in all three. `fact_RADW` comes closest: it is among the best two in the hybrid, as `fact_N` in
+FID_val with Heun, and 0.8 mm better in the inpainting mean, but at an APD of 5.87. Whether `fact_RDW`, its width
+2048 or `fact_RADW` beat `fact_N` in inpainting can only be told at equal APD: the next step is the inpainting study
+of section 14 of the completion report for these cells.
+
 ## Conclusions
 
 1. Residual connections or LayerNorm are what a score network on SO(3) needs for score distillation at small noise:
@@ -620,15 +732,18 @@ equal APD, unlike the one fixed point.
    at large noise, which training covers, instead of extrapolating the score at small noise. Per-joint noise was
    tried there and does not help (sections 10, 13).
 5. Of the five components of the factorial (section 13), width and residual help both completion and generation,
-   per-joint noise helps only score distillation and hurts generation, and residual with LayerNorm is worse than
-   either. No combination beats `abl_norm` by the rule fixed before; the open candidates are `fact_RDW` and
-   `fact_DW`, to be compared at equal APD by an inpainting study.
+   per-joint noise helps only score distillation and costs a little in generation (FID_val +0.008 with a fine
+   sampler; the large penalty first seen was the coarse sampler), and residual with LayerNorm is worse than either.
+   No network is the best for inpainting, the hybrid and generation together. No combination beats `abl_norm` by
+   the rule fixed before, but the rule does not separate the five best cells; the open candidates are `fact_RDW`
+   (and its width 2048) and `fact_RADW`, to be compared with `fact_N` at equal APD by an inpainting study.
 
 ## What it does not show
 
-- The factorial (section 13): one seed per cell (the noise estimated from the 4- and 5-way interactions; the second
-  seeds of the plan are not run yet); inpainting at one fixed point, chosen on `abl_norm`, so the comparison of the
-  mean is not at equal APD and favours that cell; no D-Flow; c10 and 30k steps only.
+- The factorial (section 13): one seed per cell (the noise estimated from the 4- and 5-way interactions; two cells
+  have a second seed); inpainting at one fixed point, chosen on `abl_norm`, so the comparison of the mean is not at
+  equal APD and favours that cell; the hybrid is DPoser's schedule, matched to per-joint noise; no D-Flow; c10 and
+  30k steps only; the sampler check covers two cells.
 
 - One training seed per network; the noise between seeds is estimated only from near-identical runs (1-2 mm) and
   from `res_norm` (up to 9 mm). A 2^4 factorial study with 3 seeds was planned and dropped as polishing a secondary
@@ -648,9 +763,11 @@ equal APD, unlike the one fixed point.
 
 ## Where things are
 
-- The factorial of section 13: runs in `~/data/experiments/factorial/rsgm_posedflow_fact_*_s10` (on the Mac and on
-  workstation1), the responses in `~/data/experiments/factorial/responses.jsonl`, the effects in
-  [2026-11-14_score_network_architectures_factorial.txt](2026-11-14_score_network_architectures_factorial.txt).
+- The factorial of section 13: runs in `~/data/experiments/factorial/rsgm_posedflow_fact_*_s1[01]` (on the Mac, on
+  workstation1 and workstation2), the responses of the second evaluation in
+  `~/data/experiments/factorial/responses.jsonl` (152 rows; the first evaluation was overwritten), the effects in
+  [2026-11-14_score_network_architectures_factorial.txt](2026-11-14_score_network_architectures_factorial.txt), the
+  sampler check by `explore/evaluation/factorial_sampler_check.py`.
 
 - Runs: `~/data/experiments/rsgm_posedflow_{abl_*,deep,deep_nores,res_norm,res_norm_z,timeres,timeres_small}_s10`,
   `~/data/experiments/full/rsgm_posedflow_dposer_like_z_s10`; the GPU-noise runs of section 10 in
