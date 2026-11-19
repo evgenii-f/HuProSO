@@ -244,6 +244,124 @@ DPoser inpaint:
       guidance: 0.19819570280497467
       resample: 1
       replace: true
+PoseD-Flow dflow:
+- label: PoseD-Flow their checkpoint, posedflow_dflow_guess_mean_apd t14
+  study: posedflow_dflow_guess_mean_apd
+  trial: 14
+  thresholds:
+  - 4.0
+  validation:
+    mean: 84.23
+    best_of_k: 56.789
+    apd: 4.008
+  spec:
+    posedflow: ~/data/posedflow_ckpt/checkpoints/epoch-009_step-0_loss-0.0000.ckpt
+    dflow:
+      lr: 0.11788940310117006
+      running_weight: 0.0013057267433857936
+      steps: 100
+    prior:
+      guess_weight: 0.4698021656754063
+- label: PoseD-Flow their checkpoint, posedflow_dflow_guess_mean_apd t8
+  study: posedflow_dflow_guess_mean_apd
+  trial: 8
+  thresholds:
+  - 4.5
+  validation:
+    mean: 85.871
+    best_of_k: 54.39
+    apd: 4.759
+  spec:
+    posedflow: ~/data/posedflow_ckpt/checkpoints/epoch-009_step-0_loss-0.0000.ckpt
+    dflow:
+      lr: 0.1
+      running_weight: 0.001
+      steps: 100
+    prior:
+      guess_weight: 0.4
+- label: 'PoseD-Flow: their checkpoint, D-Flow t17'
+  study: posedflow_dflow_mean_apd
+  trial: 17
+  thresholds:
+  - 5.0
+  validation:
+    mean: 86.342
+    best_of_k: 53.035
+    apd: 5.102
+  spec:
+    posedflow: ~/data/posedflow_ckpt/checkpoints/epoch-009_step-0_loss-0.0000.ckpt
+    dflow:
+      lr: 0.05
+      running_weight: 0.001
+      steps: 200
+- label: PoseD-Flow their checkpoint, posedflow_dflow_guess_mean_apd t12
+  study: posedflow_dflow_guess_mean_apd
+  trial: 12
+  thresholds:
+  - 5.5
+  validation:
+    mean: 88.449
+    best_of_k: 52.579
+    apd: 5.527
+  spec:
+    posedflow: ~/data/posedflow_ckpt/checkpoints/epoch-009_step-0_loss-0.0000.ckpt
+    dflow:
+      lr: 0.06911063009083955
+      running_weight: 0.0010452332539916803
+      steps: 100
+    prior:
+      guess_weight: 0.22720856520324487
+- label: PoseD-Flow their checkpoint, posedflow_dflow_guess_mean_apd t4
+  study: posedflow_dflow_guess_mean_apd
+  trial: 4
+  thresholds:
+  - 6.0
+  - 6.5
+  validation:
+    mean: 91.999
+    best_of_k: 51.178
+    apd: 6.517
+  spec:
+    posedflow: ~/data/posedflow_ckpt/checkpoints/epoch-009_step-0_loss-0.0000.ckpt
+    dflow:
+      lr: 0.1
+      running_weight: 0.001
+      steps: 100
+    prior:
+      guess_weight: 0.0
+- label: PoseD-Flow their checkpoint, posedflow_dflow_guess_mean_apd t19
+  study: posedflow_dflow_guess_mean_apd
+  trial: 19
+  thresholds:
+  - 7.0
+  validation:
+    mean: 94.768
+    best_of_k: 51.48
+    apd: 7.013
+  spec:
+    posedflow: ~/data/posedflow_ckpt/checkpoints/epoch-009_step-0_loss-0.0000.ckpt
+    dflow:
+      lr: 0.07363223996100231
+      running_weight: 0.0006074079607863847
+      steps: 100
+    prior:
+      guess_weight: 0.03646724770122822
+- label: PoseD-Flow their checkpoint, posedflow_dflow_mean_apd t11
+  study: posedflow_dflow_mean_apd
+  trial: 11
+  thresholds:
+  - 7.5
+  - 8.0
+  validation:
+    mean: 104.661
+    best_of_k: 56.589
+    apd: 8.004
+  spec:
+    posedflow: ~/data/posedflow_ckpt/checkpoints/epoch-009_step-0_loss-0.0000.ckpt
+    dflow:
+      lr: 0.13832385457509597
+      running_weight: 1.869261181496777e-05
+      steps: 50
 RSGM dflow:
 - label: RSGM full/rsgm_posedflow_dposer_like_aniso_s10, rsgm_dflow_mean_apd_full_dposer_like_aniso t29
   study: rsgm_dflow_mean_apd_full_dposer_like_aniso
