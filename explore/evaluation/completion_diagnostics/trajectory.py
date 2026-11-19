@@ -2,7 +2,9 @@
 the spread of the K hypotheses (deg) and the mean |x - x0_hat|, with DPoser's own denoiser and with RSGM's (the hybrid
 of hybrid.py), on 300 validation poses, left_leg and arms:
     PYTHONPATH=src python explore/evaluation/completion_diagnostics/trajectory.py <RSGM run folder> [rsgm]
-With a second argument only RSGM's denoiser runs. HP_DEVICE: the device (default mps)."""
+    DP_RUN=<DPoser run> PYTHONPATH=src python explore/evaluation/completion_diagnostics/trajectory.py -
+With a second argument only RSGM's denoiser runs; with "-" for the RSGM run only DPoser's. HP_DEVICE: the device
+(default mps); DP_RUN: the DPoser run (default: DPoser on the full data), e.g. one with a noise_scale."""
 import os, sys, time, torch, roma
 from hp.evaluation.completion import KEEP, OCCLUSIONS, TOES, Body, at_rest, build, metrics, summary, valid_poses
 from hp.models import igso3
@@ -11,8 +13,8 @@ from hp.models.score_completion import one_step_denoise, rsgm_denoise
 
 K = 10
 DEVICE = os.environ.get("HP_DEVICE", "mps")
-dp = build(dict(run="~/data/experiments/full/dposer_posedflow_s10/run_0001"), DEVICE)
-rs = build(dict(run=sys.argv[1]), DEVICE)
+dp = build(dict(run=os.environ.get("DP_RUN", "~/data/experiments/full/dposer_posedflow_s10/run_0001")), DEVICE)
+rs = build(dict(run=sys.argv[1]), DEVICE) if sys.argv[1] != "-" else None
 dev = dp.device
 data_std = dp.data_std
 sampler = igso3.AngleSampler(1e-7, 1.0)
@@ -71,7 +73,7 @@ def optimize_tracked(observed, visible, init, denoiser, gt19, every=10):
                 a, sd = dp.marginal(t)
                 with torch.no_grad():
                     if denoiser == "dposer":
-                        x0h = one_step_denoise(dp, a[:, None] * x + sd[:, None] * torch.randn_like(x), t)
+                        x0h = one_step_denoise(dp, a[:, None] * x + sd[:, None] * dp.noise_d * torch.randn_like(x), t)
                     else:
                         x0h = rsgm_hat(x.detach(), t)
                 if step % every == 0 or step == 199:
@@ -92,14 +94,15 @@ gt = valid_poses(n=N)
 for occ in ("left_leg", "arms"):
     vis = torch.ones(21, dtype=torch.bool); vis[list(OCCLUSIONS[occ])] = False
     logs = {}
-    for den in (["dposer", "rsgm"] if len(sys.argv) < 3 else ["rsgm"]):
+    for den in (["dposer"] if rs is None else ["dposer", "rsgm"] if len(sys.argv) < 3 else ["rsgm"]):
         torch.manual_seed(0)
         init = torch.randn(N, 57).repeat(K, 1)
         g = gt[:, KEEP].repeat(K, 1, 1, 1)
         logs[den] = optimize_tracked(g, vis[KEEP], init, den, g)
-    if "dposer" not in logs:
-        print(occ, "step t | RSGM err spread |x-x0h|")
-        for st, t, e, sp, p in logs["rsgm"]:
+    if len(logs) == 1:
+        name = next(iter(logs))
+        print(occ, f"step t | {'RSGM' if name == 'rsgm' else 'DPoser'} err spread |x-x0h|")
+        for st, t, e, sp, p in logs[name]:
             print(f"  {st:4d} {t:.3f} | {e:7.2f} {sp:6.2f} {p:6.3f}", flush=True)
         continue
     print(f"{occ}: step  t      | DPoser err  spread  |x-x0h| | RSGM err  spread  |x-x0h|")

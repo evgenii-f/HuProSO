@@ -100,6 +100,7 @@ class DPoser(PoseModel):
         std: Optional[Sequence[float]] = None,
         representation: str = "axis_angle",
         cond_dim: int = 0,
+        noise_scale: Optional[Sequence[float]] = None,  # d [3J]: noise covariance std(t)^2 diag(d^2); None: I
     ):
         if representation != "axis_angle":
             raise ValueError("DPoser works on axis-angle vectors; use representation='axis_angle'.")
@@ -122,6 +123,11 @@ class DPoser(PoseModel):
             self.register_buffer(f"data_{name}", t)
         if not (self.data_std > 0).all():
             raise ValueError("std must be positive.")
+        d = torch.ones(dim) if noise_scale is None else torch.as_tensor(noise_scale, dtype=torch.float32).reshape(-1)
+        if d.shape != (dim,) or not (d > 0).all():
+            raise ValueError(f"noise_scale must have {dim} positive entries, got {d.numel()}.")
+        # rebuilt from the arguments (model.json), not saved with the weights: runs from before it load unchanged
+        self.register_buffer("noise_d", d, persistent=False)
 
     @property
     def dtype(self) -> torch.dtype:
@@ -166,7 +172,13 @@ class DPoser(PoseModel):
         return out
 
     def score(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-        return -self.noise_prediction(x, t) / self.marginal(t)[1][:, None]
+        """The score of x_t = alpha x_0 + std d z (z ~ N(0, I)): -z_hat / (std d)."""
+        return -self.noise_prediction(x, t) / (self.marginal(t)[1][:, None] * self.noise_d)
+
+    @property
+    def isotropic_noise(self) -> bool:
+        """True without noise_scale (DPoser as published): the code paths that assume N(0, I) noise may be used."""
+        return bool((self.noise_d == 1).all())
 
     def loss(self, pose: torch.Tensor, cond: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Denoising score matching, ||score std + z||^2 averaged over the coordinates and the batch.
@@ -180,7 +192,7 @@ class DPoser(PoseModel):
         t = torch.rand(x0.shape[0], generator=generator, device=device, dtype=dtype) * (1 - self.loss_eps) + self.loss_eps
         z = torch.randn(x0.shape, generator=generator, device=device, dtype=dtype)
         alpha, std = self.marginal(t)
-        xt = alpha[:, None] * x0 + std[:, None] * z
+        xt = alpha[:, None] * x0 + std[:, None] * self.noise_d * z
         return ((z - self.noise_prediction(xt, t)) ** 2).mean()
 
     # ---- sampling: the reverse SDE, Euler-Maruyama ----
@@ -189,22 +201,23 @@ class DPoser(PoseModel):
     def sample(self, n: int, cond: Optional[torch.Tensor] = None) -> torch.Tensor:
         self.check_cond(cond, n)
         device, dtype = self.device, self.dtype
-        x = torch.randn(n, 3 * self.num_joints, device=device, dtype=dtype)
+        d = self.noise_d
+        x = d * torch.randn(n, 3 * self.num_joints, device=device, dtype=dtype)
         x_mean = x
         dt = -1.0 / self.sample_steps
         for t in torch.linspace(1.0, self.sample_eps, self.sample_steps, device=device, dtype=dtype):
             vec_t = t.expand(n)
             g = self.diffusion(vec_t)[:, None]
-            drift = -0.5 * self.beta(vec_t)[:, None] * x - g ** 2 * self.score(x, vec_t)
+            drift = -0.5 * self.beta(vec_t)[:, None] * x - g ** 2 * d ** 2 * self.score(x, vec_t)
             x_mean = x + drift * dt
-            x = x_mean + g * math.sqrt(-dt) * torch.randn_like(x)
+            x = x_mean + g * d * math.sqrt(-dt) * torch.randn_like(x)
         return self.denormalize(x_mean)
 
     # ---- the likelihood: probability flow ODE with the exact divergence ----
 
     def ode_velocity(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-        """The probability flow dx/dt = -beta x / 2 - g^2 score / 2 at x [B, 3J] and times t [B]."""
-        return -0.5 * self.beta(t)[:, None] * x - 0.5 * self.diffusion(t)[:, None] ** 2 * self.score(x, t)
+        """The probability flow dx/dt = -beta x / 2 - g^2 d^2 score / 2 at x [B, 3J] and times t [B]."""
+        return -0.5 * self.beta(t)[:, None] * x - 0.5 * self.diffusion(t)[:, None] ** 2 * self.noise_d ** 2 * self.score(x, t)
 
     def velocity_and_divergence(self, x: torch.Tensor, t: torch.Tensor):
         """The velocity [B, 3J] and its divergence [B], the trace of the Jacobian (one forward pass per coordinate)."""
@@ -220,7 +233,7 @@ class DPoser(PoseModel):
     def log_prob_normalized(self, x: torch.Tensor, steps: int = 100, eps: Optional[float] = None) -> torch.Tensor:
         """log p [B] of z-scored axis-angle vectors x [B, 3J] (a density on R^(3J)): midpoint steps of the ODE from eps
         (default sample_eps) to 1, log p_eps(x) = log N(x_1; 0, I) + int div; at t = 1 the sub-VP marginal is
-        N(alpha x_0, std^2) with alpha < 0.01 and std > 0.9999, taken as N(0, I)."""
+        N(alpha x_0, std^2 diag(d^2)) with alpha < 0.01 and std > 0.9999, taken as N(0, diag(d^2))."""
         x = move(x, self.device, self.dtype)
         n = x.shape[0]
         times = torch.linspace(self.sample_eps if eps is None else eps, 1.0, steps + 1, device=self.device, dtype=self.dtype)
@@ -231,7 +244,8 @@ class DPoser(PoseModel):
             v_mid, div_mid = self.velocity_and_divergence(x_mid, (t + 0.5 * h).expand(n))
             x = x + h * v_mid
             integral = integral + h * div_mid
-        base = -0.5 * (x ** 2).sum(-1) - 0.5 * x.shape[1] * math.log(2 * math.pi)
+        d = self.noise_d
+        base = -0.5 * ((x / d) ** 2).sum(-1) - torch.log(d).sum() - 0.5 * x.shape[1] * math.log(2 * math.pi)
         return base + integral
 
     @torch.no_grad()
@@ -269,3 +283,18 @@ def normalization(poses: torch.Tensor, chunk: int = 1_000_000):
     mean = total / n
     std = ((square - n * mean ** 2) / (n - 1)).sqrt()
     return mean.tolist(), std.tolist()
+
+
+def noise_scale_of(std: Sequence[float], level: str) -> list:
+    """noise_scale d [3J] that makes the noise of DPoser isotropic in axis-angle within each joint (level="joint") or
+    over all joints (level="all"), from the std [3J] of its normalization: d_k = sigma / std_k, sigma the RMS of the
+    stds of the joint of coordinate k (as RSGM's joint_scale: c_j ~ sigma_j^2) or of all coordinates. The noise of a
+    coordinate in axis-angle units is then std(t) sigma instead of std(t) std_k."""
+    s = torch.as_tensor(std, dtype=torch.float64).reshape(-1, 3)
+    if level == "joint":
+        sigma = s.pow(2).mean(-1, keepdim=True).sqrt().expand_as(s)
+    elif level == "all":
+        sigma = s.pow(2).mean().sqrt().expand_as(s)
+    else:
+        raise ValueError(f"level must be 'joint' or 'all', got {level!r}.")
+    return (sigma / s).reshape(-1).tolist()

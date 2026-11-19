@@ -28,7 +28,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from hp.evaluation.data import load_reference  # noqa: E402
-from hp.models.dposer import normalization  # noqa: E402
+from hp.models.dposer import noise_scale_of, normalization  # noqa: E402
 from hp.models.io import load_model  # noqa: E402
 from hp.training import cli  # noqa: E402
 from hp.training.config import load_config  # noqa: E402
@@ -48,6 +48,11 @@ CONFIGS = {  # what differs from config/models/dposer.yaml
     "rsgm_budget": ["train.max_iterations=30000", "train.batch_size=4096", "train.warmup_steps=1000",
                     "train.valid_interval=1000", "train.checkpoint_every=5000"],  # the budget of the RSGM runs
 }
+# the noise of DPoser made isotropic in axis-angle (noise_scale_of): within each joint (as RSGM with joint_scale) or
+# over all joints (as isotropic RSGM): the reverse test of per-joint noise (docs/experiments/2026-11-14_score_network_architectures.md)
+# joint / iso: the budget of the paper (for the full data, as the DPoser of the hybrid); rsgm_budget_*: that of c10
+NOISE = {"joint": "joint", "iso": "all", "rsgm_budget_joint": "joint", "rsgm_budget_iso": "all"}
+CONFIGS.update({name: CONFIGS["rsgm_budget" if name.startswith("rsgm_budget") else "paper"] for name in NOISE})
 # ----------------------------------------------------------------------------------------
 
 
@@ -118,7 +123,10 @@ def main() -> int:
         argv = ["model=dposer", f"run_root={args.run_root}", f"run_name={name}", f"seed={seed}",
                 f"data.rotations={args.rotations}", f"data.split={SPLIT}", "data.load_dtype=float32",
                 f"train.device={args.device}", f"model.args.mean={json.dumps(norm['mean'])}",
-                f"model.args.std={json.dumps(norm['std'])}", *COMMON, *CONFIGS[args.config], *overrides]
+                f"model.args.std={json.dumps(norm['std'])}", *COMMON, *CONFIGS[args.config]]
+        if args.config in NOISE:
+            argv.append(f"model.args.noise_scale={json.dumps(noise_scale_of(norm['std'], NOISE[args.config]))}")
+        argv += overrides
         runs = runs_of(Path(args.run_root).expanduser() / name)
         done = [r for r in runs if finished(r)]
         stopped = [r for r in runs if resumable(r)]
@@ -131,7 +139,8 @@ def main() -> int:
             print(f"seed {seed}: resuming {stopped[-1]}", flush=True)
         if args.dry_run:
             resuming = stopped and not args.retrain
-            shown = [a if not a.startswith(("model.args.mean=", "model.args.std=")) else a.split("=")[0] + "=[57 numbers]" for a in argv]
+            long = ("model.args.mean=", "model.args.std=", "model.args.noise_scale=")
+            shown = [a if not a.startswith(long) else a.split("=")[0] + "=[57 numbers]" for a in argv]
             print(f"seed {seed}: would run scripts/train_model.py {' '.join(shown)}")
             if not resuming:
                 cfg = load_config(argv)

@@ -128,6 +128,8 @@ class ScorePrior(_RotationLatent):
 
 class DPoserPrior:
     def __init__(self, model: DPoser, ode_steps: int = 100, invert: bool = False):
+        if not model.isotropic_noise:
+            raise NotImplementedError("DPoserPrior assumes N(0, I) noise; this DPoser has a noise_scale.")
         self.model, self.ode_steps, self.joints, self.invert = model, ode_steps, model.num_joints, invert
 
     @property

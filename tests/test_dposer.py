@@ -155,3 +155,110 @@ def test_log_prob_so3_adds_the_normalization_and_the_chart_to_the_normalized_den
     chart = torch.log(4 * math.pi ** 2 * a ** 2 / (1 - torch.cos(a))).sum(-1)
     expected = m.log_prob_normalized((v - m.data_mean) / m.data_std, steps=5) - torch.log(m.data_std).sum() + chart
     assert torch.allclose(m.log_prob_so3(pose, steps=5), expected)
+
+
+# ---- noise_scale: the noise covariance std(t)^2 diag(d^2) ----
+
+D = [0.5, 2.0, 1.0, 3.0, 0.25, 1.5]
+
+
+def test_noise_scale_of_ones_is_dposer_as_published():
+    plain, ones = model(), model(noise_scale=[1.0] * 6)
+    assert ones.isotropic_noise and not model(noise_scale=D).isotropic_noise
+    pose, x, t = fixed_rotations(batch=16, joints=2), torch.randn(3, 6), torch.tensor([0.2, 0.5, 0.9])
+    with torch.no_grad():
+        assert torch.equal(plain.loss(pose), ones.loss(pose))
+        assert torch.equal(plain.score(x, t), ones.score(x, t))
+        assert torch.equal(plain.ode_velocity(x, t), ones.ode_velocity(x, t))
+    torch.manual_seed(1)
+    a = plain.sample(4)
+    torch.manual_seed(1)
+    assert torch.equal(a, ones.sample(4))
+    assert "noise_d" not in plain.state_dict()  # runs from before noise_scale load unchanged
+
+
+def test_a_perfect_noise_prediction_has_zero_loss_with_a_noise_scale():
+    m = model(noise_scale=D)
+    pose = fixed_rotations(batch=16, joints=2)
+    g = torch.Generator().manual_seed(0)
+    torch.rand(16, generator=g)
+    z = torch.randn(16, 6, generator=g)
+    m.noise_prediction = lambda x, tt: z
+    assert m.loss(pose) == 0
+
+
+def gaussian_oracle(m, s0):
+    """For data N(0, s0^2 I) in the normalized space p_t = N(0, diag(alpha^2 s0^2 + std^2 d^2)): its score -x / var
+    and the noise prediction -score std d."""
+    d = m.noise_d.to(torch.float64)
+
+    def variance(t):
+        alpha, std = m.marginal(t)
+        return alpha[:, None] ** 2 * s0 ** 2 + std[:, None] ** 2 * d ** 2
+
+    return variance, lambda x, t: x * m.marginal(t)[1][:, None] * d / variance(t)
+
+
+def test_the_score_and_the_denoising_of_the_gaussian_oracle_with_a_noise_scale(monkeypatch):
+    from hp.models.score_completion import one_step_denoise
+
+    m, s0 = model(noise_scale=D).double(), 0.7
+    variance, prediction = gaussian_oracle(m, s0)
+    monkeypatch.setattr(m, "noise_prediction", prediction)
+    x, t = torch.randn(5, 6, dtype=torch.float64), torch.full((5,), 0.3, dtype=torch.float64)
+    assert torch.allclose(m.score(x, t), -x / variance(t))
+    alpha = m.marginal(t)[0][:, None]
+    assert torch.allclose(one_step_denoise(m, x, t), alpha * s0 ** 2 * x / variance(t))  # E[x_0 | x_t]
+
+
+def test_the_likelihood_of_the_gaussian_oracle_with_a_noise_scale(monkeypatch):
+    m, s0, eps = model(noise_scale=D).double(), 0.5, 1e-3
+    variance, prediction = gaussian_oracle(m, s0)
+    monkeypatch.setattr(m, "noise_prediction", prediction)
+    x = torch.randn(64, 6, dtype=torch.float64, generator=torch.Generator().manual_seed(0)) * s0
+    var = variance(torch.tensor([eps], dtype=torch.float64))
+    expected = (-0.5 * x ** 2 / var - 0.5 * torch.log(2 * math.pi * var)).sum(-1)
+    assert torch.allclose(m.log_prob_normalized(x, steps=200, eps=eps), expected, atol=2e-3)
+
+
+def test_sampling_with_a_noise_scale_starts_and_steps_with_d():
+    m = model(joints=1, sample_steps=3, scale_by_sigma=False, noise_scale=[0.5, 2.0, 1.0])
+    with torch.no_grad():
+        for p in m.net.parameters():
+            p.zero_()
+    d = torch.tensor([0.5, 2.0, 1.0])
+    torch.manual_seed(1)
+    samples = m.sample(4)
+    torch.manual_seed(1)
+    x = d * torch.randn(4, 3)
+    dt = -1 / 3
+    for t in torch.linspace(1.0, 1e-3, 3):
+        mean = x - 0.5 * m.beta(t) * x * dt
+        x = mean + m.diffusion(t) * d * math.sqrt(-dt) * torch.randn_like(x)
+    assert torch.allclose(samples, roma.rotvec_to_rotmat(mean)[:, None], atol=1e-6)
+
+
+def test_noise_scale_of_makes_the_noise_isotropic_per_joint_or_overall():
+    from hp.models.dposer import noise_scale_of
+
+    std = torch.tensor([0.1, 0.4, 0.2, 1.0, 0.5, 0.3], dtype=torch.float64)
+    per_joint = std * torch.tensor(noise_scale_of(std.tolist(), "joint"), dtype=torch.float64)
+    rms = std.reshape(2, 3).pow(2).mean(-1).sqrt()
+    assert torch.allclose(per_joint.reshape(2, 3), rms[:, None].expand(2, 3))
+    overall = std * torch.tensor(noise_scale_of(std.tolist(), "all"), dtype=torch.float64)
+    assert torch.allclose(overall, std.pow(2).mean().sqrt().expand(6))
+    with pytest.raises(ValueError, match="level"):
+        noise_scale_of(std.tolist(), "coordinate")
+    with pytest.raises(ValueError, match="noise_scale"):
+        model(noise_scale=[1.0] * 5)
+
+
+def test_the_paths_that_assume_isotropic_noise_refuse_a_noise_scale():
+    from hp.models.dflow import DPoserPrior
+    from hp.models.inpainting import dposer_inpaint
+
+    m = model(noise_scale=D)
+    with pytest.raises(NotImplementedError):
+        DPoserPrior(m)
+    with pytest.raises(NotImplementedError):
+        dposer_inpaint(m, fixed_rotations(batch=2, joints=2), torch.tensor([True, False]), steps=2, replace=True)

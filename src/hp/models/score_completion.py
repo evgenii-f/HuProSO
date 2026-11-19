@@ -28,9 +28,10 @@ from hp.models.rsgm import RSGM, exp_frame
 
 @torch.no_grad()
 def one_step_denoise(model: DPoser, x_t: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-    """Their one_step_denoise: x0_hat = (x_t + std^2 score(x_t, t)) / alpha (Tweedie), x_t [B, 3J], t [B]."""
+    """Their one_step_denoise: x0_hat = (x_t + std^2 d^2 score(x_t, t)) / alpha (Tweedie; d = 1 as published),
+    x_t [B, 3J], t [B]."""
     alpha, std = model.marginal(t)
-    return (x_t + std[:, None] ** 2 * model.score(x_t, t)) / alpha[:, None]
+    return (x_t + std[:, None] ** 2 * model.noise_d ** 2 * model.score(x_t, t)) / alpha[:, None]
 
 
 def dposer_complete(model: DPoser, observed: torch.Tensor, visible: torch.Tensor, init: torch.Tensor,
@@ -51,7 +52,8 @@ def dposer_complete(model: DPoser, observed: torch.Tensor, visible: torch.Tensor
                 step = it * steps_per_iter + i
                 t = torch.full((n,), t_min + (total - step - 1) / total * (t_max - t_min), device=device, dtype=dtype)
                 alpha, std = model.marginal(t)
-                x0_hat = one_step_denoise(model, alpha[:, None] * x.detach() + std[:, None] * torch.randn_like(x), t)
+                noise = std[:, None] * model.noise_d * torch.randn_like(x)
+                x0_hat = one_step_denoise(model, alpha[:, None] * x.detach() + noise, t)
                 weight = 0.5 * torch.sqrt(1 + alpha / std)[:, None]
                 prior = (weight * (x - x0_hat) ** 2).mean()
                 data = ((x * mask - y * mask) ** 2).mean()
