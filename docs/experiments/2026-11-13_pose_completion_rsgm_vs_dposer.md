@@ -43,6 +43,11 @@ All numbers on the 5000 test poses of PoseD-Flow, K = 10, MPVPE in mm averaged o
   inpainting front of DPoser c10 is 1.2-1.9 mm lower in the mean than that of the best RSGM network (abl residual);
   at the threshold of the rule (6.4) they meet, hence the equal test points. Among the RSGM networks the order is
   residual ≲ norm < deep ≈ 1536×6 lik full; the likelihood weighting brings inpainting nothing.
+- **2026-11-19, PoseD-Flow with a tuned D-Flow (test, section 14)**: trial 17 of the PoseD-Flow study (lr 0.05),
+  better than their protocol on validation in all three metrics, is not on the test: 81.40 / 49.13 mm / 5.10 cm
+  against 79.65 / 50.26 / 4.61, worse in the mean by 2-3 mm pose by pose on legs and arms. Not the batch (checked);
+  by difficulty, its extra spread costs mean on easy poses and pays in best of 10 on ambiguous ones, and the
+  validation poses are harder (a hypothesis). Their protocol stays the PoseD-Flow row.
 
 ## 1. Protocol
 
@@ -607,6 +612,73 @@ Optuna explored the space: DPoser's method has 15 of its 120 trials in the range
 3-9 cm). One training seed per model. Nothing here is on the test; testing a second point per study (e.g. the lowest
 mean at APD ≥ 7.5) is left until the studies on full-data models (`config/completion_tuning/*full*`) are in.
 
+## 14. 2026-11-19: PoseD-Flow with a tuned D-Flow on the test
+
+**Question.** The study `posedflow_dflow_mean_apd` (D-Flow on their pretrained PoseD-Flow, 1000 validation poses,
+K = 10; lr, running weight and optimizer steps searched, 25 finished trials) found trial 17 (lr 0.05, running weight
+1e-3, 200 steps for all occlusions) better than their protocol (trial 0: lr 0.1, the same otherwise) in all three
+metrics: mean 86.34 against 87.31 mm, best of 10 53.04 against 55.59 mm, APD 5.10 against 4.80 cm. Does it hold on
+the test?
+
+**Test (5000 poses, K = 10; MPVPE in mm, APD in cm; the row run once).**
+
+| row | mean | best of 10 | APD | left_leg | legs | arms | trunk |
+|---|---|---|---|---|---|---|---|
+| PoseD-Flow: their checkpoint (their protocol, 300 steps for the arms) | **79.65** | 50.26 | 4.61 | 79.8 | 92.4 | 106.9 | 39.5 |
+| PoseD-Flow: their checkpoint, D-Flow t17 | 81.40 | **49.13** | **5.10** | 82.7 | 94.4 | 109.1 | 39.5 |
+
+Pose by pose (t17 minus theirs, 95% interval) the mean MPVPE is worse by 2.85 ± 0.49 mm (left_leg), 2.02 ± 0.44
+(legs), 2.15 ± 0.63 (arms), -0.03 ± 0.18 (trunk). On the test t17 is not better: it is another point of the same
+front, more diverse and with a lower best of 10, at a higher mean. On validation the same comparison went the other
+way (left_leg 85.3 against 87.0, legs 105.9 against 107.6), a swing of about 4.5 mm.
+
+**Not the batch.** The two test rows ran with different batches (`--together`, 250 against 500 poses: 2500 against
+5000 hypotheses per call), and the loss of D-Flow is a mean over the batch, so the gradient of a hypothesis halves
+with a batch twice as large; Adam ignores that scale only while its eps is negligible. Checked on 100 validation
+poses (left_leg, t17 settings, same seeds): the loss halved changes the hidden joints by 0.0112 rad on average, a
+control with the loss times 1.0001 by 0.0085 rad, and the error to the ground truth is 0.15317 rad at scale 1 against
+0.15356 and 0.15357. The scale moves the result no more than float noise does over 200 steps: the batch is speed only,
+as `SPEED` in `hp.evaluation.completion` assumes. The arms differ by their steps (300 against 200); the legs do not.
+
+**By difficulty (test).** The poses of each occlusion split into five equal groups by the mean of both rows' error on
+the pose (a difficulty that favours neither row); t17 minus theirs:
+
+| occlusion | difficulty (mm) | Δ mean (mm) | Δ best of 10 (mm) | Δ APD (cm) |
+|---|---|---|---|---|
+| left_leg | 16-44 | +3.60 ± 0.56 | -0.63 | +0.86 |
+| left_leg | 44-58 | +3.29 ± 0.70 | -1.72 | +0.89 |
+| left_leg | 58-78 | +1.98 ± 0.86 | -2.32 | +0.77 |
+| left_leg | 78-113 | +0.75 ± 1.14 | -2.46 | +0.68 |
+| left_leg | 113-435 | +4.64 ± 1.74 | -1.08 | +0.75 |
+| legs | 24-58 | +4.27 ± 0.57 | +0.07 | +0.95 |
+| legs | 58-73 | +4.48 ± 0.76 | +0.36 | +1.02 |
+| legs | 73-93 | -0.16 ± 0.84 | -2.47 | +0.59 |
+| legs | 93-123 | -0.62 ± 1.01 | -2.44 | +0.47 |
+| legs | 123-383 | +2.13 ± 1.45 | +0.79 | +0.15 |
+| arms | 25-66 | +3.45 ± 0.68 | -1.03 | +0.61 |
+| arms | 66-85 | +3.60 ± 1.01 | -0.88 | +0.59 |
+| arms | 85-108 | +4.18 ± 1.17 | -0.95 | +0.59 |
+| arms | 108-145 | +1.60 ± 1.53 | +0.55 | +0.21 |
+| arms | 145-376 | -2.08 ± 2.17 | -0.15 | +0.03 |
+
+The APD of t17 is higher in every group; its mean is 3.3-4.5 mm worse on the easier poses, where its best of 10 gains
+little or nothing, and about equal on the poses of middle difficulty, where its best of 10 gains 2.3-2.5 mm (legs,
+left_leg). The hardest groups do not follow one pattern (left_leg +4.64, arms -2.08, both with wide intervals).
+
+**Hypothesis (not tested by an experiment of its own).** A step of Adam is about lr in size whatever the gradient, so
+with half the lr the start of the ODE moves half as far from its random draw in 200 steps, and the 10 hypotheses stay
+more spread. Where the visible joints all but fix the hidden ones (easy poses) that spread is error: the mean worsens
+and the best of 10 has nothing to gain. Where the hidden part is truly ambiguous (middle poses) the spread covers other
+plausible completions: the best of 10 improves at an equal mean. The validation poses are harder than the test poses
+(their protocol: 87.3 against 79.7 mm), with more ambiguous ones, so a lower lr pays there and not on the test. A
+direct test would be the same comparison by difficulty on the validation poses (the study keeps only the means per
+occlusion), or a rule that is checked on a split as hard as the test.
+
+**Conclusions.** Their protocol stays the PoseD-Flow row of the comparison. A point that wins on validation by about
+1 mm need not win on the test: the validation and test poses differ in difficulty, and settings that trade mean for
+diversity move differently on them. Comparing whole fronts on the test (N points per front, chosen by a rule fixed
+before) is less exposed to this than a single winner.
+
 ## What it does not show
 
 - One training seed per likelihood run, one Pareto study (on the old 512×4 std model); SDS settings were not retuned
@@ -635,6 +707,10 @@ mean at APD ≥ 7.5) is left until the studies on full-data models (`config/comp
   `~/data/experiments/completion/cache/`.
 - DPoser c10 studies (section 12): `config/completion_tuning/dposer_c10_{method,inpaint}_mean_apd.yaml`, databases in
   `~/data/experiments/completion/optuna/`; the table by `explore/evaluation/completion_diagnostics/study_fronts.py`.
+- PoseD-Flow with a tuned D-Flow (section 14): study `~/data/experiments/completion/optuna/posedflow_dflow_mean_apd.db`
+  (`config/completion_tuning/posedflow_dflow_mean_apd.yaml`), test row `PoseD-Flow: their checkpoint, D-Flow t17`;
+  `explore/evaluation/completion_diagnostics/test_rows_by_difficulty.py` (the table by difficulty) and
+  `dflow_loss_scale.py` (the check of the batch).
 - Fronts over bands (section 13): `explore/evaluation/completion_diagnostics/plot_study_fronts.py --bands`; all
   validation settings and the test rows on their fronts in `explore/evaluation/completion_fronts.ipynb` (a selector of
   the split).
