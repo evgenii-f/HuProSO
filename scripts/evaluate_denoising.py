@@ -10,9 +10,16 @@ or the test sequences with every model and noise level and caches the prediction
 
 The test is run once per row, with settings chosen before on validation (--split test must be given explicitly).
 D-Flow keeps the gradients of all ODE steps of all frames of --batch sequences: the memory grows with --batch.
+
+Stopping and continuing: every finished cell (model, noise level) is in the cache, and the cell in progress is saved
+after every batch of sequences (<split>_<sigma>mm.partial). Ctrl+C once, or `touch ~/data/experiments/denoising/STOP`,
+stops after the current batch (Ctrl+C twice: at once, losing at most that batch). Run the same command again to
+continue: the finished cells are read from the cache and the cell in progress continues after its last batch.
 """
 import argparse
+import signal
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -20,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from hp.evaluation.denoising import PAPER, SIGMAS, cached_run, summary  # noqa: E402
 
 CACHE = "~/data/experiments/denoising/cache"
+STOP_FILE = Path("~/data/experiments/denoising/STOP").expanduser()
 # RSGM in DPoser's optimization, per noise level: the best trials of the Optuna studies on validation
 # (config/denoising_tuning/rsgm_sds_<mm>mm.yaml, RSGM 512x4 c10, 40 trials each): 40 mm trial 36, 18.69 mm;
 # 100 mm trial 29, 30.87 mm. t_min = t_min_fraction * t_max.
@@ -71,18 +79,45 @@ def main() -> int:
     parser.add_argument("--summary", action="store_true", help="only print what is cached")
     args = parser.parse_args()
 
+    requested = []  # a soft stop: Ctrl+C once or the STOP file; Ctrl+C twice stops at once
+
+    def on_sigint(*_):
+        if requested:
+            raise KeyboardInterrupt
+        requested.append(True)
+        print("\n  stop requested: stops after the current batch (Ctrl+C again: at once)", flush=True)
+
+    def stop() -> bool:
+        if STOP_FILE.is_file():
+            STOP_FILE.unlink()
+            print("\n  stop requested by the STOP file", flush=True)
+            requested.append(True)
+        return bool(requested)
+
+    if not args.summary:
+        signal.signal(signal.SIGINT, on_sigint)
+    cells_total = len(args.models) * len(args.sigmas)
+    t0 = time.time()
     print(f"{'model':48s} " + " ".join(f"{'sigma ' + str(round(s * 1000)) + ' mm':>24s}" for s in args.sigmas))
-    for name in args.models:
+    for i, name in enumerate(args.models):
         cells = []
-        for sigma in args.sigmas:
-            m = cached_run(args.cache, name, MODELS[name], args.split, sigma, None if args.summary else args.device,
-                           args.batch)
+        for j, sigma in enumerate(args.sigmas):
+            m = None
+            if not stop():
+                if not args.summary:
+                    print(f"[cell {i * len(args.sigmas) + j + 1} / {cells_total}, {(time.time() - t0) / 60:.0f} min] "
+                          f"{name}, {round(sigma * 1000)} mm", flush=True)
+                m = cached_run(args.cache, name, MODELS[name], args.split, sigma,
+                               None if args.summary else args.device, args.batch, stop=stop)
             if m is None:
                 cells.append(f"{'-':>24s}")
                 continue
             s = summary(m)
             cells.append(f"{s['mpjpe']:7.2f} / {s['mpvpe']:6.2f} ({s['input_mpjpe']:5.1f})")
         print(f"{name:48s} " + " ".join(cells), flush=True)
+    if requested:
+        print("stopped; run the same command again to continue", flush=True)
+        return 1
     print("cells: MPJPE / MPVPE (MPJPE of the input), mm; "
           f"paper AMASS 40 / 100 mm: " + ", ".join(f"{k} {v[0]} / {v[1]}" for k, v in PAPER.items()))
     return 0

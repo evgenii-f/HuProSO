@@ -149,3 +149,25 @@ def test_dposer_denoising_takes_rsgm_as_the_prior():
     out = dposer_denoise(body.model, joints.float().view(1, 5, 22, 3), torch.zeros(1, 5, 63), small_rsgm(), KEEP,
                          iterations=1, steps_per_iter=3, t_max=0.05, t_min=0.01, sds_weight=10.0)
     assert out.shape == (1, 5, 21, 3, 3) and torch.isfinite(out).all()
+
+
+@pytest.mark.skipif(not SMPLX.is_file() or not Path("~/data/experiments/denoising/smpl_mean_params.npz").expanduser()
+                    .is_file(), reason="needs SMPL-X and the mean pose")
+def test_a_stopped_run_continues_to_the_result_of_a_run_without_a_stop(tmp_path):
+    from hp.evaluation.denoising import Body, noisy_joints, run
+
+    body = Body(str(SMPLX))
+    torch.manual_seed(9)
+    gt = roma.rotvec_to_rotmat(0.3 * torch.randn(5, 4, 21, 3))
+    noisy = noisy_joints(body(gt.flatten(0, 1))[1].float().view(5, 4, 22, 3), 0.04)
+    conf = dict(iterations=1, steps_per_iter=3, t_max=0.05, t_min=0.01, sds_weight=10.0, progress=False)
+    model = small_rsgm()
+    whole = run(model, gt, noisy, 0.04, body, "dposer", batch=2, **conf)
+    partial = tmp_path / "test_40mm.partial"
+    calls = []
+    stopped = run(model, gt, noisy, 0.04, body, "dposer", batch=2, partial=partial, key="k",
+                  stop=lambda: calls.append(1) or True, **conf)
+    assert stopped is None and len(calls) == 1 and torch.load(partial, weights_only=True)["done"] == 2
+    other = run(model, gt, noisy, 0.04, body, "dposer", batch=2, partial=partial, key="other", **conf)
+    resumed = run(model, gt, noisy, 0.04, body, "dposer", batch=2, partial=partial, key="k", **conf)
+    assert torch.equal(resumed, whole) and torch.equal(other, whole)
