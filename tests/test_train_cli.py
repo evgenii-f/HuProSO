@@ -177,3 +177,21 @@ def test_resume_may_move_the_data_but_not_change_the_split(rotations, tmp_path):
     with pytest.raises(ValueError, match="Cannot change"):
         main([f"resume={run / 'checkpoint_000002'}", "data.split=subset"])
     assert main([f"resume={run / 'checkpoint_000002'}", f"data.rotations={rotations}", "train.device=cpu"]) == run
+
+
+def test_the_first_ctrl_c_asks_for_a_stop_and_the_second_interrupts():
+    from hp.training.cli import _stop_on_signals
+
+    class Fake:
+        stop_reason = None
+
+        def request_stop(self, reason):
+            self.stop_reason = self.stop_reason or reason
+
+    trainer, before = Fake(), signal.getsignal(signal.SIGINT)
+    with _stop_on_signals(trainer):
+        os.kill(os.getpid(), signal.SIGINT)
+        assert trainer.stop_reason == "Ctrl+C"
+        with pytest.raises(KeyboardInterrupt):
+            os.kill(os.getpid(), signal.SIGINT)
+    assert signal.getsignal(signal.SIGINT) is before

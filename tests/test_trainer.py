@@ -604,3 +604,17 @@ def test_the_device_loader_refuses_conditioned_or_plain_datasets():
 def test_training_on_the_device_takes_as_many_steps_and_learns(make_gaussian):
     history = Trainer(make_gaussian(), PoseTensor(), PoseTensor(n=32), config(max_iterations=40, data_on_device=True)).fit()
     assert len(history.loss) == 40 and history.valid_loss[-1] < history.valid_loss[0]
+
+
+def test_a_stop_file_ends_the_run_with_a_checkpoint_and_is_removed(make_gaussian, tmp_path, monkeypatch):
+    import hp.training.trainer as trainer_module
+
+    monkeypatch.setattr(trainer_module, "STOP_FILE_EVERY", 1)
+    run, cfg = tmp_path / "run", config(max_iterations=8, valid_interval=1)
+    trainer = Trainer(make_gaussian(), Poses(), None, cfg, run_dir=run)
+    trainer.fit(callback=lambda step, loss: (run / "STOP").touch() if step == 3 else None)
+    assert trainer.step == 3 and trainer.stop_reason == "STOP file" and not (run / "STOP").exists()
+    assert [p.name for p in list_checkpoints(run)] == ["checkpoint_000003"]
+    resumed = Trainer(make_gaussian(), Poses(), None, cfg, run_dir=run)
+    resumed.fit(resume=run / "checkpoint_000003")
+    assert resumed.step == 8 and json.loads((run / "status.json").read_text())["finished"] is True

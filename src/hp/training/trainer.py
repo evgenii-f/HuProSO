@@ -30,6 +30,10 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
+# `touch <run folder>/STOP` makes fit() stop after its next check (every STOP_FILE_EVERY steps) with a checkpoint, as a
+# stop request; the file is removed, so the same command resumes the run
+STOP_FILE, STOP_FILE_EVERY = "STOP", 50
+
 from hp.models.base import PoseModel
 from hp.models.io import plain_build_args, save_model
 
@@ -476,6 +480,9 @@ class Trainer:
                     # the stop must leave time for its checkpoint: as long as the last one took
                     if c.time_limit_minutes and (time.monotonic() - started + self.last_save_seconds) / 60 >= c.time_limit_minutes:
                         self.request_stop(f"time limit of {c.time_limit_minutes} minutes")
+                    if self.run_dir and step % STOP_FILE_EVERY == 0 and (self.run_dir / STOP_FILE).is_file():
+                        (self.run_dir / STOP_FILE).unlink()  # honoured once: a resume must not stop at once
+                        self.request_stop(f"{STOP_FILE} file")
                     if step >= c.max_iterations or self.stop_reason:
                         break
         if self.step < c.max_iterations:  # stopped: a checkpoint to resume from, and no final files

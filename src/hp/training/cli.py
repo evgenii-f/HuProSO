@@ -28,12 +28,22 @@ EXIT_STOPPED = 75  # exit status of a run that stopped before its last step (EX_
 @contextmanager
 def _stop_on_signals(trainer):
     """SIGTERM and SIGUSR1 (what a job scheduler sends before it kills a job) make the trainer stop after the current
-    step with a checkpoint, instead of dying in the middle of a step."""
+    step with a checkpoint, instead of dying in the middle of a step. So does the first Ctrl+C (SIGINT); a second one
+    interrupts at once, without a checkpoint."""
     names = [n for n in ("SIGTERM", "SIGUSR1") if hasattr(signal, n)]
     previous = {}
+
+    def on_interrupt(num, frame):
+        if trainer.stop_reason is not None:
+            raise KeyboardInterrupt
+        print("\nCtrl+C: stopping after this step with a checkpoint (Ctrl+C again: stop at once, no checkpoint)",
+              flush=True)
+        trainer.request_stop("Ctrl+C")
+
     try:
         for name in names:
             previous[name] = signal.signal(getattr(signal, name), lambda num, frame: trainer.request_stop(f"signal {signal.Signals(num).name}"))
+        previous["SIGINT"] = signal.signal(signal.SIGINT, on_interrupt)
     except ValueError:  # not the main thread: signals cannot be caught here
         pass
     try:
@@ -106,7 +116,7 @@ def main(argv: Optional[Sequence[str]] = None):
         trainer.fit(resume=checkpoint if resume else None, started_at=started)
     if trainer.step < train_cfg.max_iterations:
         print(f"Stopped at step {trainer.step} of {train_cfg.max_iterations} ({trainer.stop_reason}). "
-              f"Go on with: python scripts/train_model.py resume={run_dir}")
+              f"Go on with: python scripts/train_model.py resume={run_dir} (or the same command of a training script)")
     else:
         print(f"Saved to {run_dir}")
     return run_dir
