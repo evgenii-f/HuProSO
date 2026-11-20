@@ -1,0 +1,86 @@
+# Section 15 of 2026-11-14_score_network_architectures.md: the output lines behind its tables.
+# Phase diagnostics: explore/evaluation/completion_diagnostics/trajectory.py <run> rsgm (RSGM) or DP_RUN=<run> ... - (DPoser);
+# 300 validation poses, K = 10, step t | hidden-joint error (deg), spread of the K (deg), mean |x - x0_hat|. Mac (mps), 2026-11-20.
+
+== fact_N_s10
+left_leg step t | RSGM err spread |x-x0h|
+   100 0.100 |   13.31   8.43  0.103
+   199 0.050 |   13.43  11.66  0.034
+arms step t | RSGM err spread |x-x0h|
+   100 0.100 |   23.22  12.16  0.079
+   199 0.050 |   24.14  17.22  0.027
+
+== fact_NA_s10
+left_leg step t | RSGM err spread |x-x0h|
+   100 0.100 |   12.12   7.38  0.101
+   199 0.050 |   12.42   8.88  0.033
+arms step t | RSGM err spread |x-x0h|
+   100 0.100 |   22.18  10.58  0.084
+   199 0.050 |   22.27  13.15  0.028
+
+== fact_NA_s11
+left_leg step t | RSGM err spread |x-x0h|
+   100 0.100 |   12.03   7.23  0.101
+   199 0.050 |   12.23   8.51  0.033
+arms step t | RSGM err spread |x-x0h|
+   100 0.100 |   21.91  10.51  0.084
+   199 0.050 |   22.01  13.02  0.028
+
+== fact_NA_x_a05_s10
+left_leg step t | RSGM err spread |x-x0h|
+   100 0.100 |   11.54   6.99  0.091
+   199 0.050 |   12.04   8.74  0.028
+arms step t | RSGM err spread |x-x0h|
+   100 0.100 |   22.28  11.04  0.076
+   199 0.050 |   22.92  15.01  0.024
+
+== fact_NA_x_s10
+left_leg step t | RSGM err spread |x-x0h|
+   100 0.100 |   11.62   6.47  0.078
+   199 0.050 |   11.99   7.84  0.024
+arms step t | RSGM err spread |x-x0h|
+   100 0.100 |   21.00   9.82  0.074
+   199 0.050 |   21.23  12.07  0.024
+
+== fact_NA_x_s11
+left_leg step t | RSGM err spread |x-x0h|
+   100 0.100 |   11.52   6.53  0.078
+   199 0.050 |   11.91   7.94  0.024
+arms step t | RSGM err spread |x-x0h|
+   100 0.100 |   21.40   9.90  0.074
+   199 0.050 |   21.79  11.87  0.024
+
+== fact_NA_x_a15_s10
+left_leg step t | RSGM err spread |x-x0h|
+   100 0.100 |   11.84   6.28  0.075
+   199 0.050 |   11.79   7.13  0.024
+arms step t | RSGM err spread |x-x0h|
+   100 0.100 |   20.68   8.90  0.081
+   199 0.050 |   20.70  10.00  0.026
+
+== dposer_c10_rsgm_budget
+left_leg step t | DPoser err spread |x-x0h|
+   100 0.100 |   10.94   6.63  0.077
+   199 0.050 |   11.78  10.11  0.024
+arms step t | DPoser err spread |x-x0h|
+   100 0.100 |   21.12   9.60  0.074
+   199 0.050 |   21.69  13.94  0.023
+
+== dposer_full
+left_leg step t | DPoser err spread |x-x0h|
+   100 0.100 |   10.78   6.39  0.075
+   199 0.050 |   11.52   9.51  0.024
+arms step t | DPoser err spread |x-x0h|
+   100 0.100 |   21.73  10.54  0.072
+   199 0.050 |   22.13  14.66  0.023
+
+# Hybrid: RS=<run> explore/evaluation/completion_diagnostics/hybrid.py 500 rsgm (dposer: its own denoiser);
+# 500 validation poses, K = 10, per occlusion MPVPE mean (mm) / APD (cm) / best of 10 (mm). Mac (mps).
+fact_N_s10: rsgm    (31s): left_leg 94.3/7.92/46.5 | legs 120.5/8.83/75.2 | arms 118.4/6.27/77.6 | trunk 45.5/1.86/26.2
+fact_NA_s10: rsgm    (20s): left_leg 87.9/5.81/49.7 | legs 105.5/6.61/70.3 | arms 107.7/4.87/74.3 | trunk 43.5/1.67/26.0
+fact_NA_s11: rsgm    (22s): left_leg 85.7/5.78/49.6 | legs 105.6/6.39/71.3 | arms 104.9/4.80/73.5 | trunk 43.5/1.64/26.0
+fact_NA_x_a05_s10: rsgm    (34s): left_leg 85.3/6.06/46.6 | legs 105.5/6.87/70.0 | arms 109.9/5.35/74.5 | trunk 43.2/1.56/26.8
+fact_NA_x_s10: rsgm    (25s): left_leg 82.8/5.51/47.4 | legs 100.1/5.95/69.3 | arms 98.4/4.41/68.5 | trunk 43.1/1.55/27.2
+fact_NA_x_s11: rsgm    (28s): left_leg 83.1/5.62/46.7 | legs 99.3/5.96/68.1 | arms 102.6/4.36/73.4 | trunk 44.1/1.57/28.2
+fact_NA_x_a15_s10: rsgm    (35s): left_leg 83.9/5.08/50.4 | legs 100.5/5.65/71.2 | arms 98.5/3.78/71.8 | trunk 46.5/1.59/30.9
+dposer_full: dposer  (19s): left_leg 79.4/6.31/39.7 | legs 103.3/7.16/66.2 | arms 110.6/5.61/74.1 | trunk 43.5/1.96/24.0

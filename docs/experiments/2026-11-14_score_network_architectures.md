@@ -8,7 +8,7 @@ puts the three networks side by side and proposes the one to try.
 
 ## Summary
 
-Updated 2026-11-19 (sections 6-13). Validation numbers only; no test was run for this line of work.
+Updated 2026-11-20 (sections 6-13, 15). Validation numbers only; no test was run for this line of work.
 
 - **Skip connections or LayerNorm in the score network remove the drift of SDS at the smallest noise** and improve the
   hybrid (DPoser's optimization with the RSGM denoiser) by 15-17 mm on the legs and 10-14 mm on the arms over a plain
@@ -57,6 +57,13 @@ Updated 2026-11-19 (sections 6-13). Validation numbers only; no test was run for
   process; the best completion of RSGM stays inpainting with isotropic networks. Next: an inpainting study at equal
   APD of `fact_N`, `fact_RDW` and `fact_RADW`, since the fixed point of the rule cannot compare networks of
   different spread.
+- **The shape of the noise within a joint is a part of it** (section 15): per-axis noise (`fact_NA_x`, the noise of
+  each joint on its principal axes at the same signal-to-noise ratio, as DPoser's per-coordinate z-scoring) lowers the
+  first phase by a further 0.50 / 0.51 deg (two seeds; 12.08 to 11.57, DPoser on c10 10.94) and the hybrid by 3.9 mm
+  on average (85.5 to 81.7, DPoser's own 84.2), with a lower APD (4.37 against 4.70 cm). In the family c_j ~
+  sigma_j^(2 alpha), shape lambda^alpha, alpha = 1 (the rule from the data) is the best of 0, 0.5, 1 and 1.5; 1.5
+  is not better and narrower, 0.5 (where the denoising loss would put the noise) is 4.3 mm worse in the hybrid. The
+  left leg stays 0.6 deg (3.5 mm) behind DPoser.
 
 ## 1. The three networks
 
@@ -717,6 +724,111 @@ FID_val with Heun, and 0.8 mm better in the inpainting mean, but at an APD of 5.
 2048 or `fact_RADW` beat `fact_N` in inpainting can only be told at equal APD: the next step is the inpainting study
 of section 14 of the completion report for these cells.
 
+## 15. 2026-11-19: Per-axis noise within a joint (`fact_NA_x`) and the alpha family
+
+(Section 14, the noise levels of training, is on dev.)
+
+**Question.** Per-joint noise (section 10) gives every joint one Brownian time, so its noise is isotropic within the
+joint, while DPoser z-scores each axis-angle coordinate on its own. The spread of a joint is far from isotropic:
+`explore/evaluation/joint_covariance_spectrum.py` on the 1,861,105 c10 training poses (stds along the principal axes
+of log(M_j^T x_j), deg):
+
+| joint | c_j | std 1 / 2 / 3 (deg) | lambda1 / lambda3 | share of axis 1 |
+|---|---|---|---|---|
+| knees (LeftLeg, RightLeg) | 35 | 31.2 / 9-10 / 4.0 | 61-62 | 0.89-0.91 |
+| hips (LeftUpLeg, RightUpLeg) | 21 | 23-24 / 8-9 / 4-5 | 24-35 | 0.84-0.87 |
+| Spine0 | 8.8 | 15.3 / 5.0 / 3.7 | 17 | 0.86 |
+| elbows | 38-43 | 30-32 / 15-16 / 8-9 | 12-14 | 0.75-0.76 |
+| neck, head, hands, Spine1, Spine2 | 1-22 | | 3-8 | 0.47-0.71 |
+
+With one std per joint (19 deg for a knee) the noise is too small along the flexion axis (31 deg) and up to about 20
+times too large in variance along the two others. The first axis of the knees, hips and spine is close to the x axis
+of the joint's frame and that of the elbows to the y axis, so DPoser's per-coordinate z-scoring gives its noise
+nearly this shape.
+
+**Method** (`joint_cov` of `hp.models.rsgm`, aniso_x; commit 08b02f7). Below a Brownian time S_ANISO = 0.05 the noise of
+joint j is x0 exp(eps), eps ~ N(0, s_j K_j) in the frame of x0, K_j with the principal axes of the covariance and its
+eigenvalues over their mean; between 0.05 and S_ISO = 1 the shape goes log-linearly to isotropic; from 1 on it is the
+exact IGSO(3) (the wrapped normal of a large variance is singular at the identity). The target is the score of the
+wrapped normal (a sum over the preimages of exp, by autograd); the network outputs it in whitened coordinates. The
+tests check Stein's identity on samples of the kernel in all three regimes and the IGSO(3) and Gaussian limits. These
+kernels are not the transitions of one SDE: no exact likelihood, approximate samplers, no inpainting yet. The SDS
+denoising is x_t exp(s_j K_j score); the hybrid draws the noise of the model. `fact_NA_x` is `fact_NA` (LayerNorm and
+per-joint noise) with `joint_cov`, so the pair differs by the shape within the joints only. Training: c10, 30k x 4096
+as all cells; seed 10 on workstation2 (8.7 min), seed 11 on the Mac (about 60 min with the noise on the CPU).
+
+**Rule, written before the run:** the left leg at step 100 of `fact_NA_x` against `fact_NA`: lower by >= 0.6 deg, an
+effect; by < 0.3, none; in between, a second seed.
+
+**DPoser's reference.** The 10.8 deg of DPoser so far was DPoser on the full data with the paper's budget. DPoser on c10
+with the budget of the RSGM runs (`dposer_posedflow_rsgm_budget_s10`, measured now for the first time) is at 10.94:
+for DPoser, data and budget hardly matter. It is the fair reference for the c10 cells.
+
+**Phase diagnostics** (`trajectory.py`, 300 validation poses, K = 10, hidden-joint error in deg; Mac, where
+`fact_N` and `fact_NA` reproduce their server values to 0.01 deg):
+
+| model | seed | left_leg 100 | left_leg 199 | arms 100 | arms 199 | spread left_leg 100 |
+|---|---|---|---|---|---|---|
+| fact_NA | 10 | 12.12 | 12.42 | 22.18 | 22.27 | 7.38 |
+| fact_NA | 11 | 12.03 | 12.23 | 21.91 | 22.01 | 7.23 |
+| fact_NA_x | 10 | 11.62 | 11.99 | 21.00 | 21.23 | 6.47 |
+| fact_NA_x | 11 | 11.52 | 11.91 | 21.40 | 21.79 | 6.53 |
+| DPoser c10, RSGM budget | | 10.94 | 11.78 | 21.12 | 21.69 | 6.63 |
+| DPoser full, paper budget | | 10.78 | 11.52 | 21.73 | 22.13 | 6.39 |
+
+Per-axis noise lowers the left leg at step 100 by 0.50 and 0.51 deg (seed 10, 11), at step 199 by 0.43 and 0.32, the
+arms by 0.51-1.18; the seeds of one model differ by about 0.1 deg. By the rule the effect is in the middle band; the
+second seed reproduces it, so it is real but smaller than the 0.6 deg the rule asked for (what to conclude after the
+second seed was not written down). Of the gap to DPoser c10 it closes 45% at step 100 (1.14 to 0.63 deg) and 69% at
+step 199 (0.55 to 0.17 deg); the arms are on par with DPoser at step 100 and better at step 199. The hypotheses are
+narrower (spread -0.8 deg), as DPoser's.
+
+**Hybrid** (`hybrid.py`, 500 validation poses, K = 10, mean of the four occlusions: MPVPE mean (mm) / APD (cm) / best
+of 10 (mm); per occlusion in [the output file](2026-11-14_score_network_architectures_peraxis.txt)):
+
+| model | seed | left_leg | legs | arms | trunk | mean of 4 |
+|---|---|---|---|---|---|---|
+| fact_NA | 10 | 87.9 | 105.5 | 107.7 | 43.5 | 86.2 / 4.74 / 55.1 |
+| fact_NA | 11 | 85.7 | 105.6 | 104.9 | 43.5 | 84.9 / 4.65 / 55.1 |
+| fact_NA_x | 10 | 82.8 | 100.1 | 98.4 | 43.1 | 81.1 / 4.36 / 53.1 |
+| fact_NA_x | 11 | 83.1 | 99.3 | 102.6 | 44.1 | 82.3 / 4.38 / 54.1 |
+| DPoser full (own denoiser) | | 79.4 | 103.3 | 110.6 | 43.5 | 84.2 / 5.26 / 51.0 |
+
+The mean of four drops by 3.9 mm (5.1 and 2.7 for the two seeds), best of 10 by 1.5 mm, the APD by 0.33 cm. Against
+DPoser the hybrid of `fact_NA_x` is 2.5 mm lower on average (the arms -10 mm, the legs -3.6 mm) and still 3.5 mm
+behind on the left leg, with a lower APD and a worse best of 10.
+
+**The alpha family** (commit 2a8946c). One exponent sets both the size and the shape: c_j ~ sigma_j^(2 alpha) and the
+eigenvalue ratios lambda^alpha (`fit_joint_scale(z_std, alpha)`, `joint_cov_power`). alpha = 1 is `fact_NA_x` (the
+same signal-to-noise ratio everywhere), alpha = 0 the isotropic `fact_N` (with IGSO(3) instead of the wrapped normal
+at small noise), 0.5 is where a Gaussian estimate puts the optimum of the denoising loss itself if the shape were
+learned with it (noise ~ sigma rather than sigma^2), 1.5 beyond. At 1.5 the widest joints reach S_CAP = 20 at t
+about 0.13. **Rule, written before the runs:** the best alpha has the lowest left leg at step 199; a neighbour within
+0.2 deg (the spread of seeds) is not told apart. One seed for 0.5 and 1.5 (workstation1), two for 1:
+
+| alpha | cell | c_j | knee shape | left_leg 100 | left_leg 199 | arms 199 | hybrid mean / APD / best of 10 |
+|---|---|---|---|---|---|---|---|
+| 0 | fact_N | 1 | isotropic | 13.31 | 13.43 | 24.14 | 94.7 / 6.22 / 56.4 |
+| 0.5 | fact_NA_x_a05 | 1-6.5 | 0.26 / 0.67 / 2.07 | 11.54 | 12.04 | 22.92 | 86.0 / 4.96 / 54.5 |
+| 1 | fact_NA_x (2 seeds) | 1-43 | 0.04 / 0.28 / 2.68 | 11.57 | 11.95 | 21.51 | **81.7** / 4.37 / **53.6** |
+| 1.5 | fact_NA_x_a15 | 1-280 | 0.006 / 0.10 / 2.90 | 11.84 | **11.79** | 20.70 | 82.3 / 4.03 / 56.1 |
+
+By the rule 1.5 is the lowest at step 199 and 1 is within 0.2 deg of it: the two are not told apart, 0.5 is 0.25 deg
+above 1.5. The hybrid separates them: alpha = 1 has the lowest mean and best of 10; 1.5 has the same mean within the
+spread of seeds (1.2 mm) but a best of 10 2.5 mm worse (the trunk 30.9 mm against 26-28) and the lowest APD; 0.5 is
+4.3 mm worse in the mean. The APD falls monotonically with alpha (6.22, 4.96, 4.37, 4.03 cm), the mean does not: at
+1.5 the hypotheses are narrower than at 1 and the mean is not lower, so the gain of alpha = 1 over 0 and 0.5 is not
+only narrower hypotheses.
+
+**What it says.** The shape of the noise within a joint is a part of DPoser's advantage in score distillation: with it
+the hybrid of RSGM beats DPoser's on average, and the first phase moves 0.5 deg further. The rule from the data
+(alpha = 1, every axis of every joint at the same signal-to-noise ratio) is at the optimum of this one-parameter
+family; where the denoising loss itself would put the noise (alpha about 0.5) is worse, so learned noise coefficients
+would need the likelihood, not that loss. About 0.6 deg of the first phase and 3.5 mm on the left leg remain; the
+reverse test on DPoser (`train_dposer_posedflow.py --config joint` and `iso`: its noise made isotropic within a joint
+and over all joints, full data) is to tell whether the rest is the noise too. Not tried here: the completion
+protocols (inpainting has no per-axis noise yet; D-Flow and generation would use the approximate sampler).
+
 ## Conclusions
 
 1. Residual connections or LayerNorm are what a score network on SO(3) needs for score distillation at small noise:
@@ -726,7 +838,9 @@ of section 14 of the completion report for these cells.
    coordinates as DPoser's do not move it). It is the noise: with a Brownian time per joint proportional to its
    squared spread (section 10) the first phase moves halfway to DPoser, and with LayerNorm the hybrid comes within
    2-8 mm of DPoser on the legs and beats it on the arms. The rest of the first phase (about 1.3 deg) may be the
-   isotropy within a joint, score against noise prediction, or the hybrid's schedule, which is DPoser's.
+   isotropy within a joint, score against noise prediction, or the hybrid's schedule, which is DPoser's. The
+   isotropy within a joint is a part of it (section 15): per-axis noise takes 0.5 deg of it and brings the hybrid
+   below DPoser's on average; about 0.6 deg remain.
 3. In D-Flow the network does not matter either (512x4 MLP = dposer_like).
 4. Next: completion with the whole reverse process of RSGM (inpainting on SO(3)), where the hidden joints are pulled
    at large noise, which training covers, instead of extrapolating the score at small noise. Per-joint noise was
@@ -739,6 +853,13 @@ of section 14 of the completion report for these cells.
    (and its width 2048) and `fact_RADW`, to be compared with `fact_N` at equal APD by an inpainting study.
 
 ## What it does not show
+
+- Per-axis noise (section 15): only the phase diagnostics and the hybrid (DPoser's procedure), no completion protocol
+  of RSGM itself (no inpainting with per-axis noise yet; D-Flow and generation would use an approximate sampler); the
+  kernel is the wrapped normal, not a heat kernel, and has no likelihood; the axes are those of each joint at its mean,
+  not of the current pose; one seed for alpha 0.5 and 1.5; alpha = 0 uses IGSO(3) at small noise, not the wrapped
+  normal of the others; the hybrid's DPoser is the full-data one, while the RSGM cells are c10. The diagnostics count
+  one evaluation per model with common random numbers, without an interval of the evaluation itself.
 
 - The factorial (section 13): one seed per cell (the noise estimated from the 4- and 5-way interactions; two cells
   have a second seed); inpainting at one fixed point, chosen on `abl_norm`, so the comparison of the mean is not at
@@ -762,6 +883,15 @@ of section 14 of the completion report for these cells.
   model's, so the hybrid of an aniso model also uses DPoser-like noise per joint.
 
 ## Where things are
+
+- Per-axis noise and the alpha family (section 15): runs `~/data/experiments/factorial/rsgm_posedflow_fact_NA_x{,_a05,_a15}_s10`,
+  `rsgm_posedflow_fact_NA_x_s11`, `rsgm_posedflow_fact_NA_s11` (on the Mac; seed 10 also on workstation2, the alpha
+  runs on workstation1); the joint covariances as `z_cov` in `~/data/experiments/factorial/rsgm_z_statistics.json`
+  (`explore/evaluation/joint_covariance_spectrum.py` prints their spectrum); the diagnostic outputs
+  `~/data/experiments/factorial/{trajectory,hybrid}_*.txt`, their lines in
+  [2026-11-14_score_network_architectures_peraxis.txt](2026-11-14_score_network_architectures_peraxis.txt). DPoser
+  of the reverse test (training, not evaluated yet): `~/data/experiments/full/dposer_posedflow_{joint,iso}_s10` on
+  workstation2.
 
 - The factorial of section 13: runs in `~/data/experiments/factorial/rsgm_posedflow_fact_*_s1[01]` (on the Mac, on
   workstation1 and workstation2), the responses of the second evaluation in
