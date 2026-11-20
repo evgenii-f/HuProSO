@@ -35,7 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from hp.evaluation.data import load_reference  # noqa: E402
 from hp.models.io import load_model  # noqa: E402
-from hp.models.rsgm import fit_joint_scale, joint_covariance, z_statistics  # noqa: E402
+from hp.models.rsgm import fit_joint_scale, joint_cov_power, joint_covariance, z_statistics  # noqa: E402
 from hp.training import cli  # noqa: E402
 from hp.training.config import load_config  # noqa: E402
 
@@ -166,6 +166,15 @@ ANISO.update({"fact_NA_tmin", "fact_NA_lik", "fact_NA_tmin_lik"})
 CONFIGS["fact_NA_x"] = list(CONFIGS["fact_NA"])
 ANISO.add("fact_NA_x")
 ANISO_X = {"fact_NA_x"}
+# The alpha study: the noise of fact_NA_x with c_j ~ sigma_j^(2 alpha) and the eigenvalue ratios within a joint
+# lambda^alpha (fit_joint_scale, joint_cov_power). alpha = 1 is fact_NA_x (the same signal-to-noise ratio everywhere),
+# alpha = 0 the isotropic noise (fact_N, with IGSO(3) instead of the wrapped normal at small noise); 0.5 is where the
+# denoising loss itself would put the noise (a Gaussian estimate), 1.5 further toward anisotropy.
+ALPHA = {"fact_NA_x_a05": 0.5, "fact_NA_x_a15": 1.5}
+for name in ALPHA:
+    CONFIGS[name] = list(CONFIGS["fact_NA_x"])
+ANISO.update(ALPHA)
+ANISO_X.update(ALPHA)
 # fact_RDW one step further along width, the strongest factor of the factorial for inpainting
 CONFIGS["fact_RDW_w2048"] = CONFIGS["fact_RDW"] + ["model.args.net_width=2048"]
 # ----------------------------------------------------------------------------------------
@@ -279,9 +288,10 @@ def main() -> int:
             argv += [f"model.args.z_mean={json.dumps(stats['z_mean'])}", f"model.args.z_std={json.dumps(stats['z_std'])}"]
         if config in ANISO:
             stats = fitted_z_statistics(rotations, split, args.run_root, frames)
-            argv += [f"model.args.joint_scale={json.dumps(fit_joint_scale(stats['z_std']))}"]
+            alpha = ALPHA.get(config, 1.0)
+            argv += [f"model.args.joint_scale={json.dumps(fit_joint_scale(stats['z_std'], alpha))}"]
             if config in ANISO_X:
-                argv += [f"model.args.joint_cov={json.dumps(stats['z_cov'])}"]
+                argv += [f"model.args.joint_cov={json.dumps(joint_cov_power(stats['z_cov'], alpha))}"]
         runs = runs_of(Path(args.run_root).expanduser() / name)
         done = [r for r in runs if finished(r)]
         stopped = [r for r in runs if resumable(r)]

@@ -725,3 +725,18 @@ def test_joint_covariance_is_the_covariance_of_the_logs_around_the_means():
     m = roma.rotvec_to_rotmat(torch.tensor(z_mean, dtype=torch.float64).reshape(2, 3))
     v = roma.rotmat_to_rotvec(m.transpose(-1, -2) @ poses.double())
     assert torch.allclose(cov, torch.stack([torch.cov(v[:, j].T) for j in range(2)]))
+
+
+
+def test_the_alpha_family_of_the_noise():
+    from hp.models.rsgm import fit_joint_scale, joint_cov_power
+
+    z_std = [0.1, 0.1, 0.1, 0.4, 0.2, 0.2]
+    assert fit_joint_scale(z_std, 0.0) == [1.0, 1.0]
+    c1, c05 = fit_joint_scale(z_std), fit_joint_scale(z_std, 0.5)
+    assert c1[0] == 1.0 and math.isclose(c05[1], math.sqrt(c1[1]))
+    cov = torch.stack([_cov([2.5, 0.4, 0.1], 0), _cov([1.0, 1.0, 1.0], 1)])
+    assert torch.allclose(torch.tensor(joint_cov_power(cov.reshape(-1).tolist())).reshape(2, 3, 3), cov.float(), atol=1e-6)
+    half = torch.tensor(joint_cov_power(cov.reshape(-1).tolist(), 0.5), dtype=torch.float64).reshape(2, 3, 3)
+    assert torch.allclose(half @ half, cov, atol=1e-10)
+    assert torch.allclose(torch.linalg.eigvalsh(half[0]), torch.tensor([0.1, 0.4, 2.5], dtype=torch.float64).sqrt())

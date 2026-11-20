@@ -197,11 +197,21 @@ def wrapped_normal_score(eps: torch.Tensor, s: torch.Tensor, axes: torch.Tensor,
     return grad
 
 
-def fit_joint_scale(z_std) -> list:
-    """joint_scale c [J] from the per-coordinate std [3J] of z_statistics: c_j = sigma_j^2 / min_k sigma_k^2, sigma_j
-    the RMS of the three stds of joint j (the RMS angle of the joint around its mean)."""
+def fit_joint_scale(z_std, alpha: float = 1.0) -> list:
+    """joint_scale c [J] from the per-coordinate std [3J] of z_statistics: c_j = (sigma_j^2 / min_k sigma_k^2)^alpha,
+    sigma_j the RMS of the three stds of joint j (the RMS angle of the joint around its mean). alpha = 1: every joint at
+    the same signal-to-noise ratio (as DPoser's z-scoring); 0: isotropic; in between or beyond: the family of the
+    alpha study (scripts/train_rsgm_posedflow.py, ALPHA)."""
     sigma2 = torch.as_tensor(z_std, dtype=torch.float64).reshape(-1, 3).pow(2).mean(-1)
-    return (sigma2 / sigma2.min()).tolist()
+    return ((sigma2 / sigma2.min()) ** alpha).tolist()
+
+
+def joint_cov_power(joint_cov, alpha: float = 1.0) -> list:
+    """The covariances [J * 9] raised to the power alpha (the same axes, the eigenvalues to the power alpha): the shape
+    of the per-axis noise (joint_cov) of the alpha study, with the eigenvalue ratios lambda^alpha."""
+    cov = torch.as_tensor(joint_cov, dtype=torch.float64).reshape(-1, 3, 3)
+    lam, vec = torch.linalg.eigh(0.5 * (cov + cov.transpose(-1, -2)))
+    return (vec @ torch.diag_embed(lam ** alpha) @ vec.transpose(-1, -2)).reshape(-1).tolist()
 
 
 @register_model("rsgm")
