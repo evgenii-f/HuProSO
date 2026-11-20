@@ -76,9 +76,45 @@ All runs use seed 10. "c10" is the 10% condition subset of their training data, 
   - A second row reports RSGM 512x4 at DPoser's number of steps, with the other settings of the best trial.
   - The test is run once per row.
 - **abl_residual.** It joined later, from the per-joint-noise line, as a declared extra row.
-- **Untuned rows.** DPoser, PoseD-Flow and the D-Flow rows run with their authors' settings.
+- **Untuned rows.** DPoser, PoseD-Flow and the D-Flow rows run with their authors' settings. Studies of DPoser
+  by the same procedure (`config/denoising_tuning/dposer_sds_{40,100}mm.yaml`, written 2026-11-20 with their rule)
+  are running; until they report, the DPoser rows here are untuned.
 - **Machines.** The test ran on workstation1, cuda, in one run (`test2.log`). The validation rows ran on the
   servers and the Mac.
+
+### The settings of every row
+
+DPoser's optimization: Adam on the axis-angle poses, 3 iterations, the noise time t going down linearly from t_max
+to t_min over all steps. t is the model's own time: RSGM's IGSO(3) time and DPoser's VP-SDE time are on different
+scales, so their windows are not comparable. Validation and test MPJPE in mm; for the RSGM rows a range over the
+isotropic networks.
+
+| model | noise | t_max | t_min | sds_weight | lr | steps | chosen by | valid | test |
+|---|---|---|---|---|---|---|---|---|---|
+| RSGM, every isotropic network | 40 mm | 0.0595 | 0.0230 (0.387 t_max) | 7.75 | 0.0413 | 3 x 67 = 201 | `rsgm_sds_40mm`, trial 36, on 512x4 c10 | 18.57–18.73 | 17.68–17.74 |
+| RSGM, every isotropic network | 100 mm | 0.0515 | 0.0453 (0.881 t_max) | 4.38 | 0.0422 | 3 x 133 = 399 | `rsgm_sds_100mm`, trial 29, on 512x4 c10 | 30.79–30.92 | 28.59–28.65 |
+| RSGM 512x4 c10, DPoser's steps | 40 / 100 mm | as above | as above | as above | as above | 3 x 60 / 3 x 80 | the rule (equal budget) | 18.75 / 31.56 | 17.70 / 29.20 |
+| RSGM, first guess | 40 / 100 mm | 0.05 | 0.01 | 10 | 0.03 | 3 x 60 / 3 x 80 | by hand, 10 sequences at 40 mm | 19.00 / 35.72 (1536x6) | 17.69 / 33.00 (1536x6) |
+| RSGM abl_residual_aniso (per joint) | 40 mm | 0.0166 | 0.0064 | 7.75 | 0.0413 | 3 x 67 | "t geo" map of the isotropic set (`rsgm_sds_aniso_40mm` found nothing better) | 19.47 | – |
+| RSGM abl_residual_aniso (per joint) | 100 mm | 0.0170 | 0.0067 (0.394 t_max) | 7.53 | 0.0378 | 3 x 133 | `rsgm_sds_aniso_100mm`, trial 22 | 32.68 | – |
+| DPoser full | 40 mm | 0.25 | 0.05 | 1 | 0.03 | 3 x 60 = 180 | the authors (not tuned) | 19.19 | 17.89 |
+| DPoser full | 100 mm | 0.25 | 0.10 | 1 | 0.03 | 3 x 80 = 240 | the authors (not tuned) | 32.23 | 29.10 |
+| w/o prior | 40 / 100 mm | – | – | – (no prior term) | 0.03 | 3 x 60 / 3 x 80 | DPoser's settings without the prior term | 23.43 / 50.54 | 22.73 / 49.57 |
+
+D-Flow: the ODE start of every frame is optimized through Euler 100, start mixing alpha 0.75, with RiemannianAdam
+for the priors on SO(3)^J and Adam for DPoser's Euclidean latent.
+
+| model | noise | lr | steps | temp_weight | running_weight | chosen by | valid | test |
+|---|---|---|---|---|---|---|---|---|
+| PoseD-Flow, their checkpoint | 40 mm | 0.25 | 300 | 1e-2 | 1e-5 | the authors | 19.83 | 18.62 |
+| PoseD-Flow, their checkpoint | 100 mm | 0.25 | 400 | 1e-1 | 1e-5 | the authors | 31.73 | 33.77 |
+| RSGM 512x4 c10 / DPoser full | 40 / 100 mm | as PoseD-Flow | as PoseD-Flow | as PoseD-Flow | as PoseD-Flow | PoseD-Flow's settings, not tuned | 31.81 / 33.53 and 24.22 / 50.78 | 19.94 / 32.29 and 24.03 / 51.71 |
+
+What tuning changed for RSGM: a narrow, low window of noise (t about 0.05, where DPoser uses 0.25 to 0.05), a prior
+weight 4-8 times DPoser's, and at 100 mm almost a single noise level (t_min 0.88 t_max) with more steps. The first
+guess had a wider and lower window (0.05 to 0.01) and fewer steps. At 100 mm it lost 4.4 mm to the tuned set on the
+test (33.00 against 28.59 mm). In the pictures of `motion_denoising.ipynb` its bodies also look less natural; that
+is a visual impression, not a measurement.
 
 ## Results
 
