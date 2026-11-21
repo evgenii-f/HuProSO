@@ -93,6 +93,12 @@ class History:
     valid_loss: List[float] = field(default_factory=list)
 
 
+def _cuda_index(device: str) -> int:
+    """The index of a CUDA device ("cuda" alone: the current one)."""
+    index = torch.device(device).index
+    return torch.cuda.current_device() if index is None else index
+
+
 def _rng_state(device: str) -> dict:
     """The random generators as tensors, numbers and lists only, so that torch.load(weights_only=True) reads them."""
     version, internal, gauss = random.getstate()
@@ -103,8 +109,8 @@ def _rng_state(device: str) -> dict:
         "numpy": {"keys": torch.from_numpy(keys.astype(np.int64)), "pos": int(pos), "has_gauss": int(has_gauss), "cached": float(cached)},
     }
     kind = torch.device(device).type
-    if kind == "cuda":
-        state["cuda"] = torch.cuda.get_rng_state_all()
+    if kind == "cuda":  # the run's GPU only: get_rng_state_all would open a CUDA context on every GPU of the machine
+        state["cuda"] = torch.cuda.get_rng_state(_cuda_index(device))
     elif kind == "mps":
         state["mps"] = torch.mps.get_rng_state()
     return state
@@ -118,7 +124,11 @@ def _set_rng_state(state: dict, device: str) -> None:
     np.random.set_state(("MT19937", n["keys"].numpy().astype(np.uint32), n["pos"], n["has_gauss"], n["cached"]))
     kind = torch.device(device).type
     if kind == "cuda" and "cuda" in state:
-        torch.cuda.set_rng_state_all(state["cuda"])
+        index, saved = _cuda_index(device), state["cuda"]
+        if isinstance(saved, (list, tuple)):  # a checkpoint from before: the states of all GPUs, take the run's
+            saved = saved[index] if index < len(saved) else None
+        if saved is not None:
+            torch.cuda.set_rng_state(saved, index)
     elif kind == "mps" and "mps" in state:
         torch.mps.set_rng_state(state["mps"])
 
