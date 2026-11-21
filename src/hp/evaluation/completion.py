@@ -298,22 +298,51 @@ def _results_settings(settings: dict) -> dict:
     return {key: value for key, value in settings.items() if key not in SPEED}
 
 
-def cached_run(cache: Path, label: str, spec: dict, gt: torch.Tensor, occlusion: str, device: str, k: int = 10,
-               rotations: str = "", **options) -> Optional[torch.Tensor]:
-    """The completions of cache/<label>/<occlusion>.pt if they were made with these settings (whatever the SPEED
-    settings were); otherwise made and saved (device=None: only read, None if missing)."""
+class OtherSettings(ValueError):
+    """A cache entry made with other settings, which cached_run was told not to replace."""
+
+
+def run_settings(spec: dict, n: int, rotations: str = "", k: int = 10, split: str = "test", **options) -> dict:
+    """What a cache entry of cached_run records: the model (identity), the number of poses, the data, K, the method
+    and the options of run(). The split is recorded only when it is not the test, so that the test caches made before
+    it was recorded stay valid."""
+    split_part = {} if split == "test" else {"split": split}
+    return json.loads(json.dumps({"model": identity(spec), "poses": n, "rotations": rotations, "k": k, **split_part,
+                                  "method": METHOD, **options}))
+
+
+def cache_state(cache: Path, label: str, spec: dict, n: int, occlusion: str, k: int = 10, rotations: str = "",
+                split: str = "test", **options) -> str:
+    """"cached" (made with these settings, whatever the SPEED settings), "other" (made with other settings) or
+    "missing": what cached_run would find in cache/<label>/<occlusion>.pt."""
     path = cache_path(cache, label, occlusion)
-    settings = json.loads(json.dumps({"model": identity(spec), "poses": len(gt), "rotations": rotations, "k": k,
-                                      "method": METHOD, **options}))
+    if not path.is_file():
+        return "missing"
+    saved = json.loads(torch.load(path, weights_only=True)["settings"])
+    same = _results_settings(saved) == _results_settings(run_settings(spec, n, rotations, k, split, **options))
+    return "cached" if same else "other"
+
+
+def cached_run(cache: Path, label: str, spec: dict, gt: torch.Tensor, occlusion: str, device: str, k: int = 10,
+               rotations: str = "", split: str = "test", overwrite: bool = True, **options) -> Optional[torch.Tensor]:
+    """The completions of cache/<label>/<occlusion>.pt if they were made with these settings (whatever the SPEED
+    settings were); otherwise made and saved (device=None: only read, None if missing). An entry made with other
+    settings is replaced only with overwrite=True; otherwise OtherSettings. spec["dflow"], if given, holds arguments of
+    run() for D-Flow (steps, lr, running_weight; e.g. a point of an Optuna study). split names the poses gt ("test",
+    "valid"): part of the settings unless "test"."""
+    path = cache_path(cache, label, occlusion)
+    settings = run_settings(spec, len(gt), rotations, k, split, **options)
     if path.is_file():
         saved = torch.load(path, weights_only=True)
         if _results_settings(json.loads(saved["settings"])) == _results_settings(settings):
             return saved["pred"].float()
         print(f"  {label} / {occlusion}: cached with other settings")
+        if not overwrite and device is not None:
+            raise OtherSettings(f"{path} was made with other settings; not replaced")
     if device is None:
         return None
     pred = run(build(spec, device), gt, occlusion, k, prior=spec.get("prior"), method=spec.get("method", "dflow"),
-               **options)
+               **spec.get("dflow", {}), **options)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(".tmp")
     torch.save({"pred": pred.half(), "settings": json.dumps(settings)}, temporary)

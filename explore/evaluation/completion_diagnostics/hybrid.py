@@ -4,7 +4,7 @@
            one-step denoising, back to the normalized axis-angle of the variable.
 Validation poses, K hypotheses, all occlusions:
     RS=<RSGM run folder> PYTHONPATH=src python explore/evaluation/completion_diagnostics/hybrid.py 500 [dposer] [rsgm]
-RS defaults to RSGM 512x4 c10 (rsgm_posedflow_small_s10). HP_DEVICE: the device (default mps). DP_RUN: the DPoser
+RS defaults to RSGM 512x4 c10 (rsgm_posedflow_small_s10). DEVICE (or HP_DEVICE): the device (default mps). DP_RUN: the DPoser
 run (default: DPoser on the full data), e.g. one with a noise_scale."""
 import os, sys, time, torch, roma
 from hp.evaluation.completion import KEEP, OCCLUSIONS, TOES, Body, at_rest, build, metrics, summary, valid_poses
@@ -13,7 +13,7 @@ from hp.models.rsgm import exp_frame
 from hp.models.score_completion import one_step_denoise, rsgm_denoise
 
 N, K = int(sys.argv[1]) if len(sys.argv) > 1 else 500, 10
-DEVICE = os.environ.get("HP_DEVICE", "mps")
+DEVICE = os.environ.get("DEVICE", os.environ.get("HP_DEVICE", "mps"))  # e.g. DEVICE=cuda:0 on a server
 dp = build(dict(run=os.environ.get("DP_RUN", "~/data/experiments/full/dposer_posedflow_s10/run_0001")), DEVICE)
 rs = build(dict(run=os.environ.get("RS", "~/data/experiments/rsgm_posedflow_small_s10/run_0001")), DEVICE)
 dev = dp.device

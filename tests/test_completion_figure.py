@@ -67,6 +67,19 @@ def test_pick_pose_from_the_errors():
         cf.pick_pose("1 better than 2", [a, None], rng)
 
 
+def test_hard_poses_average_the_ranks():
+    a = np.arange(100, dtype=float)[:, None].repeat(10, 1)       # pose i has error i
+    b = 1000.0 * a[::-1].copy()                                   # the reverse order, on a much larger scale
+    b[99] = 1e9                                                   # ... but pose 99 is the hardest for b too
+    hard, rank = cf.hard_poses([a, b], fraction=0.01)
+    assert hard.tolist() == [99]                                  # the scale of b does not decide: the ranks do
+    assert rank.shape == (100,) and 0 < rank.min() and rank.max() <= 1
+    overlap = cf.hard_overlap({"a": a, "b": b}, fraction=0.05)
+    assert sorted(overlap["own"]["a"].tolist()) == [95, 96, 97, 98, 99]
+    assert overlap["pairs"]["a", "a"] == 1 and overlap["pairs"]["a", "b"] == pytest.approx(0.2)   # only pose 99
+    assert overlap["count"].sum() == 100 and overlap["count"][2] == 1
+
+
 def test_rows_from_the_cache(tmp_path):
     torch.manual_seed(0)
     pred = roma.random_rotmat(6 * 10 * 21).view(6, 10, 21, 3, 3)

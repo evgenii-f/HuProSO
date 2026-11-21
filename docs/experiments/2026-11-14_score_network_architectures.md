@@ -8,7 +8,7 @@ puts the three networks side by side and proposes the one to try.
 
 ## Summary
 
-Updated 2026-11-20 (sections 6-13, 15, 16). Validation numbers only; no test was run for this line of work.
+Updated 2026-11-20 (sections 6-16). Validation numbers only; no test was run for this line of work.
 
 - **Skip connections or LayerNorm in the score network remove the drift of SDS at the smallest noise** and improve the
   hybrid (DPoser's optimization with the RSGM denoiser) by 15-17 mm on the legs and 10-14 mm on the arms over a plain
@@ -53,6 +53,9 @@ Updated 2026-11-20 (sections 6-13, 15, 16). Validation numbers only; no test was
 - Two fixes of the generation of per-joint noise were tried and fail the criterion fixed before (FID_val with Heun
   <= 0.038): a smaller minimal training time for the wide joints (0.0432) and likelihood weighting (0.0446; both
   0.0751).
+- **Where the loss is evaluated does not matter** (section 14, negative): moving 21-51% of the loss to s < 0.01
+  (likelihood weighting, log-normal noise levels) leaves the first phase at 13.2-13.5 deg and improves neither the
+  hybrid, inpainting nor denoising of `abl_residual`.
 - Decision: per-joint noise helps score distillation at small noise (the first phase), not the whole reverse
   process; the best completion of RSGM stays inpainting with isotropic networks. Next: an inpainting study at equal
   APD of `fact_N`, `fact_RDW` and `fact_RADW`, since the fixed point of the rule cannot compare networks of
@@ -445,66 +448,10 @@ Inpainting with per-joint noise: worse than isotropic, 2-3 mm on c10 (norm), 0.2
 
 ## 11. 2026-11-16: The IGSO(3) noise on the GPU
 
-Not a change of method: where the noise of RSGM is drawn (branch `experimental/igso_gpu`, commits 4e47e47 and 90c159a).
-The training loss drew its times, IGSO(3) angles and axes on the CPU in float64 and noised the poses there: every step
-copied the batch to the CPU and back, and several runs on one machine fought for its cores (about 50 each, load
-average about 160 on workstation1). Now the loss draws them on the device where it has float64 (cuda), still in
-float64; on mps (no float64) and for the validation loss (fixed CPU generator, the same number as before) the CPU path
-stays, so validation losses compare across the change. Inpainting draws its noise on the model's device in its dtype
-(`AngleSampler.sample_at`: the level of s is found on the CPU, so the GPU does not wait). SDS
-(`score_completion.py`) still draws on the CPU; D-Flow and the unconditional sampler draw no IGSO(3) noise.
-`RSGM.noise_on_cpu = True` restores the CPU path, for `scripts/benchmark_igso_noise.py`.
-
-- Speed of training, workstation1 under load: `abl_aniso` seed 11 ran at about 50 it/s (11 min for 30k steps) on the
-  GPU path against 2-3 it/s on the CPU path at the same time; on an idle machine the CPU path took 21 min (seed 10).
-- The same training: validation loss of `abl_aniso` seed 11 at 1k-6k steps 2.03 / 1.81 / 1.72 / 1.68 / 1.66 / 1.64
-  on the GPU path against 2.03 / 1.83 / 1.74 / 1.69 / 1.67 / 1.64 on the CPU path.
-- The same inpainting: 300 validation poses, K = 10, small std, steps 100, resample 2, guidance 0.1, 8 seeds per code
-  version on the Mac (mps): mean over the four occlusions 99.55 +- 0.40 against 99.49 +- 0.49 mm (MPVPE mean),
-  7.69 +- 0.07 against 7.72 +- 0.06 cm (APD), 52.46 +- 0.40 against 52.59 +- 0.59 mm (best of 10); none of the 15
-  differences (4 occlusions and the mean, 3 metrics) is significant (Welch p >= 0.08).
-- The float32 sampler (mps, same uniforms as float64 on the CPU, 400k draws): relative error of the angle 5e-8 on
-  average, at most 1.1e-4 (only in the far tail); KS distance to IGSO(3) 0.0009 (float32) and 0.0013 (float64),
-  1% threshold 0.0026.
-
-`scripts/benchmark_igso_noise.py` (untrained MLP 512 x 4, 19 joints, random poses), on an idle RTX 4090 of bigmama
-(torch 2.14.1, 16 CPU threads) and on the Mac (mps; there the loss draws on the CPU either way):
-
-| measurement | cuda: noise on CPU | cuda: on device | speed-up | mps: noise on CPU | mps: on device | speed-up |
-|---|---|---|---|---|---|---|
-| train step, batch 4096 | 82.2 it/s | 519.8 it/s | 6.32x | 53.1 it/s | 51.9 it/s | 0.98x |
-| train step, batch 16384 | 18.8 it/s | 183.2 it/s | 9.74x | 18.9 it/s | 18.7 it/s | 0.99x |
-| inpainting, 5000 poses, guidance 0, resample 3 | 7.91 ms/call | 1.29 ms/call | 6.11x | 12.99 ms/call | 5.67 ms/call | 2.29x |
-| inpainting, 5000 poses, guidance 0.1, resample 1 | 12.62 ms/call | 9.25 ms/call | 1.36x | 22.63 ms/call | 18.49 ms/call | 1.22x |
-| inpainting, 20000 poses, guidance 0, resample 3 | 25.56 ms/call | 3.38 ms/call | 7.56x | 46.97 ms/call | 23.84 ms/call | 1.97x |
-| inpainting, 20000 poses, guidance 0.1, resample 1 | 42.64 ms/call | 27.04 ms/call | 1.58x | 86.42 ms/call | 74.71 ms/call | 1.16x |
-
-On cuda the noise was most of the cost: 6-10x for a training step and 6-8x for inpainting without guidance. With
-guidance the backward pass through the network dominates (1.4-1.6x). A training step alone runs at 520 it/s, while
-the training script reached about 50 it/s: what is left in training is outside the loss (the DataLoader collates
-4096 poses one by one on the CPU, and the machine was loaded).
-
-Added the same day: the three aniso runs of section 10 trained with the same configs and seeds on both paths
-(workstation1; CPU path in `~/data/experiments/cpu_noise/`, GPU path in `igso_speed/`), evaluated as in section 10
-(hybrid on 500 validation poses, MPVPE mean / APD / best of 10; trajectory on 300; `eval_runs.sh` on the Mac). The
-same seed is not the same random stream on the two paths (CPU and CUDA generators), so a pair differs by the seed as
-well. The rule written before: the paths are equivalent if a pair differs by at most 1-2 mm in the hybrid and about
-0.1 deg in the first phase.
-
-| run | noise | left_leg | legs | arms | trunk | valid loss | left_leg 100 -> 199 | arms 100 -> 199 |
-|---|---|---|---|---|---|---|---|---|
-| abl_aniso s11 | CPU | 99.6 / 7.11 / 52.9 | 120.1 / 8.24 / 75.8 | 115.7 / 6.13 / 76.3 | 47.1 / 2.05 / 26.0 | 1.547 | 12.6 -> 14.5 | 23.1 -> 25.7 |
-| abl_aniso s11 | GPU | 93.0 / 6.83 / 49.6 | 114.1 / 7.92 / 71.6 | 121.7 / 5.92 / 82.1 | 47.3 / 1.97 / 26.8 | 1.549 | 12.2 -> 13.5 | 23.1 -> 25.4 |
-| abl_residual_aniso | CPU | 89.1 / 5.95 / 50.2 | 109.5 / 6.91 / 72.7 | 113.3 / 4.81 / 81.4 | 46.1 / 1.83 / 27.4 | 1.541 | 12.2 -> 12.7 | 22.6 -> 23.1 |
-| abl_residual_aniso | GPU | 89.6 / 6.03 / 50.4 | 107.6 / 6.66 / 71.3 | 115.7 / 4.96 / 82.6 | 46.6 / 1.74 / 28.7 | 1.551 | 12.3 -> 12.8 | 22.7 -> 23.1 |
-| abl_norm_aniso | CPU | 86.3 / 5.58 / 50.3 | 103.5 / 6.31 / 69.0 | 107.9 / 4.84 / 75.3 | 43.4 / 1.68 / 25.8 | 1.552 | 12.1 -> 12.3 | 22.1 -> 22.4 |
-| abl_norm_aniso | GPU | 87.0 / 5.81 / 49.3 | 105.2 / 6.40 / 70.6 | 108.0 / 4.87 / 75.0 | 44.0 / 1.61 / 26.5 | 1.556 | 12.1 -> 12.3 | 22.4 -> 22.6 |
-
-With residual or LayerNorm the paths agree (0.1-2.4 mm, at most 0.1 deg). The plain MLP `abl_aniso` differs by up to
-6.6 mm and 0.5 deg, with signs that change between the occlusions (the legs better on the GPU path, the arms on the
-CPU path): the spread of one seed of a network whose second phase drifts, not a shift of the path. So the agreement of
-`abl_aniso` seeds 10 and 11 in section 10 (0.4-2 mm) was partly luck; its spread between runs is up to about 7 mm.
-The validation losses of the GPU path are 0.002-0.01 higher in all three pairs, too few pairs to tell.
+Not a change of method: the seed-11 and GPU-noise runs of section 10 drew the noise of the loss on the GPU
+(`experimental/igso_gpu`). A training step is 6-10x faster on an RTX 4090, and the loss, the validation loss and
+inpainting are unchanged. The separate report is
+[2026-11-16_igso3_noise_on_gpu.md](2026-11-16_igso3_noise_on_gpu.md).
 
 ## 12. 2026-11-16: Training throughput (data on the device, TF32, batch size)
 
@@ -731,6 +678,90 @@ No cell is the best in all three. `fact_RADW` comes closest: it is among the bes
 FID_val with Heun, and 0.8 mm better in the inpainting mean, but at an APD of 5.87. Whether `fact_RDW`, its width
 2048 or `fact_RADW` beat `fact_N` in inpainting can only be told at equal APD: the next step is the inpainting study
 of section 14 of the completion report for these cells.
+
+## 14. 2026-11-18: Where the loss is evaluated (noise levels of training)
+
+Question: is the slow first phase of SDS, and the gap at small noise, a matter of how little of the training sees small
+noise? With the std weighting t is uniform and s(t) is about 3.75 t^2, so 6% of the loss falls at s < 0.01 and 42% at
+s > 1. The likelihood weighting moved the loss to small noise and helped SDS but hurt D-Flow (pose completion report,
+sections 6-7); EDM's log-normal noise levels are the usual compromise.
+
+`weighting="lognormal"` (`hp/models/rsgm.py`, `loss_times`): log s(t) ~ N(loss_log_s_mean, loss_log_s_std^2),
+truncated to [s(0.002), s(1)] by the inverse CDF; the std(t)^2 weighting stays, only where the loss is evaluated
+changes. Configs of `scripts/train_rsgm_posedflow.py`, all `abl_residual` (30k x 4096, c10, seed 10, branch
+`experimental/denoising-aniso`, workstation1, 11.8-11.9 min each):
+
+| config | time distribution | loss at s < 0.01 | loss at s > 1 |
+|---|---|---|---|
+| `abl_residual` | std (t uniform) | 6% | 42% |
+| `abl_residual_lik` | likelihood (about log-uniform s at small s) | 51% | 16% |
+| `abl_residual_ln_m3` | log-normal N(-3, 2^2) | 21% | 5% |
+| `abl_residual_ln_m4` | log-normal N(-4, 2^2) | 38% | 2% |
+
+A first choice N(-4, 1.5^2) was dropped before training: 0.4% at s > 1 would starve the large noise that inpainting
+starts from. The rule, written before the runs: a variant is better if it improves the hybrid on the left leg and SDS
+denoising at 100 mm, and loses at most 1 mm in the mean of inpainting. All evaluation on workstation1 (`DEVICE=cuda:0`),
+validation only.
+
+Hybrid (500 validation poses, K = 10, MPVPE mean (mm) / APD (cm) / best of 10 (mm)) and the hidden-joint error of the
+trajectory (300 validation poses, deg); `eval_runs.sh`:
+
+| run | left_leg | legs | arms | trunk | left_leg 100 -> 199 | arms 100 -> 199 |
+|---|---|---|---|---|---|---|
+| abl_residual | **96.6** / 7.27 / 50.9 | **121.6** / 8.72 / 76.6 | **123.3** / 6.37 / 83.0 | 45.4 / 1.86 / 26.2 | **13.2** -> 14.1 | **23.4** -> 24.8 |
+| abl_residual_lik | 99.3 / 8.07 / 48.7 | 121.7 / 9.42 / 73.2 | 126.0 / 6.89 / 83.5 | 48.0 / 2.02 / 27.5 | 13.5 -> 14.1 | 23.6 -> 25.3 |
+| abl_residual_ln_m3 | 97.7 / 6.43 / 54.9 | 128.6 / 8.25 / 83.7 | 128.1 / 6.64 / 83.2 | **43.6** / 1.46 / 28.1 | 13.4 -> 14.2 | 24.2 -> 26.2 |
+| abl_residual_ln_m4 | 102.2 / 6.99 / 56.6 | 123.3 / 8.17 / 80.0 | 130.2 / 6.68 / 86.1 | 47.4 / 1.56 / 30.5 | 13.5 -> 14.1 | 23.9 -> 26.1 |
+
+Inpainting at the test point of `abl_residual` (`residual-t81`: 400 EDM steps, guidance 0.049, resample 5, no
+replacement), 1000 validation poses, K = 10, means over the four occlusions (`inpaint_valid.py`):
+
+| run | mean (mm) | best of 10 (mm) | APD (cm) |
+|---|---|---|---|
+| abl_residual | 88.56 | **49.04** | 6.45 |
+| abl_residual_lik | 91.99 | 50.87 | 6.71 |
+| abl_residual_ln_m3 | **87.90** | 50.82 | 5.97 |
+| abl_residual_ln_m4 | 89.43 | 51.72 | 6.09 |
+
+SDS motion denoising (100 validation sequences, the SDS settings tuned for RSGM 512x4 c10, MPJPE / MPVPE in mm;
+`scripts/evaluate_denoising.py`):
+
+| run | 40 mm | 100 mm |
+|---|---|---|
+| abl_residual | 18.63 / 37.97 | **30.81** / 51.26 |
+| abl_residual_lik | **18.61** / 37.90 | 30.88 / 51.27 |
+| abl_residual_ln_m3 | 18.73 / 37.95 | 30.83 / 51.34 |
+| abl_residual_ln_m4 | 18.76 / 38.00 | 30.85 / 51.24 |
+
+No variant meets the rule; a negative result. The likelihood weighting is worse in the hybrid and 3.4 mm worse in the
+mean of inpainting. `ln_m3` has a 0.7 mm lower inpainting mean only with less diversity (APD 5.97 against 6.45 cm) and
+a 1.8 mm worse best of 10, and is worse in the hybrid on the left leg; `ln_m4` is worse everywhere. The first phase
+stays at 13.2-13.5 deg whether 6% or 51% of the loss is at small noise: it moved only with per-joint noise (section
+10, 12.1-12.3 deg), so it is the geometry of the noise, not the amount of training at small noise. Denoising hardly
+depends on the prior here (all within 0.15 mm). The validation losses are not comparable across time distributions.
+Keep `weighting="std"`.
+
+Added the same day: the three aniso runs of section 10 trained with the same configs and seeds on both paths
+(workstation1; CPU path in `~/data/experiments/cpu_noise/`, GPU path in `igso_speed/`), evaluated as in section 10
+(hybrid on 500 validation poses, MPVPE mean / APD / best of 10; trajectory on 300; `eval_runs.sh` on the Mac). The
+same seed is not the same random stream on the two paths (CPU and CUDA generators), so a pair differs by the seed as
+well. The rule written before: the paths are equivalent if a pair differs by at most 1-2 mm in the hybrid and about
+0.1 deg in the first phase.
+
+| run | noise | left_leg | legs | arms | trunk | valid loss | left_leg 100 -> 199 | arms 100 -> 199 |
+|---|---|---|---|---|---|---|---|---|
+| abl_aniso s11 | CPU | 99.6 / 7.11 / 52.9 | 120.1 / 8.24 / 75.8 | 115.7 / 6.13 / 76.3 | 47.1 / 2.05 / 26.0 | 1.547 | 12.6 -> 14.5 | 23.1 -> 25.7 |
+| abl_aniso s11 | GPU | 93.0 / 6.83 / 49.6 | 114.1 / 7.92 / 71.6 | 121.7 / 5.92 / 82.1 | 47.3 / 1.97 / 26.8 | 1.549 | 12.2 -> 13.5 | 23.1 -> 25.4 |
+| abl_residual_aniso | CPU | 89.1 / 5.95 / 50.2 | 109.5 / 6.91 / 72.7 | 113.3 / 4.81 / 81.4 | 46.1 / 1.83 / 27.4 | 1.541 | 12.2 -> 12.7 | 22.6 -> 23.1 |
+| abl_residual_aniso | GPU | 89.6 / 6.03 / 50.4 | 107.6 / 6.66 / 71.3 | 115.7 / 4.96 / 82.6 | 46.6 / 1.74 / 28.7 | 1.551 | 12.3 -> 12.8 | 22.7 -> 23.1 |
+| abl_norm_aniso | CPU | 86.3 / 5.58 / 50.3 | 103.5 / 6.31 / 69.0 | 107.9 / 4.84 / 75.3 | 43.4 / 1.68 / 25.8 | 1.552 | 12.1 -> 12.3 | 22.1 -> 22.4 |
+| abl_norm_aniso | GPU | 87.0 / 5.81 / 49.3 | 105.2 / 6.40 / 70.6 | 108.0 / 4.87 / 75.0 | 44.0 / 1.61 / 26.5 | 1.556 | 12.1 -> 12.3 | 22.4 -> 22.6 |
+
+With residual or LayerNorm the paths agree (0.1-2.4 mm, at most 0.1 deg). The plain MLP `abl_aniso` differs by up to
+6.6 mm and 0.5 deg, with signs that change between the occlusions (the legs better on the GPU path, the arms on the
+CPU path): the spread of one seed of a network whose second phase drifts, not a shift of the path. So the agreement of
+`abl_aniso` seeds 10 and 11 in section 10 (0.4-2 mm) was partly luck; its spread between runs is up to about 7 mm.
+The validation losses of the GPU path are 0.002-0.01 higher in all three pairs, too few pairs to tell.
 
 ## 15. 2026-11-19: Per-axis noise within a joint (`fact_NA_x`) and the alpha family
 
@@ -965,6 +996,8 @@ prediction, while sections 6-9 ruled out the network size, the budget, the data 
 - The likelihood weighting with the new networks.
 - The z input (section 9): one seed per run, the z input alone (without the matrices) not tried, and the noise of the
   hybrid stays isotropic in the angle, so the network gets the joints' scale only at the input.
+- Noise levels of training (section 14): one seed per variant, one network (`abl_residual`), no per-joint noise;
+  the SDS settings of denoising and the inpainting point were tuned for other models, not for each variant.
 - Per-joint noise (section 10): two seeds for `abl_aniso` only, one for the residual and LayerNorm variants; one scale
   per joint (the noise is isotropic within a joint, IGSO(3) has no anisotropic heat kernel in closed form); only the
   hybrid, not the completion protocols; the mean at equal APD not compared; the noise of the hybrid is matched to the

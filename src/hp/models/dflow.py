@@ -5,7 +5,8 @@ on SO(3)^J as PoseD-Flow, Nadar, Foti, Birdal, CVPR 2026, their pose_completion.
     loss(x_1) + running_weight * mean_t sum_joints (3 - tr x_t),
 
 the gradients going through all ODE steps; x_0 = start exp(hat(delta)) with Adam on delta. The start mixes noise with
-a guess of the latent of the observations, as theirs. A prior wraps the ODE of one model:
+a guess of the latent of the observations, as theirs: sqrt(w) guess + sqrt(1 - w) noise, w = guess_weight (theirs
+1/4; smaller: more noise, more diverse hypotheses). A prior wraps the ODE of one model:
   - FlowPrior: the pretrained PoseD-Flow (hp/models/posedflow.py), 21 joints: their ambient Euler steps from t = 0
     to 1 without projection, their projx at the end; the start projx(sqrt(1/4) F(y_0) + sqrt(3/4) noise), F(y_0) the
     flow run from the observed pose y_0 (their code does exactly this, from the data side);
@@ -40,10 +41,13 @@ def trace_cost(x: torch.Tensor) -> torch.Tensor:
 
 
 class _RotationLatent:
-    """The latent of the priors on SO(3)^J: their start projx(sqrt(1/4) guess + sqrt(3/4) noise), steps x exp(delta)."""
+    """The latent of the priors on SO(3)^J: the start projx(sqrt(w) guess + sqrt(1 - w) noise), w = guess_weight
+    (theirs 1/4), steps x exp(delta)."""
+    guess_weight = 0.25
 
     def start(self, y0: torch.Tensor) -> torch.Tensor:
-        return projx(math.sqrt(0.25) * self.guess(y0) + math.sqrt(0.75) * self.noise(y0.shape[0]))
+        w = self.guess_weight
+        return projx(math.sqrt(w) * self.guess(y0) + math.sqrt(1 - w) * self.noise(y0.shape[0]))
 
     @staticmethod
     def zero_delta(start: torch.Tensor) -> torch.Tensor:
@@ -55,8 +59,8 @@ class _RotationLatent:
 
 
 class FlowPrior(_RotationLatent):
-    def __init__(self, model: PoseDFlowPretrained, ode_steps: int = 100):
-        self.model, self.ode_steps, self.joints = model, ode_steps, 21
+    def __init__(self, model: PoseDFlowPretrained, ode_steps: int = 100, guess_weight: float = 0.25):
+        self.model, self.ode_steps, self.joints, self.guess_weight = model, ode_steps, 21, guess_weight
 
     def _times(self):
         return torch.linspace(0.0, 1.0, self.ode_steps + 1, device=self.model.device, dtype=self.model.dtype)
@@ -82,13 +86,13 @@ class FlowPrior(_RotationLatent):
 
 class ScorePrior(_RotationLatent):
     def __init__(self, model: RSGM, ode_steps: int = 100, invert: bool = False, sampler: str = "euler",
-                 schedule: str = "uniform"):
+                 schedule: str = "uniform", guess_weight: float = 0.25):
         if sampler not in ("euler", "heun"):
             raise ValueError(f"Unknown sampler '{sampler}' for D-Flow. Use 'euler' or 'heun' (an ODE).")
         if schedule not in ("uniform", "edm"):
             raise ValueError(f"Unknown schedule '{schedule}'. Use 'uniform' or 'edm'.")
         self.model, self.ode_steps, self.joints, self.invert = model, ode_steps, model.num_joints, invert
-        self.sampler, self.schedule = sampler, schedule
+        self.sampler, self.schedule, self.guess_weight = sampler, schedule, guess_weight
 
     @property
     def dtype(self):
@@ -127,10 +131,11 @@ class ScorePrior(_RotationLatent):
 
 
 class DPoserPrior:
-    def __init__(self, model: DPoser, ode_steps: int = 100, invert: bool = False):
+    def __init__(self, model: DPoser, ode_steps: int = 100, invert: bool = False, guess_weight: float = 0.25):
         if not model.isotropic_noise:
             raise NotImplementedError("DPoserPrior assumes N(0, I) noise; this DPoser has a noise_scale.")
         self.model, self.ode_steps, self.joints, self.invert = model, ode_steps, model.num_joints, invert
+        self.guess_weight = guess_weight
 
     @property
     def dtype(self):
@@ -163,7 +168,8 @@ class DPoserPrior:
         return self._run(x, self._times(not self.invert), False)[0]
 
     def start(self, y0: torch.Tensor) -> torch.Tensor:
-        return math.sqrt(0.25) * self.guess(y0) + math.sqrt(0.75) * self.noise(y0.shape[0])
+        w = self.guess_weight
+        return math.sqrt(w) * self.guess(y0) + math.sqrt(1 - w) * self.noise(y0.shape[0])
 
     @staticmethod
     def zero_delta(start: torch.Tensor) -> torch.Tensor:
@@ -179,12 +185,12 @@ class DPoserPrior:
 
 
 def prior_of(model, ode_steps: int = 100, **options):
-    """The D-Flow prior of a model; options go to its prior class (ScorePrior: sampler, schedule, invert;
-    DPoserPrior: invert)."""
+    """The D-Flow prior of a model; options go to its prior class (all: guess_weight; ScorePrior: sampler, schedule,
+    invert; DPoserPrior: invert)."""
     if isinstance(model, PoseDFlowPretrained):
-        if options:
-            raise ValueError(f"The PoseD-Flow prior takes no options, got {sorted(options)}.")
-        return FlowPrior(model, ode_steps)
+        if set(options) - {"guess_weight"}:
+            raise ValueError(f"The PoseD-Flow prior takes only guess_weight, got {sorted(options)}.")
+        return FlowPrior(model, ode_steps, **options)
     if isinstance(model, RSGM):
         return ScorePrior(model, ode_steps, **options)
     if isinstance(model, DPoser):
@@ -199,8 +205,15 @@ def geodesic_loss(pred: torch.Tensor, target: torch.Tensor, eps: float = 1e-6) -
 
 
 def dflow(prior, loss_fn: Callable[[torch.Tensor], torch.Tensor], start: torch.Tensor, steps: int = 200,
-          lr: float = 0.1, running_weight: float = 1e-3) -> torch.Tensor:
-    """x_1 [B, J, 3, 3] of the last forward pass (as theirs, before the last step of the optimizer)."""
+          lr: float = 0.1, running_weight: float = 1e-3, optimizer: str = "adam") -> torch.Tensor:
+    """x_1 [B, J, 3, 3] of the last forward pass (as theirs, before the last step of the optimizer).
+
+    optimizer "adam": Adam on the tangent coordinates delta at the start (per coordinate); "riemannian": their
+    RiemannianAdam (geoopt) on their SO3Power, for the priors on SO(3)^J (riemannian_adam_dflow)."""
+    if optimizer == "riemannian":
+        return riemannian_adam_dflow(prior, loss_fn, start, steps, lr, running_weight)
+    if optimizer != "adam":
+        raise ValueError(f"Unknown optimizer '{optimizer}'. Use 'adam' or 'riemannian'.")
     start = start.detach()
     delta = prior.zero_delta(start).requires_grad_(True)
     optimizer = torch.optim.Adam([delta], lr=lr)
@@ -211,6 +224,32 @@ def dflow(prior, loss_fn: Callable[[torch.Tensor], torch.Tensor], start: torch.T
             x1, running = prior.generate(prior.shift(start, delta))
             (loss_fn(x1) + running_weight * running).backward()
             optimizer.step()
+    return x1.detach()
+
+
+def riemannian_adam_dflow(prior, loss_fn: Callable[[torch.Tensor], torch.Tensor], start: torch.Tensor,
+                          steps: int = 200, lr: float = 0.1, running_weight: float = 1e-3, betas=(0.9, 0.999),
+                          eps: float = 1e-8) -> torch.Tensor:
+    """D-Flow with their optimizer: geoopt's RiemannianAdam on their SO3Power (manifm/manifolds/so3power.py). The
+    Riemannian gradient of a joint is the skew matrix hat(s) = skew(x^T dL/dx), s = g / 2 for g the gradient of the
+    loss in the coordinates x exp(hat(delta)) at delta = 0; the second moment is per joint, their component_inner
+    |hat(s)|_F^2 = 2 |s|^2 shared by the joint's entries; the step x <- x exp(-lr hat(m) / (sqrt(v) + eps)) with the
+    bias corrections of Adam and the moments carried over unchanged (their transp is the identity). Their weight
+    decay adds wd x to dL/dx, whose skew(x^T x) = 0: it has no effect and is left out. Rotation priors only."""
+    x = start.detach().clone()
+    m = torch.zeros(*x.shape[:2], 3, device=x.device, dtype=x.dtype)
+    v = torch.zeros(*x.shape[:2], 1, device=x.device, dtype=x.dtype)
+    x1 = None
+    with torch.enable_grad():
+        for step in range(1, steps + 1):
+            delta = torch.zeros_like(m).requires_grad_(True)
+            x1, running = prior.generate(exp_frame(x, delta))
+            (g,) = torch.autograd.grad(loss_fn(x1) + running_weight * running, delta)
+            s = g / 2
+            m = betas[0] * m + (1 - betas[0]) * s
+            v = betas[1] * v + (1 - betas[1]) * 2 * s.pow(2).sum(-1, keepdim=True)
+            direction = (m / (1 - betas[0] ** step)) / ((v / (1 - betas[1] ** step)).sqrt() + eps)
+            x = exp_frame(x, -lr * direction).detach()
     return x1.detach()
 
 

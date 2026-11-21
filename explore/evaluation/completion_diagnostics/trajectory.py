@@ -3,8 +3,8 @@ the spread of the K hypotheses (deg) and the mean |x - x0_hat|, with DPoser's ow
 of hybrid.py), on 300 validation poses, left_leg and arms:
     PYTHONPATH=src python explore/evaluation/completion_diagnostics/trajectory.py <RSGM run folder> [rsgm]
     DP_RUN=<DPoser run> PYTHONPATH=src python explore/evaluation/completion_diagnostics/trajectory.py -
-With a second argument only RSGM's denoiser runs; with "-" for the RSGM run only DPoser's. HP_DEVICE: the device
-(default mps); DP_RUN: the DPoser run (default: DPoser on the full data), e.g. one with a noise_scale."""
+With a second argument only RSGM's denoiser runs; with "-" for the RSGM run only DPoser's. DEVICE (or HP_DEVICE): the
+device (default mps); DP_RUN: the DPoser run (default: DPoser on the full data), e.g. one with a noise_scale."""
 import os, sys, time, torch, roma
 from hp.evaluation.completion import KEEP, OCCLUSIONS, TOES, Body, at_rest, build, metrics, summary, valid_poses
 from hp.models import igso3
@@ -12,7 +12,7 @@ from hp.models.rsgm import exp_frame
 from hp.models.score_completion import one_step_denoise, rsgm_denoise
 
 K = 10
-DEVICE = os.environ.get("HP_DEVICE", "mps")
+DEVICE = os.environ.get("DEVICE", os.environ.get("HP_DEVICE", "mps"))  # e.g. DEVICE=cuda:0 on a server
 dp = build(dict(run=os.environ.get("DP_RUN", "~/data/experiments/full/dposer_posedflow_s10/run_0001")), DEVICE)
 rs = build(dict(run=sys.argv[1]), DEVICE) if sys.argv[1] != "-" else None
 dev = dp.device

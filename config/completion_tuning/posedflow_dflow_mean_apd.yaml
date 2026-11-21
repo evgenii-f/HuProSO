@@ -1,0 +1,23 @@
+# D-Flow (run(method="dflow"), hp.models.dflow) on their pretrained PoseD-Flow, with two objectives: mean MPVPE
+# (minimized) and APD (maximized). One of the six fronts of the comparison (DPoser x {own method, inpainting},
+# PoseD-Flow x D-Flow, RSGM x {inpainting, D-Flow, DPoser's method}). The same search space, first trials, poses and
+# seeds as rsgm_dflow_mean_apd_full_*. Their ODE as in the paper: Euler with 100 steps, twice the network calls of
+# RSGM's Heun EDM with 25 steps (50 calls), so that PoseD-Flow has no handicap from a shorter ODE. lr and the optimizer
+# steps move a trial along the front (fewer or smaller steps: closer to samples of the prior, more diverse); steps
+# replaces their 200 (300 for the arms).
+# Test: N points spanning the front, chosen by a rule fixed before the test.
+model: ~/data/posedflow_ckpt/checkpoints/epoch-009_step-0_loss-0.0000.ckpt
+method: dflow
+objective: mean_apd
+poses: 1000
+n_trials: 60
+params:
+  lr: {low: 0.01, high: 0.3, log: true}
+  running_weight: {low: 1.0e-5, high: 0.1, log: true}
+  steps: [50, 100, 200, 300]
+fixed:
+  ode_steps: 100
+first:
+  - {lr: 0.1, running_weight: 0.001, steps: 200}  # their protocol
+  - {lr: 0.1, running_weight: 0.001, steps: 50}
+  - {lr: 0.03, running_weight: 0.001, steps: 100}

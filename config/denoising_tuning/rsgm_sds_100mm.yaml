@@ -1,0 +1,21 @@
+# RSGM 512x4 c10 in DPoser's optimization (score distillation on SO(3)^J), noise 100 mm, 100 validation sequences.
+# DPoser's own settings at 100 mm: 3 x 80 steps, t 0.25 -> 0.1, lr 0.03, weight 1. Steps on 30 validation sequences
+# (t 0.05 -> 0.01, weight 10, the 40 mm window): N 100 / 200 / 400 gave MPJPE 39.93 / 37.58 / 35.85, still falling;
+# our DPoser (N 240) 33.17. The space widens the noise window toward DPoser's.
+# Rule for the test, fixed before it: the best trial's settings are used for every RSGM row at 100 mm, and the RSGM
+# row with the lowest validation MPJPE at these settings is "ours"; the test is run once per row. A second row
+# reports RSGM at DPoser's N (240) with the other settings of the best trial.
+model: ~/data/experiments/rsgm_posedflow_small_s10/run_0001
+method: dposer
+sigma: 0.1
+sequences: 100
+n_trials: 40
+params:
+  t_max: {low: 0.02, high: 0.5, log: true}
+  t_min_fraction: {low: 0.05, high: 0.9}
+  sds_weight: {low: 1.0, high: 100.0, log: true}
+  lr: {low: 0.01, high: 0.1, log: true}
+  steps_per_iter: [80, 133, 267]  # N = 3 x steps ~ 240, 400 or 800
+first:
+  - {t_max: 0.05, t_min_fraction: 0.2, sds_weight: 10.0, lr: 0.03, steps_per_iter: 80}  # the 40 mm hand sweep
+  - {t_max: 0.25, t_min_fraction: 0.4, sds_weight: 1.0, lr: 0.03, steps_per_iter: 80}   # DPoser's settings
