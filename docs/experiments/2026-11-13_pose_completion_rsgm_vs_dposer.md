@@ -9,6 +9,23 @@ gap.
 
 All numbers on the 5000 test poses of PoseD-Flow, K = 10, MPVPE in mm averaged over the four occlusions.
 
+**Final result (2026-11-20, sections 15-16).** Six fronts (family × completion method, all networks of a family),
+10 points each chosen on validation by a rule fixed before the test, each run once on the test, compared by the
+hypervolume over APD 4.0-8.5 cm (band mean in mm, lower is better):
+
+- **DPoser's own optimization is the best front** in the mean and in best of 10: band mean 86.85 mm, then RSGM
+  inpainting 90.05, DPoser inpainting 91.71, RSGM D-Flow 92.91, PoseD-Flow D-Flow 93.28, RSGM with DPoser's
+  optimization 96.69. The order is the same on validation.
+- **Under the same procedure the two priors are on par.** Inpainting: RSGM ahead on the test (90.05 against 91.71),
+  DPoser on validation (91.10 against 92.40). D-Flow: RSGM against PoseD-Flow equal in the mean within the choice of
+  the band, clearly ahead in best of 10 (HV 71.64 against 59.11).
+- **The gap between RSGM and DPoser is the procedure, not the prior**: DPoser's optimization works on DPoser and is
+  the weakest front on RSGM.
+- **Hard poses (top 5% for all seven compared rows)** have 2-2.5 times the average error; which poses are hard depends
+  mostly on the procedure; on them the diverse rows (DPoser t28, RSGM inpainting t108) give the best best of 10.
+
+The dated bullets below are the history that led there.
+
 - **Best RSGM row: 512×4 with D-Flow and Heun EDM inside, 50 network calls**: best of 10 49.92 (PoseD-Flow 50.26,
   DPoser 47.22), the most diverse hypotheses of all rows, a quarter of PoseD-Flow's calls; mean 88.32 against 79.65
   (PoseD-Flow) and 81.19 (DPoser). More calls (100, 200) change nothing.
@@ -679,6 +696,168 @@ occlusion), or a rule that is checked on a split as hard as the test.
 diversity move differently on them. Comparing whole fronts on the test (N points per front, chosen by a rule fixed
 before) is less exposed to this than a single winner.
 
+## 15. 2026-11-20: Six fronts on the test
+
+**Question.** Sections 11-14 tested one point per study. Which of the procedures and priors is better over the whole
+range of diversity, judged on the test by a rule fixed before it?
+
+**Fronts.** A front is a family (the networks of DPoser, of RSGM, PoseD-Flow's checkpoint; c10 and full training data
+together) times a completion method, over all its Optuna studies on the 1000 validation poses (K = 10, objectives mean
+and APD; the trials copied between studies left out):
+
+- **DPoser dposer**: DPoser's own optimization on DPoser (c10 and full);
+- **DPoser inpaint**: the reverse-process inpainting of section 10 on DPoser;
+- **RSGM inpaint**: the same inpainting on RSGM (the ablation networks, 512×4, dposer-like, full and c10);
+- **RSGM dposer**: DPoser's optimization (SDS) on RSGM dposer-like full;
+- **RSGM dflow**: D-Flow (Heun EDM, 25 steps) on RSGM dposer-like and dposer-like aniso full;
+- **PoseD-Flow dflow**: D-Flow on their checkpoint (their ODE), with the studies of lr, running weight and, since
+  e58f6fe, the weight w of the guess in the start (`guess_weight`: sqrt(w) guess + sqrt(1 - w) noise, theirs 0.25).
+
+**Rule (a212c54, fixed before the test).** For each of 10 thresholds a = 4.0, 4.5, ..., 8.5 cm the trial with the
+lowest mean among those with APD ≥ a (a corner of the staircase of the front; `hp.evaluation.fronts.spanning`); a trial
+chosen for several thresholds runs once. Each point runs once on the 5000 test poses
+(`scripts/select_test_points.py`, `scripts/evaluate_completion.py --points config/completion_test_points.yaml`). The
+fronts compare by the hypervolume of their points over APD 4.0-8.5: the area between the staircase f(a), the lowest
+metric among the points with APD ≥ a, and a reference fixed before the test (mean 115 mm, best of 10 65 mm). Band mean
+= 115 - HV / 4.5 is the average of the staircase over the band, in mm; where a front has no point with APD ≥ a it gets
+no area there, as if its error were the reference. The points of PoseD-Flow were chosen after its w study (a15567a);
+those of the other five fronts did not change with it.
+
+**Hypervolume (5000 test poses against 1000 validation poses).**
+
+| front | val band mean | test band mean | val HV best of 10 | test HV best of 10 |
+|---|---|---|---|---|
+| DPoser dposer | **89.24** | **86.85** | 71.46 | **82.04** |
+| RSGM inpaint | 92.40 | 90.05 | 66.27 | 74.78 |
+| DPoser inpaint | 91.10 | 91.71 | **71.60** | 72.73 |
+| RSGM dflow | 94.03 | 92.91 | 61.44 | 71.64 |
+| PoseD-Flow dflow | 95.82 | 93.28 | 49.83 | 59.11 |
+| RSGM dposer | 97.84 | 96.69 | 40.74 | 50.14 |
+
+**The points (mean / best of 10 in mm, APD in cm; validation → test).**
+
+| front | point | thresholds | validation | test |
+|---|---|---|---|---|
+| DPoser dposer | c10 t29 | 4 | 80.61 / 53.20 / 4.22 | 82.97 / 54.60 / 4.16 |
+| | full t3 | 4.5-5.5 | 83.69 / 48.73 / 5.66 | 79.59 / 44.95 / 5.63 |
+| | c10 t3 | 6 | 86.17 / 49.99 / 6.02 | 84.10 / 48.59 / 5.80 |
+| | full t28 | 6.5, 7 | 91.16 / 48.56 / 7.32 | 87.98 / 46.21 / 7.33 |
+| | full t47 | 7.5 | 94.68 / 49.99 / 7.82 | 90.74 / 47.09 / 7.77 |
+| | full t112 | 8 | 97.42 / 50.83 / 8.36 | 94.73 / 48.44 / 8.35 |
+| | c10 t68 | 8.5 | 99.09 / 52.73 / 8.52 | 97.74 / 51.32 / 8.29 |
+| DPoser inpaint | full t56 | 4-6 | 86.31 / 47.65 / 6.32 | 84.88 / 45.93 / 6.38 |
+| | full t90 | 6.5 | 86.75 / 47.38 / 6.52 | 87.27 / 46.43 / 6.66 |
+| | full t89 | 7 | 90.51 / 48.33 / 7.04 | 92.74 / 48.69 / 7.20 |
+| | full t49 | 7.5 | 94.62 / 49.92 / 7.51 | 97.97 / 51.17 / 7.66 |
+| | c10 t103 | 8 | 100.03 / 53.12 / 8.03 | 103.19 / 55.22 / 7.85 |
+| | full t38 | 8.5 | 103.85 / 53.80 / 8.52 | 109.97 / 57.15 / 8.73 |
+| RSGM inpaint | abl residual t59 | 4-6 | 88.22 / 49.30 / 6.39 | 85.34 / 46.71 / 6.44 |
+| | abl norm t118 | 6.5 | 89.55 / 49.72 / 6.57 | 87.64 / 47.80 / 6.74 |
+| | pareto t56 | 7 | 92.49 / 50.82 / 7.00 | 88.56 / 47.52 / 7.04 |
+| | 512×4 full t63 | 7.5 | 95.57 / 50.55 / 7.52 | 92.87 / 49.05 / 7.39 |
+| | 512×4 full t26 | 8 | 99.45 / 51.96 / 8.03 | 97.45 / 50.71 / 8.04 |
+| | 512×4 full t105 | 8.5 | 103.66 / 53.06 / 8.52 | 104.15 / 53.72 / 8.46 |
+| RSGM dflow | aniso t29 | 4, 4.5 | 87.71 / 56.26 / 4.56 | 88.44 / 57.10 / 4.70 |
+| | aniso t51 | 5, 5.5 | 89.68 / 52.95 / 5.57 | 89.03 / 52.83 / 5.63 |
+| | aniso t58 | 6 | 91.12 / 51.26 / 6.18 | 90.91 / 51.05 / 6.30 |
+| | aniso t25 | 6.5 | 93.54 / 51.50 / 6.61 | 93.42 / 50.96 / 6.76 |
+| | t51 | 7 | 96.28 / 51.22 / 7.26 | 91.40 / 48.35 / 7.03 |
+| | aniso t19 | 7.5 | 98.39 / 51.12 / 7.74 | 97.37 / 50.26 / 7.76 |
+| | aniso t36 | 8 | 100.51 / 51.75 / 8.06 | 99.82 / 51.08 / 8.12 |
+| | t45 | 8.5 | 103.82 / 53.00 / 8.50 | 102.00 / 50.91 / 8.55 |
+| PoseD-Flow dflow | w study t14 | 4 | 84.23 / 56.79 / 4.01 | 79.30 / 52.10 / 4.09 |
+| | w study t8 | 4.5 | 85.87 / 54.39 / 4.76 | 81.70 / 50.32 / 4.83 |
+| | t17 | 5 | 86.34 / 53.03 / 5.10 | 81.40 / 49.13 / 5.10 |
+| | w study t12 | 5.5 | 88.45 / 52.58 / 5.53 | 86.04 / 50.09 / 5.67 |
+| | w study t4 | 6, 6.5 | 92.00 / 51.18 / 6.52 | 88.65 / 48.63 / 6.51 |
+| | w study t19 | 7 | 94.77 / 51.48 / 7.01 | 92.71 / 49.38 / 7.08 |
+| | t11 | 7.5, 8 | 104.66 / 56.59 / 8.00 | 105.56 / 55.74 / 8.07 |
+| RSGM dposer | t15 | 4, 4.5 | 92.03 / 61.66 / 4.62 | 90.95 / 58.07 / 5.00 |
+| | t24 | 5 | 93.74 / 60.03 / 5.20 | 93.70 / 56.69 / 5.66 |
+| | t99 | 5.5 | 94.81 / 57.93 / 5.79 | 95.62 / 55.24 / 6.32 |
+| | t64 | 6 | 95.46 / 57.16 / 6.10 | 96.93 / 54.64 / 6.73 |
+| | t63 | 6.5 | 97.09 / 56.67 / 6.55 | 98.03 / 53.86 / 7.18 |
+| | t106 | 7 | 99.02 / 55.92 / 7.16 | 100.92 / 53.81 / 7.84 |
+| | t82 | 7.5 | 100.95 / 55.83 / 7.51 | 102.99 / 54.03 / 8.23 |
+| | t22 | 8 | 104.27 / 56.23 / 8.18 | 105.82 / 54.29 / 8.84 |
+| | t56 | 8.5 | 106.36 / 56.70 / 8.51 | 107.24 / 54.54 / 9.11 |
+
+The w study gave PoseD-Flow five of its seven points, all at the low and middle APD: a smaller weight of the guess
+(more noise in the start) is what moves their D-Flow along its front. Neither inpainting front reaches below APD
+6.3 cm, so their first point serves the thresholds 4-6.
+
+**Observations.**
+
+1. **The order of the fronts is the same on both splits**, and inside a front the test APD of the points keeps their
+   order with one exception (RSGM dflow t51, 91.40 mm at 7.03 cm on the test, below its neighbours). Single points
+   move by several mm between the splits (section 14); the fronts move together, five of six down, as the test poses
+   are easier.
+2. **DPoser's own optimization is the best front** in the mean (by 3.2 mm over the next) and in best of 10, and it
+   alone covers APD below 6 cm well with a low mean.
+3. **Under the same procedure the priors are on par.** Inpainting: RSGM ahead on the test (90.05 against 91.71 mm,
+   HV best of 10 74.78 against 72.73), DPoser ahead on validation (91.10 against 92.40); section 13 found DPoser
+   inpainting slightly ahead from APD 6 up. D-Flow: RSGM against PoseD-Flow 92.91 against 93.28 mm on the test, 94.03
+   against 95.82 on validation; part of that is the band (PoseD-Flow has no point above 8.07 cm and gets no area in
+   8.07-8.5, about 0.9 mm of band mean; over 4.0-8.0 the test order turns, 91.84 against 90.70). Equal in the mean,
+   then; in best of 10 RSGM is clearly ahead (71.64 against 59.11 on the test, 61.44 against 49.83 on validation):
+   with the same D-Flow its hypotheses cover the truth more often.
+4. **SDS on RSGM is the weakest front** (96.69 mm): DPoser's optimization is tuned to DPoser; on RSGM the APD of its points
+   also grows from validation to test more than on any other front (by 0.4-0.7 cm from t99 up).
+
+## 16. 2026-11-20: Seven compared rows and hard poses (test)
+
+**Rows.** `explore/evaluation/pose_completion.ipynb` keeps seven rows: their protocols (PoseD-Flow's checkpoint, DPoser
+full with its method), the tuned points of section 14 and of the full-data studies (one point per study by the rule
+of 10.4, threshold APD 6.4, picked before the fronts: RSGM dposer-like full inpaint t108, RSGM 512×4 full inpaint t16,
+DPoser full method t28) and RSGM 512×4 full with D-Flow (Euler 100). Test, 5000 poses, K = 10:
+
+| row | mean | best of 10 | APD | left_leg | legs | arms | trunk |
+|---|---|---|---|---|---|---|---|
+| PoseD-Flow: their protocol | **79.65** | 50.26 | 4.61 | 79.8 | **92.4** | 106.9 | **39.5** |
+| PoseD-Flow: D-Flow t17 | 81.40 | 49.13 | 5.10 | 82.7 | 94.4 | 109.1 | **39.5** |
+| DPoser full: its method (their protocol) | 81.19 | 47.22 | 5.36 | **76.3** | 102.9 | **102.2** | 43.4 |
+| DPoser full: its method t28 | 87.98 | **46.21** | 7.33 | 87.7 | 110.0 | 106.9 | 47.3 |
+| RSGM 512×4 full: D-Flow | 87.85 | 55.71 | 5.00 | 92.8 | 103.9 | 112.0 | 42.7 |
+| RSGM dposer-like full: inpaint t108 | 88.07 | 47.23 | 6.76 | 81.8 | 104.1 | 124.0 | 42.4 |
+| RSGM 512×4 full: inpaint t16 | 91.95 | 49.33 | 7.16 | 88.7 | 108.5 | 124.6 | 46.0 |
+
+RSGM t108 matches DPoser's protocol in best of 10 (47.23 against 47.22) at a higher APD, and DPoser full inpainting
+t90 (87.27 / 46.43 / 6.66, the DPoser inpaint front) at about the same APD; its loss in the mean is the arms (124 mm
+against 102-107 for the other procedures), as for every inpainting row.
+
+**Hard poses.** Per row the poses of an occlusion are ranked by their mean MPVPE over the 10 hypotheses, the rank
+scaled to (0, 1]; the ranks are averaged over the seven rows and the top 5% (250 of 5000) are "hard for all". Ranks
+rather than errors, so that no row's scale decides (`hp.visualization.completion_figure.hard_poses`). "In common":
+the share of a row's own top 5% inside the common set. Mean / best of 10 in mm, APD in cm, on the hard poses (all
+poses in brackets):
+
+| row | left_leg | legs | arms | trunk |
+|---|---|---|---|---|
+| PoseD-Flow: their protocol | 195.4 / 118.0 / 10.9 (79.8) | 207.8 / 133.3 / 14.0 (92.4) | 237.6 / 144.8 / 10.5 (106.9) | **91.3** / 66.6 / 2.4 (39.5) |
+| PoseD-Flow: D-Flow t17 | 204.9 / 120.2 / 11.7 (82.7) | 213.4 / 138.0 / 14.0 (94.4) | 239.9 / 139.8 / 11.0 (109.1) | 91.9 / 65.9 / 2.4 (39.5) |
+| DPoser full: its method | **164.3** / 93.0 / 9.2 (76.3) | 211.5 / 151.6 / 10.8 (102.9) | 216.3 / 147.1 / 8.1 (102.2) | 97.2 / 66.8 / 2.7 (43.4) |
+| DPoser full: its method t28 | 173.3 / **92.1** / 12.1 (87.7) | **193.7** / 124.2 / 14.3 (110.0) | **215.6** / **122.2** / 11.6 (106.9) | 101.5 / **62.3** / 3.9 (47.3) |
+| RSGM 512×4 full: D-Flow | 220.7 / 122.1 / 13.6 (92.8) | 262.1 / 152.7 / 17.5 (103.9) | 233.1 / 140.5 / 11.1 (112.0) | 95.1 / 66.1 / 2.7 (42.7) |
+| RSGM dposer-like full: inpaint t108 | 173.5 / 95.0 / 12.2 (81.8) | 212.4 / **123.5** / 16.5 (104.1) | 242.1 / 123.3 / 14.3 (124.0) | 93.2 / 62.5 / 2.9 (42.4) |
+| RSGM 512×4 full: inpaint t16 | 198.3 / 113.4 / 12.1 (88.7) | 218.0 / 130.5 / 16.5 (108.5) | 247.4 / 134.3 / 13.9 (124.6) | 100.7 / 64.6 / 3.5 (46.0) |
+
+Overlap: the poses in the top 5% of exactly all seven rows are 27 (left_leg), 57 (legs), 28 (arms), 82 (trunk); a
+row's own top lies 45-80% inside the common set. Pairwise shares of the own tops group by method rather than by
+prior: PoseD-Flow with its t17 71-81%, RSGM t108 with t16 59-75%, DPoser with its t28 56-74%; across methods 26-66%,
+the lowest DPoser's method against PoseD-Flow on the arms (26%) and against RSGM D-Flow (27%).
+
+**Conclusions.**
+
+1. On hard poses the mean error is 2-2.5 times the average and APD grows with it: the hypotheses spread where the
+   visible joints leave the pose open.
+2. In the mean on hard poses DPoser's method leads on left_leg, legs and arms, PoseD-Flow on the trunk; in best of 10 the
+   diverse rows lead in every occlusion (DPoser t28, RSGM t108), which is what diversity is for.
+3. What is hard depends mostly on the procedure: rows of one procedure (two networks, or two settings) agree on
+   their hard poses more than rows of two procedures do, with some overlap of the ranges.
+
+The notebook browses them: pick "hard for all" (and "previous hard") steps through the common set of the chosen
+occlusion in the order of the mean rank.
+
 ## What it does not show
 
 - One training seed per likelihood run, one Pareto study (on the old 512×4 std model); SDS settings were not retuned
@@ -687,6 +866,13 @@ before) is less exposed to this than a single winner.
 - D-Flow on validation for the likelihood models is complete only for 512×4 (the Mac ran out of memory).
 - The test of the Heun rows and of the likelihood rows is a single run each; differences below ~1 mm are not
   resolved.
+- Section 15: each front point ran once on the test; the hypervolume depends on the band (RSGM D-Flow against
+  PoseD-Flow turns between APD 4.0-8.0 and 4.0-8.5) and on how densely Optuna explored a front; 10 points lose
+  0.1-1.1 mm of band mean against the whole validation front, the most on the steep fronts (PoseD-Flow, DPoser
+  inpainting). The best of 10 hypervolume is that of the points chosen by the mean, not of a front of best of 10.
+- The validation poses are harder than the test poses, so single points move between the splits by several mm
+  (section 14); the comparison relies on the fronts.
+- One training seed per network; the families pool networks of c10 and full training data.
 
 ## Where things are
 
@@ -711,6 +897,13 @@ before) is less exposed to this than a single winner.
   (`config/completion_tuning/posedflow_dflow_mean_apd.yaml`), test row `PoseD-Flow: their checkpoint, D-Flow t17`;
   `explore/evaluation/completion_diagnostics/test_rows_by_difficulty.py` (the table by difficulty) and
   `dflow_loss_scale.py` (the check of the batch).
+- Six fronts on the test (section 15): the rule and the measure in `hp.evaluation.fronts` (`spanning`,
+  `hypervolume`, `APD_RANGE`, `TEST_POINTS`, `HV_REFERENCE`); the points by `scripts/select_test_points.py` in
+  `config/completion_test_points.yaml`, run by `scripts/evaluate_completion.py --points`; the tables by
+  `explore/evaluation/completion_diagnostics/test_points_report.py`; the test view of the fronts in
+  `explore/evaluation/completion_fronts.ipynb`.
+- Compared rows and hard poses (section 16): `explore/evaluation/pose_completion.ipynb` (sections 4-5, the widget
+  "hard for all"), `hard_poses` and `hard_overlap` in `src/hp/visualization/completion_figure.py`.
 - Fronts over bands (section 13): `explore/evaluation/completion_diagnostics/plot_study_fronts.py --bands`; all
   validation settings and the test rows on their fronts in `explore/evaluation/completion_fronts.ipynb` (a selector of
   the split).
