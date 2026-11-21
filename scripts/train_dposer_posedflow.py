@@ -4,6 +4,8 @@ script version of explore/training/dposer_posedflow_train.ipynb, e.g. for a clus
     python scripts/train_dposer_posedflow.py --seeds 10 11 --device cuda:0
     python scripts/train_dposer_posedflow.py --config no_sigma_scale --dry-run      # print the configuration only
     python scripts/train_dposer_posedflow.py train.time_limit_minutes=230
+    python scripts/train_dposer_posedflow.py --config elbo --seeds 10 11                 # phase 1: d by the ELBO
+    python scripts/train_dposer_posedflow.py --config learned --noise-from <run> <run> --rotations <full data>
 
 The data is their AMASS converted by scripts/preprocess/convert_posedflow.py (train every 10th pose, valid every
 100th), our 19 joints. The model and its training are those of DPoser-body (config/models/dposer.yaml); CONFIGS changes
@@ -53,6 +55,15 @@ CONFIGS = {  # what differs from config/models/dposer.yaml
 # joint / iso: the budget of the paper (for the full data, as the DPoser of the hybrid); rsgm_budget_*: that of c10
 NOISE = {"joint": "joint", "iso": "all", "rsgm_budget_joint": "joint", "rsgm_budget_iso": "all"}
 CONFIGS.update({name: CONFIGS["rsgm_budget" if name.startswith("rsgm_budget") else "paper"] for name in NOISE})
+# the learned noise (docs/elbo_noise_plan.md): phase 1 trains the network and d together on the ELBO, the model
+# dposer_elbo (hp/models/dposer_elbo.py; the budget of the RSGM runs; the logits scaled by 10, so that with Adam they
+# move 10x the learning rate per step); elbo_t0 the same with the ELBO from t = 1e-3 (the check of the boundaries);
+# phase 2 ("learned") is DPoser as published with d frozen, the mean log d of the phase 1 runs given by --noise-from,
+# rescaled to a mean d^2 of 1
+ELBO = ["model.name=dposer_elbo", "model.args.noise_logit_scale=10.0"]
+CONFIGS["elbo"] = CONFIGS["rsgm_budget"] + ELBO
+CONFIGS["elbo_t0"] = CONFIGS["rsgm_budget"] + ELBO + ["model.args.elbo_t0=0.001"]
+CONFIGS["learned"] = CONFIGS["paper"]
 # ----------------------------------------------------------------------------------------
 
 
@@ -88,6 +99,18 @@ def fitted_normalization(rotations: str, run_root: str) -> dict:
     return norm
 
 
+def learned_noise(runs) -> list:
+    """d [3J] of phase 2: the mean of log d of the EMA weights of the phase 1 runs, rescaled to a mean d^2 of 1."""
+    logs = []
+    for run in runs:
+        model = load_model(Path(run).expanduser(), device="cpu", weights="weights_ema")
+        if getattr(model, "noise_logits", None) is None:
+            raise ValueError(f"{run} has no learned noise (a dposer_elbo run of the config elbo)")
+        logs.append(torch.log(model.noise_d.detach().double()))
+    d = torch.exp(torch.stack(logs).mean(0))
+    return (d / d.pow(2).mean().sqrt()).tolist()
+
+
 def quick_check(run: Path, device: str, n: int, seed: int) -> None:
     """The EMA weights: valid rotations, and samples with mean ~0 and std ~1 in the normalized space of the model."""
     model = load_model(run, device=device, weights="weights_ema")
@@ -110,12 +133,16 @@ def main() -> int:
     parser.add_argument("--run-root", default=RUN_ROOT)
     parser.add_argument("--retrain", action="store_true", help="train a new run even if a finished one exists")
     parser.add_argument("--check", type=int, default=N_CHECK, help="samples of the quick check (0: none)")
+    parser.add_argument("--noise-from", nargs="+", default=[], help="phase 1 runs whose d the config learned freezes")
     parser.add_argument("--dry-run", action="store_true", help="print the configuration and the plan, train nothing")
     args, overrides = parser.parse_known_args()
     bad = [o for o in overrides if "=" not in o or o.startswith("-")]
     if bad:
         parser.error(f"unknown arguments {bad}; settings of train_model.py are given as key=value")
 
+    if (args.config == "learned") != bool(args.noise_from):
+        parser.error("--noise-from goes with --config learned, and that config needs it")
+    noise = learned_noise(args.noise_from) if args.noise_from else None
     norm = fitted_normalization(args.rotations, args.run_root)
     status = 0
     for seed in args.seeds:
@@ -126,6 +153,8 @@ def main() -> int:
                 f"model.args.std={json.dumps(norm['std'])}", *COMMON, *CONFIGS[args.config]]
         if args.config in NOISE:
             argv.append(f"model.args.noise_scale={json.dumps(noise_scale_of(norm['std'], NOISE[args.config]))}")
+        if noise is not None:
+            argv.append(f"model.args.noise_scale={json.dumps(noise)}")
         argv += overrides
         runs = runs_of(Path(args.run_root).expanduser() / name)
         done = [r for r in runs if finished(r)]
