@@ -8,7 +8,7 @@ puts the three networks side by side and proposes the one to try.
 
 ## Summary
 
-Updated 2026-11-20 (sections 6-13, 15). Validation numbers only; no test was run for this line of work.
+Updated 2026-11-20 (sections 6-13, 15, 16). Validation numbers only; no test was run for this line of work.
 
 - **Skip connections or LayerNorm in the score network remove the drift of SDS at the smallest noise** and improve the
   hybrid (DPoser's optimization with the RSGM denoiser) by 15-17 mm on the legs and 10-14 mm on the arms over a plain
@@ -64,6 +64,14 @@ Updated 2026-11-20 (sections 6-13, 15). Validation numbers only; no test was run
   sigma_j^(2 alpha), shape lambda^alpha, alpha = 1 (the rule from the data) is the best of 0, 0.5, 1 and 1.5; 1.5
   is not better and narrower, 0.5 (where the denoising loss would put the noise) is 4.3 mm worse in the hybrid. The
   left leg stays 0.6 deg (3.5 mm) behind DPoser.
+- **The reverse test: the noise acts the same in DPoser, and it is not the whole gap** (section 16): DPoser trained
+  with RSGM's noise geometry (isotropic within a joint, or one scale for all) loses what RSGM gains, step for step:
+  1.09 deg (RSGM 1.23) for the scale per joint, 0.53 deg (RSGM 0.51) for the shape within a joint. At equal noise
+  RSGM's first phase stays 0.8-0.9 deg behind on the left leg, none on the arms; in the hybrid RSGM is level with
+  DPoser on the mean of four occlusions at per-joint noise and 2.5 mm better at per-axis noise, 3.6-5.0 mm behind on
+  the left leg. That remainder is in the model, not in the noise. By the rule written before, `joint` (11.31 deg) is
+  in the middle band and called for a second seed; it was dropped after seeing the result, since section 15 measures
+  the same step on RSGM with two seeds.
 
 ## 1. The three networks
 
@@ -825,9 +833,77 @@ the hybrid of RSGM beats DPoser's on average, and the first phase moves 0.5 deg 
 (alpha = 1, every axis of every joint at the same signal-to-noise ratio) is at the optimum of this one-parameter
 family; where the denoising loss itself would put the noise (alpha about 0.5) is worse, so learned noise coefficients
 would need the likelihood, not that loss. About 0.6 deg of the first phase and 3.5 mm on the left leg remain; the
-reverse test on DPoser (`train_dposer_posedflow.py --config joint` and `iso`: its noise made isotropic within a joint
-and over all joints, full data) is to tell whether the rest is the noise too. Not tried here: the completion
+reverse test on DPoser (section 16: its noise made isotropic within a joint and over all joints, full data) finds
+that the rest is not the noise: at equal noise geometry DPoser stays 0.8 deg ahead on the left leg.
+Not tried here: the completion
 protocols (inpainting has no per-axis noise yet; D-Flow and generation would use the approximate sampler).
+
+## 16. 2026-11-20: The reverse test: DPoser with RSGM's noise
+
+**Question.** Sections 10 and 15 make RSGM's noise more like DPoser's and the first phase of SDS moves toward
+DPoser's. The reverse test makes DPoser's noise like RSGM's: if DPoser then lands where RSGM is, the noise is the
+whole gap; if it stays ahead, the rest is in the model.
+
+**Method** (`noise_scale` of `hp.models.dposer`, commit bbca8a2). DPoser's noise in its z-scored axis-angle space
+becomes std(t)^2 diag(d^2) instead of std(t)^2 I, everywhere: the loss, the score, the sampler, the likelihood, the
+one-step denoising of SDS. `noise_scale_of(std, level)` sets d_k = sigma / std_k, so that the noise in axis-angle is
+isotropic: `joint` with sigma the RMS of the three stds of the joint (one scale per joint, isotropic within it, as
+`fact_NA`), `iso` with sigma the RMS over all 57 coordinates (one scale for everything, as `fact_N`). d = 1 is the
+published DPoser bit for bit (a test). Training: `scripts/train_dposer_posedflow.py --config joint` and `--config iso`,
+the paper's budget (200k steps x 5120) on the full data, seed 10, as the DPoser control of the hybrid; workstation2,
+76 and 75 minutes. `trajectory.py` and `hybrid.py` take the DPoser run from `DP_RUN` and draw its noise with d.
+
+**Rule, written before the run:** the left leg at step 100 of `joint`: >= 11.8 deg, the shape within a joint is what
+RSGM lacks (confirmed); <= 11.2, it is not (rejected); in between, a second seed. `iso` for information.
+
+**Phase diagnostics** (`trajectory.py ... -`, 300 validation poses, K = 10, hidden-joint error in deg; Mac):
+
+| DPoser | noise in axis-angle | left_leg 100 | left_leg 199 | arms 100 | arms 199 | spread left_leg 100 |
+|---|---|---|---|---|---|---|
+| control (published) | per coordinate | 10.78 | 11.52 | 21.73 | 22.13 | 6.39 |
+| joint | per joint, isotropic within | 11.31 | 11.63 | 22.08 | 22.28 | 7.04 |
+| iso | one scale | 12.40 | 12.30 | 23.20 | 23.38 | 7.75 |
+
+`joint` is at 11.31 deg, in the middle band of the rule. The second seed was not trained: the question it would
+settle, whether the shape within a joint matters, section 15 answers directly on RSGM (0.50 / 0.51 deg, two seeds),
+and the size of the step here is the same. So by the rule as written the result is open; the decision not to
+resolve it was taken after seeing it.
+
+**Each step of the noise costs the same in both models** (left leg at step 100, deg; RSGM: the mean of two seeds
+where there are two):
+
+| noise | DPoser (full data, paper budget) | RSGM (c10, 30k x 4096) | RSGM - DPoser |
+|---|---|---|---|
+| one scale | 12.40 (iso) | 13.31 (fact_N) | 0.91 |
+| per joint | 11.31 (joint) | 12.08 (fact_NA) | 0.77 |
+| per axis / per coordinate | 10.78 (control) | 11.57 (fact_NA_x) | 0.79 |
+| step: one scale -> per joint | -1.09 | -1.23 | |
+| step: per joint -> per axis | -0.53 | -0.51 | |
+
+At step 199 the remainder is 1.13, 0.70 and 0.43 deg (DPoser 12.30 / 11.63 / 11.52, RSGM 13.43 / 12.33 / 11.95). On
+the arms at step 100 there is none: 23.20 / 22.08 / 21.73 against 23.22 / 22.05 / 21.20.
+
+**Hybrid** (`hybrid.py 500 dposer`, DPoser's own completion optimization and denoiser, 500 validation poses, K = 10;
+MPVPE mean (mm) / APD (cm) / best of 10 (mm)):
+
+| DPoser | left_leg | legs | arms | trunk | mean of 4 |
+|---|---|---|---|---|---|
+| control | 79.4 | 103.3 | 110.6 | 43.5 | 84.2 / 5.26 / 51.0 |
+| joint | 81.8 | 104.7 | 110.3 | 45.1 | 85.5 / 5.54 / 50.6 |
+| iso | 87.2 | 114.4 | 118.1 | 43.3 | 90.8 / 5.91 / 54.2 |
+
+The control reproduces DPoser's numbers of the earlier sections. Against the RSGM hybrids at the same noise (section
+15): one scale, DPoser 90.8 against `fact_N` 94.7 mm; per joint, 85.5 against `fact_NA` 85.5 (mean of two seeds); per
+axis, 84.2 against `fact_NA_x` 81.7. On the left leg alone: 87.2 / 81.8 / 79.4 against 94.3 / 86.8 /
+83.0. The output lines are in [the output file](2026-11-14_score_network_architectures_reverse.txt).
+
+**What it says.** The noise is a part of the gap and acts the same way in both models: about 1.1-1.2 deg for the
+scale per joint and 0.5 deg for the shape within a joint, with DPoser and with RSGM. It is not all of it: at equal
+noise geometry RSGM's first phase stays 0.8-0.9 deg behind on the left leg (0.6 deg against DPoser on c10, 10.94),
+and none of it on the arms. In the hybrid's millimetres the remainder is on the left leg only (3.6-5.0 mm at per-joint
+and per-axis noise); on the mean of four occlusions RSGM is level with DPoser at per-joint noise and 2.5 mm better at
+per-axis noise. That remainder is in the model, not in the noise: the network, its input, or score against noise
+prediction, while sections 6-9 ruled out the network size, the budget, the data and the z input taken one at a time.
 
 ## Conclusions
 
@@ -840,7 +916,12 @@ protocols (inpainting has no per-axis noise yet; D-Flow and generation would use
    2-8 mm of DPoser on the legs and beats it on the arms. The rest of the first phase (about 1.3 deg) may be the
    isotropy within a joint, score against noise prediction, or the hybrid's schedule, which is DPoser's. The
    isotropy within a joint is a part of it (section 15): per-axis noise takes 0.5 deg of it and brings the hybrid
-   below DPoser's on average; about 0.6 deg remain.
+   below DPoser's on average; about 0.6 deg remain. The reverse test (section 16) shows the noise acts the same way
+   in DPoser (1.1 deg for the scale per joint, 0.5 deg for the shape within a joint) and that the remainder is not
+   the noise: at equal noise geometry RSGM stays 0.8-0.9 deg behind on the left leg, and in the hybrid only there
+   (3.6-5.0 mm), while on the mean of four occlusions it is level or better. What is left is in the model: the
+   network, its input, score against noise prediction, or several of the factors that sections 6-9 ruled out one at
+   a time.
 3. In D-Flow the network does not matter either (512x4 MLP = dposer_like).
 4. Next: completion with the whole reverse process of RSGM (inpainting on SO(3)), where the hidden joints are pulled
    at large noise, which training covers, instead of extrapolating the score at small noise. Per-joint noise was
@@ -853,6 +934,13 @@ protocols (inpainting has no per-axis noise yet; D-Flow and generation would use
    (and its width 2048) and `fact_RADW`, to be compared with `fact_N` at equal APD by an inpainting study.
 
 ## What it does not show
+
+- The reverse test (section 16): one seed per DPoser variant; by the rule written before, `joint` is open (middle
+  band) and its second seed was dropped after seeing the result. The noise is made isotropic in DPoser's flat
+  axis-angle chart of each joint, not with a heat kernel on SO(3) as RSGM's. The DPoser runs are on the full data
+  with the paper's budget, the RSGM cells on c10 with 30k x 4096, so the remainder of 0.8-0.9 deg mixes the model
+  with data and budget (which section 7 found not to close the gap on their own). Only the phase diagnostics and the
+  hybrid, no completion protocol.
 
 - Per-axis noise (section 15): only the phase diagnostics and the hybrid (DPoser's procedure), no completion protocol
   of RSGM itself (no inpainting with per-axis noise yet; D-Flow and generation would use an approximate sampler); the
@@ -889,9 +977,14 @@ protocols (inpainting has no per-axis noise yet; D-Flow and generation would use
   runs on workstation1); the joint covariances as `z_cov` in `~/data/experiments/factorial/rsgm_z_statistics.json`
   (`explore/evaluation/joint_covariance_spectrum.py` prints their spectrum); the diagnostic outputs
   `~/data/experiments/factorial/{trajectory,hybrid}_*.txt`, their lines in
-  [2026-11-14_score_network_architectures_peraxis.txt](2026-11-14_score_network_architectures_peraxis.txt). DPoser
-  of the reverse test (training, not evaluated yet): `~/data/experiments/full/dposer_posedflow_{joint,iso}_s10` on
-  workstation2.
+  [2026-11-14_score_network_architectures_peraxis.txt](2026-11-14_score_network_architectures_peraxis.txt).
+
+- The reverse test (section 16): runs `~/data/experiments/full/dposer_posedflow_{joint,iso}_s10` (trained on
+  workstation2, copied to the Mac), the control `~/data/experiments/full/dposer_posedflow_s10`; the diagnostic outputs
+  `~/data/experiments/full/{trajectory,hybrid}_dposer{,_joint,_iso}_s10.txt`, their lines in
+  [2026-11-14_score_network_architectures_reverse.txt](2026-11-14_score_network_architectures_reverse.txt); training by
+  `scripts/train_dposer_posedflow.py --config joint` / `iso`; `trajectory.py` and `hybrid.py` take the DPoser run
+  from `DP_RUN`.
 
 - The factorial of section 13: runs in `~/data/experiments/factorial/rsgm_posedflow_fact_*_s1[01]` (on the Mac, on
   workstation1 and workstation2), the responses of the second evaluation in
