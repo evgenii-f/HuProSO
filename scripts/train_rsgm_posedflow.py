@@ -175,6 +175,15 @@ for name in ALPHA:
     CONFIGS[name] = list(CONFIGS["fact_NA_x"])
 ANISO.update(ALPHA)
 ANISO_X.update(ALPHA)
+# Is the network the remainder of the gap to DPoser at equal noise (section 16)? The noise of fact_NA_x with a wide
+# residual network: residual and dropout 0.1 as fact_RADW (the best hybrid of the factorial; without LayerNorm, which
+# with residual was worse than their sum), 1536 x 3 blocks (7 layers, 14.5M parameters), lr 1e-3 as the wide residual
+# configs. Meant for the full data: --rotations ~/data/AMASS_rotations_posedflow --run-root ~/data/experiments/full
+CONFIGS["wide_RAD_x"] = ABL_BASE + ["model.args.net_residual=true", "model.args.dropout=0.1",
+                                    "model.args.net_width=1536", "model.args.net_blocks=3", "train.lr=1e-3",
+                                    "train.data_on_device=true"]
+ANISO.add("wide_RAD_x")
+ANISO_X.add("wide_RAD_x")
 # fact_RDW one step further along width, the strongest factor of the factorial for inpainting
 CONFIGS["fact_RDW_w2048"] = CONFIGS["fact_RDW"] + ["model.args.net_width=2048"]
 # ----------------------------------------------------------------------------------------
