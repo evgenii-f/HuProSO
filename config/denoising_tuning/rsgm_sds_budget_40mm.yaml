@@ -1,0 +1,21 @@
+# RSGM 512x4 c10 in DPoser's optimization (score distillation on SO(3)^J), noise 40 mm, 100 validation sequences, at
+# the budget the tuned DPoser chose (dposer_sds_40mm.yaml, trial 35: 3 x 133 = 399 steps). The study rsgm_sds_40mm
+# tried 3 x 133 in only 2 of 40 trials; its best (trial 36, 18.69 mm) is at 3 x 67. Here the steps are fixed and the
+# rest is tuned again: t_max, t_min, weight and lr interact with the number of steps.
+# Rule for the test, fixed before it: the best trial's settings form the row "RSGM 1536x6: their c10, DPoser method,
+# DPoser's tuned budget" (the network of "ours"), run once on the test and compared with the tuned DPoser at an equal
+# budget. "ours" is not chosen again; the report keeps both RSGM rows.
+model: ~/data/experiments/rsgm_posedflow_small_s10/run_0001
+method: dposer
+sigma: 0.04
+sequences: 100
+n_trials: 30
+params:
+  t_max: {low: 0.01, high: 0.3, log: true}
+  t_min_fraction: {low: 0.05, high: 0.9}
+  sds_weight: {low: 1.0, high: 100.0, log: true}
+  lr: {low: 0.005, high: 0.1, log: true}
+fixed: {steps_per_iter: 133}
+first:
+  - {t_max: 0.0595, t_min_fraction: 0.387, sds_weight: 7.75, lr: 0.0413}   # the tuned RSGM settings at twice the steps
+  - {t_max: 0.0595, t_min_fraction: 0.387, sds_weight: 7.75, lr: 0.0207}   # the same with half the lr
