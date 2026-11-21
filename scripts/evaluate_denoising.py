@@ -37,6 +37,13 @@ SDS = {0.04: dict(t_max=0.05949959532179853, t_min=0.05949959532179853 * 0.38708
                  sds_weight=4.381518863971957, lr=0.042200143285960834, steps_per_iter=133)}
 # the same at DPoser's number of steps (3 x 60 at 40 mm, 3 x 80 at 100 mm), for a comparison at an equal budget
 SDS_DPOSER_STEPS = {0.04: {**SDS[0.04], "steps_per_iter": 60}, 0.1: {**SDS[0.1], "steps_per_iter": 80}}
+# DPoser in its own optimization, tuned the same way (config/denoising_tuning/dposer_sds_<mm>mm.yaml, 40 trials each,
+# 2026-11-20): 40 mm trial 35, 18.72 mm (its own settings 19.19); 100 mm trial 8, 31.60 mm (32.24).
+# The rule of those files: these settings form one more DPoser row, run once on the test.
+DPOSER_TUNED = {0.04: dict(t_max=0.2244177443120188, t_min=0.2244177443120188 * 0.3508951887230231,
+                           sds_weight=0.7582837766246451, lr=0.0406711936379964, steps_per_iter=133),
+                0.1: dict(t_max=0.37543588378633885, t_min=0.37543588378633885 * 0.4846267739770443,
+                          sds_weight=0.15444642587070062, lr=0.021884365766058848, steps_per_iter=267)}
 RUNS = {
     "RSGM 512x4: their c10": "~/data/experiments/rsgm_posedflow_small_s10/run_0001",
     "RSGM 1536x6: their c10": "~/data/experiments/rsgm_posedflow_s10/run_0001",
@@ -69,6 +76,8 @@ MODELS = {
     # DPoser retrained on their full data: its own optimization (the DPoser rows of their table) and D-Flow
     "DPoser: their full, DPoser method": dict(run="~/data/experiments/full/dposer_posedflow_s10/run_0001",
                                               method="dposer"),
+    "DPoser: their full, DPoser method, tuned": dict(run="~/data/experiments/full/dposer_posedflow_s10/run_0001",
+                                                     method="dposer", settings=DPOSER_TUNED),
     "DPoser: their full, D-Flow": dict(run="~/data/experiments/full/dposer_posedflow_s10/run_0001"),
 }
 
