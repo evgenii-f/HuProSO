@@ -618,3 +618,27 @@ def test_a_stop_file_ends_the_run_with_a_checkpoint_and_is_removed(make_gaussian
     resumed = Trainer(make_gaussian(), Poses(), None, cfg, run_dir=run)
     resumed.fit(resume=run / "checkpoint_000003")
     assert resumed.step == 8 and json.loads((run / "status.json").read_text())["finished"] is True
+
+
+def test_the_cuda_rng_state_is_that_of_the_run_gpu_only(monkeypatch):
+    """Saving the state must not touch the other GPUs (get_rng_state_all opens a context on each); a checkpoint from
+    before, with the states of all GPUs, restores the run's."""
+    from hp.training import trainer as tr
+
+    calls = []
+
+    def fail(*args):
+        raise AssertionError("touched every GPU")
+
+    monkeypatch.setattr(torch.cuda, "get_rng_state_all", fail)
+    monkeypatch.setattr(torch.cuda, "set_rng_state_all", fail)
+    monkeypatch.setattr(torch.cuda, "get_rng_state", lambda index: calls.append(("get", index)) or torch.tensor([index]))
+    monkeypatch.setattr(torch.cuda, "set_rng_state", lambda s, index: calls.append(("set", int(s), index)))
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    state = tr._rng_state("cuda:1")
+    assert int(state["cuda"]) == 1 and calls == [("get", 1)]
+    tr._set_rng_state(state, "cuda:1")
+    tr._set_rng_state({**state, "cuda": [torch.tensor([7]), torch.tensor([8])]}, "cuda:1")  # old format
+    tr._set_rng_state({**state, "cuda": [torch.tensor([7])]}, "cuda:1")  # old, saved on one GPU: skipped
+    tr._set_rng_state(tr._rng_state("cuda"), "cuda")
+    assert calls[1:] == [("set", 1, 1), ("set", 8, 1), ("get", 0), ("set", 0, 0)]
