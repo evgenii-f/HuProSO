@@ -759,3 +759,68 @@ def test_lognormal_weighting_draws_log_s_from_the_truncated_normal():
     assert abs(float(log_s.median()) + 4.0) < 0.05  # the median of N(-4, 1.5^2) lies well inside the range
     with pytest.raises(ValueError, match="loss_log_s_std"):
         build_model("rsgm", num_joints=1, hidden=[8], weighting="lognormal", loss_log_s_std=0.0)
+
+
+# ---- the Wigner D-matrices of the joints (inputs="local+wigner") ----
+
+@pytest.mark.parametrize("l", [1, 2, 3])
+def test_the_wigner_matrices_are_an_orthogonal_representation(l):
+    from hp.models.rsgm import wigner_d
+
+    g = torch.Generator().manual_seed(l)
+    r1, r2 = (roma.random_rotmat(500, generator=g, dtype=torch.float64) for _ in range(2))
+    d1, d2, d12 = wigner_d(r1, l), wigner_d(r2, l), wigner_d(r1 @ r2, l)
+    eye = torch.eye(2 * l + 1, dtype=torch.float64)
+    assert d1.shape == (500, 2 * l + 1, 2 * l + 1)
+    assert torch.allclose(d12, d1 @ d2, atol=1e-10)  # D(R1 R2) = D(R1) D(R2)
+    assert torch.allclose(d1 @ d1.transpose(-1, -2), eye.expand_as(d1), atol=1e-10)
+    assert torch.allclose(wigner_d(torch.eye(3, dtype=torch.float64), l), eye, atol=1e-10)
+
+
+def test_the_first_wigner_matrix_is_the_rotation_in_the_order_y_z_x():
+    from hp.models.rsgm import wigner_d
+
+    r = roma.random_rotmat(100, generator=torch.Generator().manual_seed(0), dtype=torch.float64)
+    order = [1, 2, 0]  # the real harmonics of degree 1 are y, z, x
+    assert torch.allclose(wigner_d(r, 1), r[:, order][:, :, order], atol=1e-10)
+
+
+def test_the_wigner_entries_are_orthogonal_over_the_haar_measure():
+    """Schur orthogonality: E[D^l_mn D^l'_m'n'] = delta / (2l + 1) for uniform rotations, so the entries of different
+    degrees are uncorrelated and none is a function of the others."""
+    from hp.models.rsgm import wigner_d
+
+    n = 200_000
+    r = roma.random_rotmat(n, generator=torch.Generator().manual_seed(1), dtype=torch.float64)
+    f = torch.cat([wigner_d(r, l).reshape(n, -1) * math.sqrt(2 * l + 1) for l in (1, 2, 3)], dim=1)  # [n, 83]
+    gram = f.T @ f / n
+    assert torch.allclose(gram, torch.eye(83, dtype=torch.float64), atol=0.03)
+
+
+def test_wigner_inputs_keep_the_divergence_exact():
+    torch.manual_seed(0)
+    model = build_model("rsgm", num_joints=J19, hidden=[32], inputs="local+wigner").double()
+    assert model.net[0].in_features == (9 + 25 + 49) * J19 + 1
+    x, t = poses19(3, dtype=torch.float64), torch.rand(3, dtype=torch.float64)
+    with torch.no_grad():
+        _, divergence = model.velocity_and_divergence(x, t)
+        numeric = torch.zeros(3, dtype=torch.float64)
+        for joint in range(J19):
+            for i in range(3):
+                e = torch.zeros(3, J19, 3, dtype=torch.float64)
+                e[:, joint, i] = 1e-5
+                numeric += (model.velocity(exp_frame(x, e), t) - model.velocity(exp_frame(x, -e), t))[:, joint, i] / 2e-5
+    assert torch.allclose(divergence, numeric, atol=1e-6)
+
+
+def test_a_timeres_model_with_wigner_inputs_has_finite_losses_and_gradients():
+    torch.manual_seed(0)
+    model = build_model("rsgm", num_joints=J19, net="timeres", net_width=64, net_blocks=1, inputs="local+wigner",
+                        net_zero_init=False)  # a zero last layer would stop the gradients of the others
+    assert model.net.first.dense.in_features == (9 + 25 + 49) * J19  # the time goes to every layer
+    x = poses19(64)
+    loss = model.loss(x.reshape(64, -1))
+    loss.backward()
+    assert torch.isfinite(loss) and all(torch.isfinite(p.grad).all() for p in model.parameters())
+    assert model.net.first.dense.weight.grad[:, 9 * J19:].abs().sum() > 0  # the harmonics reach the network
+    assert torch.isfinite(model.score(x, torch.full((64,), 0.1))).all()

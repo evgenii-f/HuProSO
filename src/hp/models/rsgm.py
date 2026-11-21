@@ -66,6 +66,13 @@ sigma_j the std of each of the 3 coordinates of log(M_j^T x_j) (z_statistics; th
 vectors of M_j, and z_std, kept as buffers). Joints of small spread (the wrists, the spine) move their 9 matrix numbers
 little and their z by about 1. The matrices stay in the input: near angle pi from M_j the log jumps (large t), they
 do not. A function of x only, like "local+global".
+inputs = "local+wigner" gives it, next to the matrices, the Wigner D-matrices D^l(x_j) of every joint for l in
+WIGNER_DEGREES (2 and 3: 25 + 49 numbers per joint; the matrix itself is D^1 in the real basis): the harmonics of
+SO(3) of higher frequency, as Fourier features of the input, which a plain MLP finds hard to build from the 9 matrix
+numbers (its bias towards low frequencies), while the score at small noise changes fast. They are taken in the real
+basis of the orthonormal real spherical harmonics, D^l(R) = Y_l(R p) Y_l(p)^+ on fixed points p of the sphere
+(wigner_d): exact, polynomials of degree l in the entries of R, orthogonal, and D^l(R1 R2) = D^l(R1) D^l(R2).
+A function of x only, like "local+global".
 """
 import math
 from typing import Optional, Sequence
@@ -125,6 +132,49 @@ def global_rotations(x: torch.Tensor) -> torch.Tensor:
     for j, p in enumerate(PARENTS19):  # a parent comes before its children
         out.append(x[..., j, :, :] if p < 0 else out[p] @ x[..., j, :, :])
     return torch.stack(out, dim=-3)
+
+
+WIGNER_DEGREES = (2, 3)  # inputs="local+wigner": the degrees l of D^l(x_j) next to the matrices (D^1)
+
+
+def real_harmonics(v: torch.Tensor, l: int) -> torch.Tensor:
+    """The orthonormal real spherical harmonics Y_lm, m = -l..l, of unit vectors v [..., 3, K], as [..., 2l+1, K]
+    (l = 1, 2, 3)."""
+    x, y, z = v[..., 0, :], v[..., 1, :], v[..., 2, :]
+    pi = math.pi
+    if l == 1:
+        c = math.sqrt(3 / (4 * pi))
+        ys = [c * y, c * z, c * x]
+    elif l == 2:
+        a, b = 0.5 * math.sqrt(15 / pi), 0.25 * math.sqrt(5 / pi)
+        ys = [a * x * y, a * y * z, b * (3 * z * z - 1), a * x * z, 0.5 * a * (x * x - y * y)]
+    elif l == 3:
+        a, b = 0.25 * math.sqrt(35 / (2 * pi)), 0.5 * math.sqrt(105 / pi)
+        c, d = 0.25 * math.sqrt(21 / (2 * pi)), 0.25 * math.sqrt(7 / pi)
+        ys = [a * y * (3 * x * x - y * y), b * x * y * z, c * y * (5 * z * z - 1), d * z * (5 * z * z - 3),
+              c * x * (5 * z * z - 1), 0.5 * b * z * (x * x - y * y), a * x * (x * x - 3 * y * y)]
+    else:
+        raise ValueError(f"real_harmonics has the degrees 1, 2 and 3, got {l}.")
+    return torch.stack(ys, dim=-2)
+
+
+# fixed points on the sphere and the pseudo-inverses of their harmonics [K, 2l+1], for wigner_d
+_WIGNER_POINTS = torch.nn.functional.normalize(
+    torch.randn(3, 32, dtype=torch.float64, generator=torch.Generator().manual_seed(0)), dim=0)
+_WIGNER_PINV = {l: torch.linalg.pinv(real_harmonics(_WIGNER_POINTS, l)) for l in (1, 2, 3)}
+
+
+def wigner_d(r: torch.Tensor, l: int) -> torch.Tensor:
+    """The real Wigner D-matrix D^l(r) [..., 2l+1, 2l+1] of rotations r [..., 3, 3]: Y_l(r p) = D^l(r) Y_l(p) for
+    every point p of the sphere (the harmonics of degree l span a space that rotations map to itself), solved on fixed
+    points. Plain out-of-place ops, so that torch.func can vmap and differentiate it."""
+    p = _WIGNER_POINTS.to(device=r.device, dtype=r.dtype)
+    return real_harmonics(r @ p, l) @ _WIGNER_PINV[l].to(device=r.device, dtype=r.dtype)
+
+
+def wigner_features(x: torch.Tensor, degrees: Sequence[int] = WIGNER_DEGREES) -> torch.Tensor:
+    """The entries of D^l(x_j) for l in degrees, [B, J * sum (2l+1)^2], of poses x [B, J, 3, 3]."""
+    return torch.cat([wigner_d(x, l).reshape(x.shape[0], -1) for l in degrees], dim=1)
 
 
 @torch.no_grad()
@@ -273,8 +323,8 @@ class RSGM(PoseModel):
             raise ValueError(f"Unknown net_level '{net_level}'. Use 'log_s' or 't'.")
         if net == "timeres" and time_features:
             raise ValueError("net='timeres' embeds the noise level itself; use time_features=0.")
-        if inputs not in ("local", "local+global", "local+z"):
-            raise ValueError(f"Unknown inputs '{inputs}'. Use 'local', 'local+global' or 'local+z'.")
+        if inputs not in ("local", "local+global", "local+z", "local+wigner"):
+            raise ValueError(f"Unknown inputs '{inputs}'. Use 'local', 'local+global', 'local+z' or 'local+wigner'.")
         if (inputs == "local+z") != (z_mean is not None and z_std is not None):
             raise ValueError("inputs='local+z' needs z_mean and z_std (z_statistics of the training poses), and only it.")
         if inputs == "local+global" and num_joints != len(PARENTS19):
@@ -304,6 +354,8 @@ class RSGM(PoseModel):
             self.register_buffer("z_rot", roma.rotvec_to_rotmat(z_mean.reshape(num_joints, 3)))
             self.register_buffer("z_std", z_std.reshape(num_joints, 3))
         rotations = 9 * num_joints * (2 if inputs == "local+global" else 1) + (3 * num_joints if inputs == "local+z" else 0)
+        if inputs == "local+wigner":
+            rotations += num_joints * sum((2 * l + 1) ** 2 for l in WIGNER_DEGREES)
         self.net_kind, self.net_level = net, net_level
         if net == "timeres":
             self.net = TimeResNet(rotations + (cond_features if cond_dim else 0), 3 * num_joints, net_width, net_blocks,
@@ -467,6 +519,8 @@ class RSGM(PoseModel):
         elif self.inputs == "local+z":
             z = log_rotations(self.z_rot.to(x.dtype).transpose(-1, -2) @ x) / self.z_std.to(x.dtype)
             inputs.append(z.reshape(b, -1))
+        elif self.inputs == "local+wigner":
+            inputs.append(wigner_features(x))
         if self.net_kind == "timeres":  # the time goes to every layer, as the noise level log(s) / 4
             features = torch.cat(inputs + ([] if f is None else [f]), dim=1)
             if self.net_level == "log_s":

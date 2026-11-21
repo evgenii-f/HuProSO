@@ -194,6 +194,12 @@ CONFIGS["wide_RAD_x"] = ABL_BASE + ["model.args.net_residual=true", "model.args.
                                     "train.data_on_device=true"]
 ANISO.add("wide_RAD_x")
 ANISO_X.add("wide_RAD_x")
+# and with the Wigner D-matrices D^2, D^3 of the joints next to the matrices (inputs="local+wigner", 1577 inputs
+# instead of 171): the pair wide_RAD_x / wide_RAD_x_wigner differs by the input only. On c10, as the control of
+# section 17 of the score report (the full data did not change that network).
+CONFIGS["wide_RAD_x_wigner"] = CONFIGS["wide_RAD_x"] + ["model.args.inputs=local+wigner"]
+ANISO.add("wide_RAD_x_wigner")
+ANISO_X.add("wide_RAD_x_wigner")
 # fact_RDW one step further along width, the strongest factor of the factorial for inpainting
 CONFIGS["fact_RDW_w2048"] = CONFIGS["fact_RDW"] + ["model.args.net_width=2048"]
 # ----------------------------------------------------------------------------------------
