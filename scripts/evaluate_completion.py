@@ -19,13 +19,12 @@ must stay as in the notebook; paths with ~ are resolved on every machine.
 """
 import argparse
 import sys
-import time
 from pathlib import Path
 
 # the code of this checkout, before an editable install of another one
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from hp.evaluation.completion import BATCH, OCCLUSIONS, cached_run, test_poses  # noqa: E402
+from hp.evaluation.completion import BATCH, OCCLUSIONS  # noqa: E402
 
 ROTATIONS = "~/data/AMASS_rotations_posedflow_c10"  # their test set is complete there
 CACHE = "~/data/experiments/completion/cache"
@@ -103,7 +102,10 @@ MODELS = {
 }
 
 
-def main() -> int:
+def main(argv=None) -> int:
+    """The flags of before, run by scripts/evaluate.py completion --split test (see there). Changed: --poses n goes to
+    <cache>/test_first<n> instead of the test folder, and a result made with other settings is kept and reported, not
+    replaced (scripts/evaluate.py --recompute)."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--models", nargs="+", default=None, help="labels of MODELS (or of --points); default all")
     parser.add_argument("--points", default=None,
@@ -116,34 +118,19 @@ def main() -> int:
     parser.add_argument("--cache", default=CACHE)
     parser.add_argument("--batch", type=int, default=BATCH, help=f"poses per batch (theirs: {BATCH})")
     parser.add_argument("--together", action="store_true", help="the hypotheses of a batch in one GPU batch")
-    args = parser.parse_args()
-    models = MODELS
-    if args.points:
-        import yaml
-        fronts = yaml.safe_load(Path(args.points).read_text())
-        unknown = set(args.fronts or []) - set(fronts)
-        if unknown:
-            parser.error(f"no fronts {sorted(unknown)} in {args.points}; there are {list(fronts)}")
-        models = {p["label"]: p["spec"] for name, points in fronts.items() if not args.fronts or name in args.fronts
-                  for p in points}
-        clash = [label for label, spec in models.items() if label in MODELS and MODELS[label] != spec]
-        if clash:
-            parser.error(f"labels of MODELS with another spec in {args.points}: {clash}")
-    if args.models:
-        missing = set(args.models) - set(models)
-        if missing:
-            parser.error(f"unknown models {sorted(missing)}")
-        models = {name: models[name] for name in args.models}
-    speed = {"batch": args.batch, "together": True} if args.together else ({"batch": args.batch} if args.batch != BATCH else {})
+    args = parser.parse_args(argv)
+    from evaluate import main as evaluate
 
-    gt = test_poses(args.rotations, args.poses)
-    print(f"{len(gt)} test poses, {len(models)} model(s) x {len(args.occlusions)} occlusion(s)", flush=True)
-    for name in models:
-        for occlusion in args.occlusions:
-            start = time.perf_counter()
-            cached_run(Path(args.cache), name, models[name], gt, occlusion, args.device, rotations=args.rotations, **speed)
-            print(f"{name} / {occlusion}: {(time.perf_counter() - start) / 60:.1f} min", flush=True)
-    return 0
+    new = ["completion", "--split", "test", "--out", args.cache, "--device", args.device, "--rotations", args.rotations,
+           "--batch", str(args.batch), "--occlusions", *args.occlusions]
+    if args.points:
+        new += ["--points", args.points] + (["--fronts", *args.fronts] if args.fronts else [])
+        new += ["--models", *args.models] if args.models else []
+    else:
+        new += ["--models", *(args.models or ["all"])]
+    new += ["--poses", str(args.poses)] if args.poses is not None else []
+    new += ["--together"] if args.together else []
+    return evaluate(new)
 
 
 if __name__ == "__main__":
