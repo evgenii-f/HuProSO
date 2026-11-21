@@ -6,6 +6,8 @@ server:
     python scripts/evaluate_completion.py --models "PoseD-Flow: their checkpoint" --occlusions left_leg trunk
     python scripts/evaluate_completion.py --poses 20 --device mps     # a quick check, cached apart
     python scripts/evaluate_completion.py --device cuda:0 --together --batch 250   # faster: 2500 rows per GPU call
+    python scripts/evaluate_completion.py --points config/completion_test_points.yaml --fronts "RSGM dflow" \
+        --device cuda:0 --together      # the points of fronts chosen by scripts/select_test_points.py
 
 --together runs the 10 hypotheses of --batch poses as one batch: fewer, larger GPU calls, other random draws than
 theirs, the same method. The memory grows with --batch * 10 * the ODE steps (the gradients go through all of them).
@@ -17,13 +19,12 @@ must stay as in the notebook; paths with ~ are resolved on every machine.
 """
 import argparse
 import sys
-import time
 from pathlib import Path
 
 # the code of this checkout, before an editable install of another one
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from hp.evaluation.completion import BATCH, OCCLUSIONS, cached_run, test_poses  # noqa: E402
+from hp.evaluation.completion import BATCH, OCCLUSIONS  # noqa: E402
 
 ROTATIONS = "~/data/AMASS_rotations_posedflow_c10"  # their test set is complete there
 CACHE = "~/data/experiments/completion/cache"
@@ -79,12 +80,37 @@ MODELS = {
     "DPoser: their c10, RSGM budget, DPoser method t3": dict(
         run="~/data/experiments/dposer_posedflow_rsgm_budget_s10/run_0001", method="dposer",
         prior=dict(lr=0.1, t_max=0.15, t_min=0.049999999999999996, iterations=3, steps_per_iter=200)),
+    # the models trained on the full data, one point per study (config/completion_tuning/*full*.yaml) by the same rule
+    "RSGM dposer-like: their full, inpaint t108": dict(
+        run="~/data/experiments/full/rsgm_posedflow_dposer_like_s10/run_0001", method="inpaint",
+        prior=dict(steps=200, schedule="edm", guidance=0.07182167279436949, resample=5, replace=False)),
+    "RSGM 512x4: their full, inpaint t16": dict(
+        run="~/data/experiments/full/rsgm_posedflow_small_s10/run_0001", method="inpaint",
+        prior=dict(steps=200, schedule="edm", guidance=0.06107655015655633, resample=5, replace=False)),
+    "DPoser: their full, inpaint t90": dict(
+        run="~/data/experiments/full/dposer_posedflow_s10/run_0001", method="inpaint",
+        prior=dict(steps=100, schedule="edm", guidance=0.9806648250542185, resample=5, replace=True)),
+    "DPoser: their full, DPoser method t28": dict(
+        run="~/data/experiments/full/dposer_posedflow_s10/run_0001", method="dposer",
+        prior=dict(lr=0.16364850392520697, t_max=0.1560343553378305, t_min=0.05502625394728783, iterations=3,
+                   steps_per_iter=100)),
+    # PoseD-Flow with D-Flow settings of its Optuna study (config/completion_tuning/posedflow_dflow_mean_apd.yaml),
+    # trial 17: better than their protocol (trial 0) on validation in mean, best of 10 and APD; 200 steps for all
+    "PoseD-Flow: their checkpoint, D-Flow t17": dict(
+        posedflow="~/data/posedflow_ckpt/checkpoints/epoch-009_step-0_loss-0.0000.ckpt",
+        dflow=dict(lr=0.05, running_weight=0.001, steps=200)),
 }
 
 
-def main() -> int:
+def main(argv=None) -> int:
+    """The flags of before, run by scripts/evaluate.py completion --split test (see there). Changed: --poses n goes to
+    <cache>/test_first<n> instead of the test folder, and a result made with other settings is kept and reported, not
+    replaced (scripts/evaluate.py --recompute)."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--models", nargs="+", default=list(MODELS), choices=list(MODELS))
+    parser.add_argument("--models", nargs="+", default=None, help="labels of MODELS (or of --points); default all")
+    parser.add_argument("--points", default=None,
+                        help="a YAML file of scripts/select_test_points.py: its points instead of MODELS")
+    parser.add_argument("--fronts", nargs="+", default=None, help='with --points: only these fronts, e.g. "RSGM dflow"')
     parser.add_argument("--occlusions", nargs="+", default=list(OCCLUSIONS), choices=list(OCCLUSIONS))
     parser.add_argument("--poses", type=int, default=None, help="the first n test poses (default: their 5000)")
     parser.add_argument("--device", default="mps")
@@ -92,17 +118,19 @@ def main() -> int:
     parser.add_argument("--cache", default=CACHE)
     parser.add_argument("--batch", type=int, default=BATCH, help=f"poses per batch (theirs: {BATCH})")
     parser.add_argument("--together", action="store_true", help="the hypotheses of a batch in one GPU batch")
-    args = parser.parse_args()
-    speed = {"batch": args.batch, "together": True} if args.together else ({"batch": args.batch} if args.batch != BATCH else {})
+    args = parser.parse_args(argv)
+    from evaluate import main as evaluate
 
-    gt = test_poses(args.rotations, args.poses)
-    print(f"{len(gt)} test poses, {len(args.models)} model(s) x {len(args.occlusions)} occlusion(s)", flush=True)
-    for name in args.models:
-        for occlusion in args.occlusions:
-            start = time.perf_counter()
-            cached_run(Path(args.cache), name, MODELS[name], gt, occlusion, args.device, rotations=args.rotations, **speed)
-            print(f"{name} / {occlusion}: {(time.perf_counter() - start) / 60:.1f} min", flush=True)
-    return 0
+    new = ["completion", "--split", "test", "--out", args.cache, "--device", args.device, "--rotations", args.rotations,
+           "--batch", str(args.batch), "--occlusions", *args.occlusions]
+    if args.points:
+        new += ["--points", args.points] + (["--fronts", *args.fronts] if args.fronts else [])
+        new += ["--models", *args.models] if args.models else []
+    else:
+        new += ["--models", *(args.models or ["all"])]
+    new += ["--poses", str(args.poses)] if args.poses is not None else []
+    new += ["--together"] if args.together else []
+    return evaluate(new)
 
 
 if __name__ == "__main__":

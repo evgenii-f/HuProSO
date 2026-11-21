@@ -56,3 +56,47 @@ def front(rows: Sequence[dict], *objectives: Objective) -> List[dict]:
     kept = [(row, v) for row, v in points if not any(other is not row and dominates(w, v) for other, w in points)]
     return [row for row, _ in sorted(kept, key=lambda item: item[1][0])]
 
+
+
+TEST_POINTS = 10  # thresholds of spanning(): every 0.5 cm of APD from 4.0 to 8.5
+APD_RANGE = (4.0, 8.5)
+
+
+def spanning(rows: Sequence[dict], n: int = TEST_POINTS, low: float = APD_RANGE[0], high: float = APD_RANGE[1],
+             x: str = "apd", y: str = "mean") -> List[Tuple[dict, List[float]]]:
+    """Points spanning the front of `rows`, the rule of the test (scripts/select_test_points.py): for each of n
+    thresholds a evenly spaced from low to high (n = 1: low), the row with the lowest y among those with x >= a (a
+    corner of the staircase of the front of x "max" and y "min"); thresholds above the largest x give nothing. A row
+    chosen for several thresholds comes once, with all of them; the result is in the order of x."""
+    if n < 1:
+        return []
+    step = (high - low) / (n - 1) if n > 1 else 0.0
+    chosen = {}
+    for a in (round(low + k * step, 6) for k in range(n)):
+        above = [r for r in rows if _usable(r.get(x)) and _usable(r.get(y)) and r[x] >= a]
+        if above:
+            row = min(above, key=lambda r: r[y])
+            chosen.setdefault(id(row), (row, []))[1].append(a)
+    return sorted(chosen.values(), key=lambda item: item[0][x])
+
+
+HV_REFERENCE = {"mean": 115.0, "best_of_k": 65.0}  # mm: the reference of hypervolume() per metric, fixed before the test
+
+
+def hypervolume(rows: Sequence[dict], metric: str = "mean", low: float = APD_RANGE[0], high: float = APD_RANGE[1],
+                ref: float = None, grid: int = 2001) -> float:
+    """The area (mm x cm) between the staircase of the front of `rows` and the reference value `ref` of the metric
+    (default HV_REFERENCE), over the APD band [low, high]: the integral of max(0, ref - f(a)), f(a) the lowest metric
+    among the rows with APD >= a (none: no area). The hypervolume of the front of (APD max, metric min) with the
+    reference point (APD low, metric ref), cut at APD high; the width times (ref - the band mean) where f stays below
+    ref. Of the test points of spanning() it equals that of the whole front at every threshold and is at most it."""
+    import numpy as np
+
+    ref = HV_REFERENCE[metric] if ref is None else ref
+    usable = [r for r in rows if _usable(r.get("apd")) and _usable(r.get(metric))]
+    if not usable:
+        return 0.0
+    apd, value = np.array([r["apd"] for r in usable]), np.array([r[metric] for r in usable])
+    a = np.linspace(low, high, grid)
+    f = np.array([value[apd >= x].min() if (apd >= x).any() else np.inf for x in a])
+    return float(np.trapezoid(np.clip(ref - f, 0, None), a))

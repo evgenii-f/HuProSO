@@ -8,7 +8,7 @@ puts the three networks side by side and proposes the one to try.
 
 ## Summary
 
-Updated 2026-11-16 (sections 6-11). Validation numbers only; no test was run for this line of work.
+Updated 2026-11-16 (sections 6-12). Validation numbers only; no test was run for this line of work.
 
 - **Skip connections or LayerNorm in the score network remove the drift of SDS at the smallest noise** and improve the
   hybrid (DPoser's optimization with the RSGM denoiser) by 15-17 mm on the legs and 10-14 mm on the arms over a plain
@@ -33,12 +33,15 @@ Updated 2026-11-16 (sections 6-11). Validation numbers only; no test was run for
   coordinates), the first phase moves from 13.2-14.3 to 12.1-12.3 deg (seed 10 and 11 agree), and it adds up with
   residual or LayerNorm. `abl_norm_aniso` (1.2M, 30k steps, c10) reaches 87.0 / 105.2 / 108.0 / 44.0 mm in the
   hybrid against DPoser's 79.4 / 103.3 / 110.6 / 43.5: better on the arms, 1.9 mm behind on the legs, 7.6 mm on the
-  left leg. The APD is lower than without it (5.8-6.8 against 7.3-9.5 cm).
+  left leg. The APD is lower than without it (5.8-6.8 against 7.3-9.5 cm). It does not carry over to the completion
+  protocols: in D-Flow the mean drops by 1-4 mm with less diversity (APD 5.5-5.8 against 6.4-6.5 cm, best of 10 1-2
+  mm worse), and in inpainting at equal APD it is worse (2-3 mm on c10, 0.2-1.1 mm on full data; the completion
+  report, section 14).
 - **Where the loss is evaluated does not matter** (section 14, negative): moving 21-51% of the loss to s < 0.01
   (likelihood weighting, log-normal noise levels) leaves the first phase at 13.2-13.5 deg and improves neither the
   hybrid, inpainting nor denoising of `abl_residual`.
-- Decision: train the RSGM networks with per-joint noise; test it in the completion protocols (inpainting, D-Flow)
-  and with DPoser's size and budget.
+- Decision: per-joint noise helps score distillation at small noise (the first phase), not the whole reverse
+  process; the best completion of RSGM stays inpainting with isotropic networks.
 
 ## 1. The three networks
 
@@ -380,6 +383,36 @@ DPoser on the legs and better on the arms. The APD drops with the noise (left le
 the gain in the mean may be less diversity. The validation losses with c are not comparable to those without (the
 weighting std_j^2 differs per joint).
 
+Added the same day: `dposer_like_aniso` (`dposer_like` + c, full data, 200k x 5120; c from the z statistics of the
+full data), trained twice on workstation1: with the DataLoader and with `train.data_on_device` (section 12; the same
+seed, other order of the poses, so in effect two seeds). Hybrid and trajectory as above:
+
+| run | left_leg | legs | arms | trunk | valid loss best / last | left_leg 100 -> 199 | arms 100 -> 199 |
+|---|---|---|---|---|---|---|---|
+| RSGM dposer_like (full, 200k) | 94.8 / 7.30 / 49.3 | 124.0 / 8.75 / 78.3 | 125.5 / 6.74 / 83.0 | 42.6 / 1.69 / 25.3 | 5.986 / 6.010 | 13.4 -> 13.6 | 24.0 -> 25.5 |
+| dposer_like_aniso, DataLoader | 97.3 / 6.45 / 54.4 | 121.0 / 7.48 / 81.6 | 109.6 / 5.22 / 74.5 | 43.9 / 1.59 / 27.3 | 1.613 / 1.616 | 11.9 -> 13.1 | 22.4 -> 22.9 |
+| dposer_like_aniso, data on device | 97.4 / 6.28 / 55.5 | 122.9 / 7.57 / 81.7 | 115.0 / 5.07 / 80.5 | 44.8 / 1.57 / 27.9 | 1.610 / 1.612 | 12.0 -> 13.2 | 22.6 -> 23.4 |
+
+The two runs agree within 2 mm except the arms (5.4 mm). Against `dposer_like` the first phase moves the most of all
+networks (11.9 deg, 1.1 deg from DPoser) and the arms gain 10-16 mm, but the left leg and the trunk are 1-3 mm worse
+and the drift of the second phase is back (+1.2 deg): DPoser's size, data and budget do not beat `abl_norm_aniso`.
+
+D-Flow (Heun EDM 50, `dflow_valid.py` on workstation1) on the 1000 validation poses of section 8, MPVPE mean (mm) /
+APD (cm) / best of 10 (mm):
+
+| model | left_leg | legs | arms | trunk | mean / best of 10 | APD |
+|---|---|---|---|---|---|---|
+| RSGM 512x4 MLP, c10 (isotropic) | 95.2 / 7.65 / 46.2 | 113.0 / 8.76 / 67.1 | 117.8 / 7.12 / 69.4 | 47.4 / 2.06 / 27.0 | 93.33 / 52.43 | 6.40 |
+| RSGM dposer_like, full (isotropic) | 94.7 / 7.56 / 46.3 | 116.1 / 9.24 / 67.9 | 119.8 / 7.33 / 69.1 | 46.8 / 2.03 / 26.6 | 94.35 / 52.46 | 6.54 |
+| abl_norm_aniso | 96.0 / 6.98 / 51.7 | 110.6 / 7.64 / 69.9 | 112.5 / 6.46 / 68.5 | 49.4 / 2.15 / 27.6 | 92.12 / 54.42 | 5.81 |
+| dposer_like_aniso, data on device | 91.7 / 6.53 / 49.4 | 110.2 / 7.55 / 68.6 | 110.8 / 5.95 / 68.3 | 49.3 / 2.02 / 27.9 | 90.49 / 53.54 | 5.51 |
+
+The mean drops by 1-4 mm, but the APD drops too (5.5-5.8 against 6.4-6.5 cm) and the best of 10 is 1-2 mm worse:
+less diversity, which D-Flow cannot trade back, so no gain at equal APD can be read from it.
+
+Inpainting with per-joint noise: worse than isotropic, 2-3 mm on c10 (norm), 0.2-1.1 mm on full (dposer_like); see
+[the completion report](2026-11-13_pose_completion_rsgm_vs_dposer.md), section 14.
+
 ## 11. 2026-11-16: The IGSO(3) noise on the GPU
 
 Not a change of method: the seed-11 and GPU-noise runs of section 10 drew the noise of the loss on the GPU
@@ -449,6 +482,58 @@ stays at 13.2-13.5 deg whether 6% or 51% of the loss is at small noise: it moved
 depends on the prior here (all within 0.15 mm). The validation losses are not comparable across time distributions.
 Keep `weighting="std"`.
 
+Added the same day: the three aniso runs of section 10 trained with the same configs and seeds on both paths
+(workstation1; CPU path in `~/data/experiments/cpu_noise/`, GPU path in `igso_speed/`), evaluated as in section 10
+(hybrid on 500 validation poses, MPVPE mean / APD / best of 10; trajectory on 300; `eval_runs.sh` on the Mac). The
+same seed is not the same random stream on the two paths (CPU and CUDA generators), so a pair differs by the seed as
+well. The rule written before: the paths are equivalent if a pair differs by at most 1-2 mm in the hybrid and about
+0.1 deg in the first phase.
+
+| run | noise | left_leg | legs | arms | trunk | valid loss | left_leg 100 -> 199 | arms 100 -> 199 |
+|---|---|---|---|---|---|---|---|---|
+| abl_aniso s11 | CPU | 99.6 / 7.11 / 52.9 | 120.1 / 8.24 / 75.8 | 115.7 / 6.13 / 76.3 | 47.1 / 2.05 / 26.0 | 1.547 | 12.6 -> 14.5 | 23.1 -> 25.7 |
+| abl_aniso s11 | GPU | 93.0 / 6.83 / 49.6 | 114.1 / 7.92 / 71.6 | 121.7 / 5.92 / 82.1 | 47.3 / 1.97 / 26.8 | 1.549 | 12.2 -> 13.5 | 23.1 -> 25.4 |
+| abl_residual_aniso | CPU | 89.1 / 5.95 / 50.2 | 109.5 / 6.91 / 72.7 | 113.3 / 4.81 / 81.4 | 46.1 / 1.83 / 27.4 | 1.541 | 12.2 -> 12.7 | 22.6 -> 23.1 |
+| abl_residual_aniso | GPU | 89.6 / 6.03 / 50.4 | 107.6 / 6.66 / 71.3 | 115.7 / 4.96 / 82.6 | 46.6 / 1.74 / 28.7 | 1.551 | 12.3 -> 12.8 | 22.7 -> 23.1 |
+| abl_norm_aniso | CPU | 86.3 / 5.58 / 50.3 | 103.5 / 6.31 / 69.0 | 107.9 / 4.84 / 75.3 | 43.4 / 1.68 / 25.8 | 1.552 | 12.1 -> 12.3 | 22.1 -> 22.4 |
+| abl_norm_aniso | GPU | 87.0 / 5.81 / 49.3 | 105.2 / 6.40 / 70.6 | 108.0 / 4.87 / 75.0 | 44.0 / 1.61 / 26.5 | 1.556 | 12.1 -> 12.3 | 22.4 -> 22.6 |
+
+With residual or LayerNorm the paths agree (0.1-2.4 mm, at most 0.1 deg). The plain MLP `abl_aniso` differs by up to
+6.6 mm and 0.5 deg, with signs that change between the occlusions (the legs better on the GPU path, the arms on the
+CPU path): the spread of one seed of a network whose second phase drifts, not a shift of the path. So the agreement of
+`abl_aniso` seeds 10 and 11 in section 10 (0.4-2 mm) was partly luck; its spread between runs is up to about 7 mm.
+The validation losses of the GPU path are 0.002-0.01 higher in all three pairs, too few pairs to tell.
+
+## 12. 2026-11-16: Training throughput (data on the device, TF32, batch size)
+
+Section 11 left the DataLoader as the suspect: it collates a batch pose by pose on the CPU and copies it. Two options
+of the trainer (`hp.training.trainer`, branch `experimental/aniso-models`): `train.data_on_device` keeps the training
+poses on the device and slices batches of a permutation drawn there every pass (the same sampling: every pose once
+per pass); `train.tf32` allows TF32 matrix products on cuda. The EMA update became one foreach call.
+`scripts/benchmark_training_throughput.py`: 20 warm-up and 200 timed training steps on the c10 training poses, per
+network, batch size, loader and TF32; workstation1, one RTX 4090 shared with other users' jobs, so single rows can be
+off (e.g. dposer_like, DataLoader, TF32, batch 20480). Thousands of poses per second (ms per step in brackets):
+
+| network | loader | TF32 | 5120 | 10240 | 20480 | 40960 | 81920 |
+|---|---|---|---|---|---|---|---|
+| abl_norm_aniso (1.2M) | DataLoader | off | 374 (13.7) | 376 (27.2) | 357 (57.4) | 340 (120.5) | 309 (265.0) |
+| abl_norm_aniso | DataLoader | on | 390 (13.1) | 387 (26.5) | 354 (57.8) | 344 (119.2) | 308 (265.8) |
+| abl_norm_aniso | device | off | 1740 (2.9) | 2125 (4.8) | 2178 (9.4) | 2176 (18.8) | 2089 (39.2) |
+| abl_norm_aniso | device | on | 1681 (3.1) | 2476 (4.1) | **2736** (7.5) | 2533 (16.2) | 2413 (34.0) |
+| dposer_like_aniso (7.3M) | DataLoader | off | 331 (15.5) | 318 (32.2) | 298 (68.8) | 290 (141.4) | 268 (306.2) |
+| dposer_like_aniso | DataLoader | on | 325 (15.8) | 298 (34.4) | 242 (84.7) | 296 (138.5) | 272 (300.7) |
+| dposer_like_aniso | device | off | 588 (8.7) | 613 (16.7) | 613 (33.4) | 628 (65.2) | 632 (129.5) |
+| dposer_like_aniso | device | on | 773 (6.6) | 783 (13.1) | 790 (25.9) | **794** (51.6) | 791 (103.5) |
+
+- The DataLoader was the bottleneck: it caps every network at 300-390 thousand poses per second, whatever the batch
+  and TF32. With the data on the device a step at batch 5120 is 4.7x faster for the 1.2M network (2.9 against 13.7 ms)
+  and 1.8x for the 7.3M one (8.7 against 15.5 ms).
+- A larger batch helps only the small network (up to 2.2-2.7 million poses per second from 10240-20480 on); the 7.3M
+  network is saturated at 5120 already (588-632 and 773-794 thousand). The batch of the pairs (4096 and 5120) can stay.
+- TF32 gives 1.3x for the 7.3M network, little for the 1.2M one. It changes the precision of the network's products,
+  so runs that are paired with float32 runs keep it off.
+- Memory: the c10 poses on the device take about 1.3 GB, all frames (18.6M poses) about 13 GB in float32.
+
 ## Conclusions
 
 1. Residual connections or LayerNorm are what a score network on SO(3) needs for score distillation at small noise:
@@ -493,6 +578,11 @@ Keep `weighting="std"`.
   `~/data/experiments/full/rsgm_posedflow_dposer_like_s10` (on the Mac and on workstation1).
 - z statistics of section 9: `~/data/experiments/rsgm_z_statistics.json` on workstation1 (also in `model.json` of
   each z run).
+- `dposer_like_aniso` of section 10: `~/data/experiments/full/rsgm_posedflow_dposer_like_aniso_s10` (DataLoader) and
+  `~/data/experiments/full_device/rsgm_posedflow_dposer_like_aniso_s10` (data on device); their D-Flow rows in
+  `~/data/experiments/completion/dflow_valid_aniso.jsonl`.
+- Throughput rows of section 12: `~/data/experiments/throughput_worstation.jsonl` on workstation1
+  (`scripts/benchmark_training_throughput.py`); the CPU-path runs of section 11 in `~/data/experiments/cpu_noise/`.
 - The output lines behind the tables of sections 6-10: [2026-11-14_score_network_architectures_eval.txt](2026-11-14_score_network_architectures_eval.txt).
 - Scripts (from the root of the repository): `explore/evaluation/completion_diagnostics/eval_runs.sh` (valid loss,
   hybrid, trajectory for a list of runs), `hybrid.py`, `trajectory.py`, `loglik_valid.py`, `dflow_valid.py`; training configs in

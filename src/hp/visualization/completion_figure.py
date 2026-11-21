@@ -118,6 +118,47 @@ def choose(poses: torch.Tensor, k: int, how: str, errors: Optional[np.ndarray] =
     raise ValueError(f"Unknown choice '{how}'. Use one of {CHOICES}.")
 
 
+def pose_ranks(errors: np.ndarray) -> np.ndarray:
+    """The rank [N] of every pose by its mean error over the hypotheses (errors [N, K]), scaled to (0, 1]: 1 the
+    hardest pose."""
+    mean = errors.mean(1)
+    ranks = np.empty(len(mean))
+    ranks[np.argsort(mean, kind="stable")] = np.arange(1, len(mean) + 1)
+    return ranks / len(mean)
+
+
+def hard_poses(errors: Sequence[np.ndarray], fraction: float = 0.05):
+    """The poses hard for all methods: per method the mean error of a pose over its K hypotheses is ranked among the
+    poses (pose_ranks), and the ranks are averaged over the methods, so that every method weighs the same whatever
+    its scale of errors. errors: the [N, K] MPVPE of the methods (load_errors), on the same poses. Returns the
+    indices of the hardest `fraction` of the poses, the hardest first, and the mean rank [N]."""
+    if not errors:
+        raise ValueError("hard poses need the errors of at least one method.")
+    mean_rank = np.mean([pose_ranks(e) for e in errors], axis=0)
+    top = max(1, int(round(fraction * len(mean_rank))))
+    return np.argsort(-mean_rank, kind="stable")[:top], mean_rank
+
+
+def hard_overlap(errors: Dict[str, np.ndarray], fraction: float = 0.05) -> Dict:
+    """How much the methods agree on which poses are hard. errors: {label: [N, K] MPVPE}; per method its own hardest
+    `fraction` of the poses (by its mean error). Returns "common" (hard_poses of all), "own" {label: indices},
+    "in_common" {label: share of its own hardest among the common ones}, "pairs" {(a, b): share of the hardest of a
+    also among those of b} and "count" [M + 1]: the number of poses among the hardest of exactly m methods."""
+    labels = list(errors)
+    common, _ = hard_poses([errors[m] for m in labels], fraction)
+    top = len(common)
+    own = {m: np.argsort(-errors[m].mean(1), kind="stable")[:top] for m in labels}
+    sets = {m: set(own[m].tolist()) for m in labels}
+    common_set = set(common.tolist())
+    times = np.zeros(len(errors[labels[0]]), dtype=int)
+    for m in labels:
+        times[own[m]] += 1
+    return {"common": common, "own": own,
+            "in_common": {m: len(sets[m] & common_set) / top for m in labels},
+            "pairs": {(a, b): len(sets[a] & sets[b]) / top for a in labels for b in labels},
+            "count": np.bincount(times, minlength=len(labels) + 1)}
+
+
 def pick_pose(how: str, errors: Sequence[Optional[np.ndarray]], rng: np.random.Generator, top: int = 50) -> int:
     """A test pose: "random"; "hard for 1" / "easy for 1" one of the `top` poses with the highest / lowest mean error
     of method 1; "1 better than 2" / "2 better than 1" one of the `top` poses where the mean error of method 1 is the
