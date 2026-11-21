@@ -6,22 +6,27 @@ using the prior works for it: their D-Flow or DPoser's optimization (score disti
 
 ## Summary
 
-- **On the test, RSGM in DPoser's optimization ("ours", RSGM 1536x6 c10) has a lower MPJPE than DPoser at both noise
-  levels, by a small margin.** 40 mm: 17.73 against 17.89 mm, a paired difference of −0.16 mm [−0.23, −0.09];
-  RSGM is better on 65% of the 190 sequences. 100 mm: 28.59 against 29.10 mm, −0.52 mm [−0.65, −0.38], 73%.
-  PoseD-Flow's checkpoint is behind both: 18.62 and 33.77 mm.
-- **MPVPE is a tie with DPoser:** 30.84 against 30.74 mm and 41.07 against 40.92 mm. Both intervals contain 0.
-- **At 100 mm, the gain comes from more steps.** The tuned settings use 3 x 133 steps, DPoser uses 3 x 80. At DPoser's
-  number of steps, RSGM ties with DPoser: +0.10 mm [−0.06, +0.26]. At 40 mm (3 x 67 against 3 x 60), RSGM is better
-  at DPoser's number of steps too: −0.19 mm.
+- **Tuned alike, RSGM and DPoser tie in MPJPE on the test; RSGM needs half the steps.** DPoser was tuned afterwards by
+  the same procedure as RSGM (section "2026-11-20: DPoser tuned the same way"). Against the tuned DPoser, "ours"
+  (RSGM 1536x6 c10 with SDS) differs by −0.02 mm [−0.08, +0.04] at 40 mm and −0.10 mm [−0.24, +0.03] at 100 mm:
+  both intervals contain 0. The tuned DPoser chose 2x RSGM's steps (399 against 201 at 40 mm, 801 against 399 at
+  100 mm).
+- **In MPVPE, "ours" is better than the tuned DPoser at 40 mm,** 30.84 against 31.49 mm, −0.65 mm [−0.83, −0.47]; at
+  100 mm it is a tie, −0.09 mm [−0.39, +0.22]. The tuning of DPoser, on MPJPE alone, cost it 0.75 mm of MPVPE at 40 mm.
+- **Against DPoser at its authors' settings, "ours" is better in MPJPE,** by a small margin: 17.73 against 17.89 mm,
+  −0.16 mm [−0.23, −0.09], and 28.59 against 29.10 mm, −0.52 mm [−0.65, −0.38]; MPVPE is a tie. This was the
+  comparison the test was planned for; it set tuned RSGM against untuned DPoser.
+- **Both diffusion priors beat PoseD-Flow's checkpoint clearly:** 18.62 and 33.77 mm, 0.9 and 5.2 mm behind "ours".
 - **The network hardly matters.** On the test, every isotropic RSGM at the tuned settings lies within 0.06 mm of
   "ours": 1536x6, 512x4 c10, 512x4 full, res_norm and abl_residual.
 - **D-Flow does not suit the diffusion models.** RSGM via D-Flow scores 19.94 / 32.29 mm on the test, and DPoser via
-  D-Flow 24.03 / 51.71. Score distillation is the way for RSGM.
-- **The settings had to be tuned.** The hand-picked first guess, tested by mistake before the tuning, loses 3.9 mm to
-  DPoser at 100 mm. Tuned on validation, the same model wins by 0.5 mm.
-- **Decision.** For motion denoising we use RSGM with SDS at the tuned settings. Per-joint noise in training does not
-  help here (validation; see [the per-joint noise report](2026-11-18_denoising_per_joint_noise.md)).
+  D-Flow 24.03 / 51.71. Score distillation is the way for both.
+- **The settings had to be tuned, for both priors.** RSGM's hand-picked first guess loses 3.9 mm to DPoser at 100 mm;
+  tuned, it wins. DPoser gains 0.14 / 0.41 mm from its tuning, mostly from more steps.
+- **Decision.** For motion denoising we use RSGM with SDS at the tuned settings. The claim it supports is "as accurate
+  as a tuned DPoser at half the network calls, and better in MPVPE at 40 mm", not "more accurate than DPoser".
+  Per-joint noise in training does not help here (validation; see
+  [the per-joint noise report](2026-11-18_denoising_per_joint_noise.md)).
 
 ## Setup
 
@@ -76,9 +81,9 @@ All runs use seed 10. "c10" is the 10% condition subset of their training data, 
   - A second row reports RSGM 512x4 at DPoser's number of steps, with the other settings of the best trial.
   - The test is run once per row.
 - **abl_residual.** It joined later, from the per-joint-noise line, as a declared extra row.
-- **Untuned rows.** DPoser, PoseD-Flow and the D-Flow rows run with their authors' settings. Studies of DPoser
-  by the same procedure (`config/denoising_tuning/dposer_sds_{40,100}mm.yaml`, written 2026-11-20 with their rule)
-  are running; until they report, the DPoser rows here are untuned.
+- **Untuned rows.** PoseD-Flow and the D-Flow rows run with their authors' settings. DPoser runs with its authors'
+  settings and, since 2026-11-20, also with settings tuned like RSGM's (section "2026-11-20: DPoser tuned the same
+  way").
 - **Machines.** The test ran on workstation1, cuda, in one run (`test2.log`). The validation rows ran on the
   servers and the Mac.
 
@@ -99,6 +104,8 @@ isotropic networks.
 | RSGM abl_residual_aniso (per joint) | 100 mm | 0.0170 | 0.0067 (0.394 t_max) | 7.53 | 0.0378 | 3 x 133 | `rsgm_sds_aniso_100mm`, trial 22 | 32.68 | – |
 | DPoser full | 40 mm | 0.25 | 0.05 | 1 | 0.03 | 3 x 60 = 180 | the authors (not tuned) | 19.19 | 17.89 |
 | DPoser full | 100 mm | 0.25 | 0.10 | 1 | 0.03 | 3 x 80 = 240 | the authors (not tuned) | 32.23 | 29.10 |
+| DPoser full, tuned | 40 mm | 0.224 | 0.079 (0.351 t_max) | 0.76 | 0.0407 | 3 x 133 = 399 | `dposer_sds_40mm`, trial 35 | 18.72 | 17.75 |
+| DPoser full, tuned | 100 mm | 0.375 | 0.182 (0.485 t_max) | 0.15 | 0.0219 | 3 x 267 = 801 | `dposer_sds_100mm`, trial 8 | 31.60 | 28.69 |
 | w/o prior | 40 / 100 mm | – | – | – (no prior term) | 0.03 | 3 x 60 / 3 x 80 | DPoser's settings without the prior term | 23.43 / 50.54 | 22.73 / 49.57 |
 
 D-Flow: the ODE start of every frame is optimized through Euler 100, start mixing alpha 0.75, with RiemannianAdam
@@ -125,18 +132,19 @@ is a visual impression, not a measurement.
 | w/o prior | 180 / 240 | 23.43 / 49.29 | 50.54 / 72.63 |
 | PoseD-Flow, their checkpoint (D-Flow) | 300 / 400 | 19.83 / **37.19** | 31.73 / 56.89 |
 | DPoser, its own method | 180 / 240 | 19.19 / 38.15 | 32.23 / 54.38 |
+| DPoser, its own method, tuned (best trials) | 399 / 801 | 18.72 / 38.98 | 31.60 / 55.06 |
 | DPoser via D-Flow | 300 / 400 | 24.22 / 78.47 | 50.78 / 77.19 |
 | RSGM 512x4 c10, D-Flow | 300 / 400 | 31.81 / 53.45 | 33.53 / 57.07 |
-| **RSGM 1536x6 c10, SDS ("ours")** \* | 201 / 399 | **18.57** / 37.62 | **30.79** / 51.22 |
+| **RSGM 1536x6 c10, SDS ("ours")** | 201 / 399 | **18.57** / 37.62 | **30.79** / 51.22 |
 | RSGM 512x4 c10, SDS | 201 / 399 | 18.71 / 38.19 | 30.87 / 51.43 |
-| RSGM 512x4 full, SDS \* | 201 / 399 | 18.66 / 38.16 | 30.90 / 51.52 |
-| RSGM res_norm c10, SDS \* | 201 / 399 | 18.73 / 37.99 | 30.92 / 51.21 |
+| RSGM 512x4 full, SDS | 201 / 399 | 18.66 / 38.16 | 30.90 / 51.52 |
+| RSGM res_norm c10, SDS | 201 / 399 | 18.73 / 37.99 | 30.92 / 51.21 |
 | RSGM abl_residual c10, SDS | 201 / 399 | 18.63 / 37.97 | 30.81 / 51.26 |
 | RSGM 512x4 c10, SDS, DPoser's steps | 180 / 240 | 18.75 / 38.06 | 31.56 / **51.20** |
 
-\* These rows ran on the servers, and their cache files are not on the Mac. The numbers come from the summary printed
-by `evaluate_denoising.py` there. The 512x4 c10 row above is the Mac run, cache_aniso; its server run gave 18.72 /
-30.87.
+The tuned rows of 1536x6, 512x4 full and res_norm ran on the servers. Their files were copied to the Mac cache on
+2026-11-21 and give the numbers above. The 512x4 c10 row above is the Mac run, in cache_aniso; its server run gave
+18.72 / 30.87.
 
 The RSGM settings were tuned on these same chunks, so the RSGM rows are optimistic. They differ among themselves by
 at most 0.16 mm.
@@ -150,6 +158,7 @@ at most 0.16 mm.
 | w/o prior | 22.73 / 43.83 | 49.57 / 67.56 |
 | PoseD-Flow, their checkpoint (D-Flow) | 18.62 / 31.76 | 33.77 / 55.04 |
 | DPoser, its own method | 17.89 / **30.74** | 29.10 / **40.92** |
+| DPoser, its own method, tuned | 17.75 / 31.49 | 28.69 / 41.16 |
 | DPoser via D-Flow | 24.03 / 79.64 | 51.71 / 79.80 |
 | RSGM 512x4 c10, D-Flow | 19.94 / 32.92 | 32.29 / 50.26 |
 | **RSGM 1536x6 c10, SDS ("ours")** | 17.73 / 30.84 | **28.59** / 41.07 |
@@ -159,12 +168,20 @@ at most 0.16 mm.
 | RSGM abl_residual c10, SDS | 17.74 / 31.18 | **28.59** / 41.40 |
 | RSGM 512x4 c10, SDS, DPoser's steps | 17.70 / 31.07 | 29.20 / 41.53 |
 | RSGM 1536x6 c10, SDS, first guess (see below) | 17.69 / 30.36 | 33.00 / 43.33 |
+| RSGM abl_residual lik c10, SDS (after the fact) | 17.71 / 31.20 | 28.71 / 41.56 |
+| RSGM abl_residual ln m3 c10, SDS (after the fact) | 17.76 / 31.08 | **28.53** / 41.22 |
+| RSGM abl_residual ln m4 c10, SDS (after the fact) | 17.85 / 31.06 | 28.62 / 41.31 |
+
+The rows "after the fact" were not meant for the test: the networks trained with more weight on small noise (lik,
+log-normal noise levels) lost to the isotropic rows on validation and were left out. They were run on the test on
+2026-11-21 on workstation1 all the same, after the other rows. They were not used for any choice, and they fall in
+the range of the other RSGM rows (17.71-17.85 and 28.53-28.71 mm).
 
 Our reruns are lower than the paper's numbers for every row we share with it: w/o prior by 1.5 / 1.9 mm, DPoser by
 2.0 / 4.1 mm and PoseD-Flow by 0.3 / 0.9 mm. Only rows run on the same protocol here are compared. Likely causes are our SMPL-X fits of HumanEva and the
 body model; their data may be the SMPL+H fits.
 
-### Paired against DPoser on the test (per-sequence MPJPE, row − DPoser)
+### Paired against DPoser at its authors' settings on the test (per-sequence MPJPE, row − DPoser)
 
 Each entry is the mean difference in mm, its 95% bootstrap interval over the 190 sequences, and the share of
 sequences where the row is better.
@@ -189,6 +206,41 @@ number of steps is 0.61 mm [0.53, 0.68] worse than the same model at 3 x 133 ste
 
 Per subject at 100 mm (S1 / S2 / S3), "ours" is 28.43 / 28.59 / 28.75 and DPoser is 28.97 / 29.22 / 29.15 mm. The gain
 holds for each subject.
+
+## 2026-11-20: DPoser tuned the same way
+
+The test above sets RSGM at settings tuned on validation against DPoser at its authors' settings. To compare the
+priors and not the tuning, DPoser was tuned by the same procedure.
+
+- **Studies.** `config/denoising_tuning/dposer_sds_{40,100}mm.yaml`: DPoser full in its own optimization, 100
+  validation chunks, 40 trials each (TPE), objective MPJPE, run on workstation1 (cuda). The space is that of the RSGM
+  studies with DPoser's own scale of t (t_max 0.03-0.8, log), sds_weight 0.1-30 (log), lr 0.01-0.1, and the same
+  numbers of steps plus DPoser's own (60, 67, 133 at 40 mm; 80, 133, 267 at 100 mm). Trial 0 is DPoser's settings,
+  trial 1 the same at 3 x 133 steps.
+- **The rule, written in the files before the runs.** The best trial forms one more row, "DPoser: their full, DPoser
+  method, tuned", run once on the test. Both DPoser rows stay in the report; "ours" is not chosen again.
+- **Best trials** (validation MPJPE / MPVPE, mm): 40 mm trial 35, 18.72 / 38.98 (DPoser's settings 19.19 / 38.18);
+  100 mm trial 8, 31.60 / 55.06 (32.24 / 54.38). Trial 1, DPoser's settings at 3 x 133 steps, already gives 19.07 and
+  31.89: most of the gain is the number of steps. The best trials keep DPoser's broad window (t from about 0.2-0.4 down
+  to 0.08-0.18) and a weight below 1, and both chose the largest number of steps offered (3 x 133 and 3 x 267).
+
+Test, paired over the 190 sequences, "ours" − tuned DPoser (mean difference in mm, 95% bootstrap interval, share of
+sequences where "ours" is better):
+
+| metric | 40 mm | 100 mm |
+|---|---|---|
+| MPJPE | −0.02 [−0.08, +0.04], 52% | −0.10 [−0.24, +0.03], 55% |
+| MPVPE | −0.65 [−0.83, −0.47], 68% | −0.09 [−0.39, +0.22], 57% |
+| steps (network calls) | 201 against 399 | 399 against 801 |
+
+- The tuned DPoser gains 0.14 mm [0.11, 0.18] at 40 mm and 0.41 mm [0.31, 0.52] at 100 mm in MPJPE over its
+  authors' settings, and loses 0.75 mm [0.60, 0.91] and 0.24 mm [−0.02, +0.50] in MPVPE.
+- Every tuned isotropic RSGM row is within −0.07 to −0.01 mm of the tuned DPoser at 40 mm and −0.10 to −0.04 mm at
+  100 mm in MPJPE; only 512x4 c10 and 512x4 full at 40 mm have intervals that exclude 0, by 0.00-0.01 mm.
+- At DPoser's original steps (180 / 240) RSGM 512x4 gets 17.70 / 29.20 mm: as the tuned DPoser at 40 mm with less
+  than half its steps, 0.51 mm [0.33, 0.69] behind it at 100 mm with 30% of its steps.
+- Per subject (S1 / S2 / S3) the tuned DPoser is 17.84 / 17.85 / 17.57 and 28.52 / 28.74 / 28.82 mm; "ours" is
+  17.82 / 17.66 / 17.69 and 28.43 / 28.59 / 28.75 mm.
 
 ### Findings on the way
 
@@ -226,13 +278,15 @@ holds for each subject.
 
 ## Conclusions
 
-- RSGM with score distillation is a slightly better prior than DPoser for motion denoising in MPJPE: 0.16 mm at 40 mm
-  and 0.52 mm at 100 mm on the test. It ties in MPVPE. It beats PoseD-Flow clearly, by 0.9 and 5.2 mm. At 100 mm the
-  gain needs about 1.7 times DPoser's steps (399 against 240); at equal steps it is a tie.
+- Tuned the same way, RSGM with score distillation and DPoser are equally accurate priors for motion denoising in
+  MPJPE on this test (differences of 0.02 and 0.10 mm, intervals containing 0). RSGM reaches it with half the
+  optimizer steps and network calls, and is better in MPVPE at 40 mm by 0.65 mm. Against DPoser at its authors'
+  settings, RSGM is 0.16 / 0.52 mm better; that gap was mostly DPoser's untuned step count.
+- Both priors beat PoseD-Flow clearly, by 0.9 and 5.1-5.2 mm.
 - PoseD-Flow's D-Flow is a method for flow models. For diffusion priors, RSGM and DPoser alike, SDS is much better,
   and D-Flow diverges on some validation chunks.
-- The tuning is worth it: the noise window of SDS has to be narrow (t_max about 0.05), and at 100 mm it has to be
-  almost a single level (t_min 0.88 t_max).
+- The tuning is worth it for both priors. For RSGM the noise window of SDS has to be narrow (t_max about 0.05), and at
+  100 mm almost a single level (t_min 0.88 t_max). For DPoser the gain is mostly more steps.
 - Choice of network: any isotropic RSGM will do. The rule picked 1536x6, but 512x4 c10 is just as good on the test
   and much cheaper.
 
@@ -240,15 +294,18 @@ holds for each subject.
 
 - **One seed** of each model and of the optimization. The intervals cover the choice of sequences only. The
   differences among the RSGM networks (≤ 0.06 mm on the test) are below what a second seed would likely move.
-- **The settings were tuned for RSGM and not for DPoser or PoseD-Flow,** which run with their authors' settings. A
-  tuned DPoser, especially with more steps at 100 mm, might close the gap. DPoser's own steps at 100 mm are fewer.
+- **Equal tuning, not equal budget.** RSGM and DPoser were tuned by the same procedure with the same choices of steps,
+  and each picked its own: DPoser twice RSGM's. Neither was tuned at a fixed budget, so "RSGM needs half the steps"
+  rests on DPoser's choice, and RSGM at 801 steps at 100 mm was not tried. PoseD-Flow runs with its authors' settings.
+- **The objective was MPJPE only.** The tuned DPoser traded MPVPE for MPJPE at 40 mm; a joint objective might move both
+  priors.
 - **The edge of the search space.** At 100 mm the best t_min fraction (0.88) is near the edge of its range (0.9).
   Few trials tried 3 x 133 steps at 40 mm or 3 x 267 at 100 mm. A wider search was not run, and any new search would
   need a new rule before a new test.
 - **HPS,** the second dataset of their table, is not evaluated yet. The data has been downloaded.
 - **Absolute numbers** are not comparable with the paper. Our reruns of their rows are 0.3-4.1 mm lower.
-- **The validation table** mixes Mac and server runs. Three tuned validation rows, marked \*, are not in the Mac
-  cache.
+- **The validation table** mixes Mac and server runs. The validation numbers of the first guess (19.00 / 35.72 mm
+  for 1536x6) are no longer in a file: the tuned runs replaced them in the cache.
 
 ## Where things are
 
@@ -262,7 +319,8 @@ holds for each subject.
 - **Scripts.**
   - `scripts/evaluate_denoising.py`: the rows and the tuned settings `SDS`.
   - `scripts/tune_denoising.py`.
-  - Configs: `config/denoising_tuning/rsgm_sds_{40,100}mm.yaml`.
+  - Configs: `config/denoising_tuning/rsgm_sds_{40,100}mm.yaml`, `dposer_sds_{40,100}mm.yaml`; the tuned DPoser
+    settings are `DPOSER_TUNED` in `scripts/evaluate_denoising.py`.
 - **Notebooks.**
   - `explore/evaluation/motion_denoising.ipynb`: the tables of this report, the paired tests, the groups, the error
     per frame, and pictures of sequences.
@@ -271,5 +329,6 @@ holds for each subject.
   - Sequences: `~/data/experiments/denoising/sequences.pt` (Mac and both servers).
   - Cache: `~/data/experiments/denoising/cache/<row>/<split>_<sigma>mm.pt`. All test rows are on the Mac, copied
     from workstation1. Per-joint rows are in `cache_aniso/`.
-  - Studies: `~/data/experiments/denoising/optuna/rsgm_sds_{40,100}mm.{db,json}`.
-  - Test log: `~/data/experiments/denoising/test2.log` on workstation1, copied to the Mac as `test2_workstation1.log`.
+  - Studies: `~/data/experiments/denoising/optuna/{rsgm,dposer}_sds_{40,100}mm.{db,json}` (Mac and workstation1).
+  - Test logs on workstation1: `test2.log` (the tuned RSGM rows; on the Mac as `test2_workstation1.log`),
+    `test_abl_rest.log` (lik / ln) and `test_dposer_tuned.log`, in `~/data/experiments/denoising/`.
