@@ -15,7 +15,7 @@ A study is a YAML file in config/denoising_tuning, named as the file:
     fixed: {sampler: heun, schedule: edm, ode_steps: 25}           # the same in every trial
     first: [{lr: 0.25}]                                            # trials enqueued into a new study
 
-For dflow, steps, lr, temp_weight, running_weight, alpha and optimizer are settings of the denoising and the other
+For dflow, steps, lr, temp_weight, running_weight, guess_weight and optimizer are settings of the denoising and the other
 values options of the D-Flow prior (sampler, schedule, ode_steps, invert). For dposer, t_min_fraction gives
 t_min = t_min_fraction * t_max (the window stays ordered). The objective is the MPJPE (mm) of the
 validation sequences; every trial sees the same noise and seeds. The study is in STUDY_DIR / <name>.db with its
@@ -37,7 +37,7 @@ from hp.evaluation.denoising import Body, gt_joints, metrics, noisy_joints, run,
 from tune_completion import git_commit, open_study, suggest  # noqa: E402
 
 STUDY_DIR = "~/data/experiments/denoising/optuna"
-SETTING_KEYS = ("steps", "lr", "temp_weight", "running_weight", "alpha", "optimizer",  # dflow
+SETTING_KEYS = ("steps", "lr", "temp_weight", "running_weight", "guess_weight", "optimizer",  # dflow
                 "iterations", "steps_per_iter", "t_max", "t_min", "sds_weight")      # dposer
 KEYS = ("model", "method", "sigma", "sequences", "n_trials", "params", "fixed", "first")
 BATCH = 10

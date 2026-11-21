@@ -63,9 +63,10 @@ def test_dflow_denoising_sequences_together_is_the_same_as_alone():
     alone = []
     for i in range(2):
         torch.manual_seed(3)
-        start = prior.start(torch.eye(3).repeat(10, 19, 1, 1), 0.75)[5 * i:5 * (i + 1)]
+        prior.guess_weight = 0.75
+        start = prior.start(torch.eye(3).repeat(10, 19, 1, 1))[5 * i:5 * (i + 1)]
         # the same start as in the batch: replace prior.start for this call
-        prior.start = lambda y0, alpha, s=start: s
+        prior.start = lambda y0, s=start: s
         alone.append(dflow_denoise(prior, sk, noisy[i:i + 1], KEEP, steps=3, lr=0.05))
         del prior.start
     assert torch.allclose(both, torch.cat(alone), atol=1e-4)

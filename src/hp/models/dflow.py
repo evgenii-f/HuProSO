@@ -25,7 +25,7 @@ Their RiemannianAdam (weight decay 1e-4 on the point) is here Adam on the tangen
 R^(3J) for DPoser).
 """
 import math
-from typing import Callable, Optional, Tuple
+from typing import Callable, Tuple
 
 import roma
 import torch
@@ -45,9 +45,8 @@ class _RotationLatent:
     (theirs 1/4), steps x exp(delta)."""
     guess_weight = 0.25
 
-    def start(self, y0: torch.Tensor, alpha: Optional[float] = None) -> torch.Tensor:
-        """projx(sqrt(w) guess + sqrt(1 - w) noise), w = alpha if given (0.75 in denoising), else guess_weight."""
-        w = self.guess_weight if alpha is None else alpha
+    def start(self, y0: torch.Tensor) -> torch.Tensor:
+        w = self.guess_weight
         return projx(math.sqrt(w) * self.guess(y0) + math.sqrt(1 - w) * self.noise(y0.shape[0]))
 
     @staticmethod
@@ -166,8 +165,8 @@ class DPoserPrior:
         x = self.model.normalize(y0.to(self.model.device, self.dtype))
         return self._run(x, self._times(not self.invert), False)[0]
 
-    def start(self, y0: torch.Tensor, alpha: Optional[float] = None) -> torch.Tensor:
-        w = self.guess_weight if alpha is None else alpha
+    def start(self, y0: torch.Tensor) -> torch.Tensor:
+        w = self.guess_weight
         return math.sqrt(w) * self.guess(y0) + math.sqrt(1 - w) * self.noise(y0.shape[0])
 
     @staticmethod
