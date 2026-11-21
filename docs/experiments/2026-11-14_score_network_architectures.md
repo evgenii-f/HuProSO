@@ -8,7 +8,7 @@ puts the three networks side by side and proposes the one to try.
 
 ## Summary
 
-Updated 2026-11-20 (sections 6-16). Validation numbers only; no test was run for this line of work.
+Updated 2026-11-21 (sections 6-17). Validation numbers only; no test was run for this line of work.
 
 - **Skip connections or LayerNorm in the score network remove the drift of SDS at the smallest noise** and improve the
   hybrid (DPoser's optimization with the RSGM denoiser) by 15-17 mm on the legs and 10-14 mm on the arms over a plain
@@ -75,6 +75,12 @@ Updated 2026-11-20 (sections 6-16). Validation numbers only; no test was run for
   the left leg. That remainder is in the model, not in the noise. By the rule written before, `joint` (11.31 deg) is
   in the middle band and called for a second seed; it was dropped after seeing the result, since section 15 measures
   the same step on RSGM with two seeds.
+- **Most of that remainder is the network** (section 17): with the noise of `fact_NA_x`, a wide residual network
+  (`wide_RAD_x`: 1536 x 3 blocks, 14.5M parameters, residual, dropout 0.1) lowers the first phase from 11.57 to
+  11.21-11.24 deg (two seeds on the full data and one on c10 agree within 0.03 deg, so it is the network, not the
+  data), 0.30 deg behind DPoser on c10 (10.94); at step 199 it is level with DPoser (11.48-11.58 against 11.52). In
+  the hybrid the left leg comes within 1.0-1.9 mm of DPoser; the mean of four occlusions barely moves (80.9-81.5
+  against 81.7 mm, DPoser 84.2), with narrower hypotheses than DPoser's (APD 4.2 against 5.3 cm).
 
 ## 1. The three networks
 
@@ -936,6 +942,62 @@ and per-axis noise); on the mean of four occlusions RSGM is level with DPoser at
 per-axis noise. That remainder is in the model, not in the noise: the network, its input, or score against noise
 prediction, while sections 6-9 ruled out the network size, the budget, the data and the z input taken one at a time.
 
+## 17. 2026-11-21: A wide residual network with the per-axis noise (`wide_RAD_x`)
+
+**Question.** At equal noise RSGM's first phase stays 0.8-0.9 deg behind DPoser's (section 16). Sections 6-9 found
+that the network alone does not move the first phase, but with the isotropic noise, where the noise was the larger
+part of the gap. With the noise of `fact_NA_x`, is the network the rest?
+
+**Method** (commit 232562a). `wide_RAD_x` of `scripts/train_rsgm_posedflow.py`: the noise of `fact_NA_x` (per joint
+and per axis, alpha = 1) with TimeResNet 1536 x 3 blocks (1 + 6 layers, 14.5M parameters against 1.17M), residual
+on, LayerNorm off, dropout 0.1, the time t at the input; lr 1e-3, otherwise the budget of the factorial (30k x 4096,
+AdamW, EMA 0.999). Residual and dropout without LayerNorm as `fact_RADW`, the best hybrid of the factorial, since
+residual with LayerNorm was worse than their sum (section 13). Trained on workstation2 (RTX 4090, cuda:1), 11.5-11.7
+minutes per run: seed 10 on the full data, then seed 11 on the full data and seed 10 on c10.
+
+**Prediction, written before the run:** the first phase moves by at most 0.2 deg (the network did not move it in
+section 7), the hybrid gains 1-3 mm from the residual blocks. **Rule:** the network is a part of the remainder if
+the left leg at step 100 is <= 11.3 deg or the hybrid mean <= 79.7 mm (2 mm below `fact_NA_x`, more than the spread
+of its seeds); then a second seed and the run on c10, to tell the network from the data. The first run was on the
+full data, so the rule's reference (`fact_NA_x`, c10) differs from it in the data too.
+
+**Phase diagnostics** (`trajectory.py`, 300 validation poses, K = 10, hidden-joint error in deg; Mac):
+
+| model | data | left_leg 100 | left_leg 199 | arms 100 | arms 199 |
+|---|---|---|---|---|---|
+| fact_NA_x (1.2M), mean of 2 seeds | c10 | 11.57 | 11.95 | 21.20 | 21.51 |
+| wide_RAD_x s10 | full | 11.24 | 11.51 | 21.21 | 21.35 |
+| wide_RAD_x s11 | full | 11.21 | 11.58 | 21.02 | 21.04 |
+| wide_RAD_x s10 | c10 | 11.24 | 11.48 | 21.06 | 21.18 |
+| DPoser c10 (paper budget) | c10 | 10.94 | 11.78 | | |
+| DPoser full | full | 10.78 | 11.52 | 21.73 | 22.13 |
+
+**Hybrid** (`hybrid.py 500 rsgm`, 500 validation poses, K = 10; MPVPE mean (mm) / APD (cm) / best of 10 (mm)):
+
+| model | left_leg | legs | arms | trunk | mean of 4 |
+|---|---|---|---|---|---|
+| fact_NA_x, mean of 2 seeds | 83.0 | 99.7 | 100.5 | 43.6 | 81.7 / 4.37 / 53.6 |
+| wide_RAD_x s10, full | 81.3 | 100.2 | 101.5 | 43.1 | 81.5 / 4.21 / 53.9 |
+| wide_RAD_x s11, full | 80.6 | 100.5 | 100.4 | 42.8 | 81.1 / 4.20 / 53.8 |
+| wide_RAD_x s10, c10 | 80.4 | 98.7 | 99.6 | 44.7 | 80.9 / 4.21 / 53.6 |
+| DPoser full | 79.4 | 103.3 | 110.6 | 43.5 | 84.2 / 5.26 / 51.0 |
+
+The validation losses: 1.639 and 1.645 (full, two seeds; `fact_NA_x` 1.657 and 1.658), 1.641 on c10. The output
+lines are in [the output file](2026-11-14_score_network_architectures_wide.txt).
+
+By the rule the network is a part of the remainder: the left leg at step 100 is at 11.21-11.24 deg in all three runs
+(the first by 0.06 deg below the threshold), the hybrid criterion is not met (80.9-81.5 mm). The prediction was wrong
+for the first phase: 0.33 deg, not at most 0.2. The second seed agrees within 0.03 deg, and the run on c10 is where
+those on the full data are, so at this budget the gain is the network, not the data.
+
+**What it says.** With the noise right, the network matters at small noise, which it did not with the isotropic
+noise (section 7): of the 0.63 deg between `fact_NA_x` and DPoser on c10 about half goes, and the end of SDS (step
+199) is level with DPoser's, with a second phase that drifts less (+0.24-0.37 deg against +0.74). On the arms RSGM was
+already ahead. In the hybrid's millimetres the gain is on the left leg (1.7-2.6 mm, now 1.0-1.9 mm behind DPoser),
+while the mean of four occlusions stays at about 81 mm, 3 mm below DPoser's at a lower APD and a 2.6-2.9 mm higher
+best of 10: narrower hypotheses, as with every per-joint noise. Which part of the network does it (width, depth,
+residual or dropout) these runs do not separate.
+
 ## Conclusions
 
 1. Residual connections or LayerNorm are what a score network on SO(3) needs for score distillation at small noise:
@@ -952,7 +1014,10 @@ prediction, while sections 6-9 ruled out the network size, the budget, the data 
    the noise: at equal noise geometry RSGM stays 0.8-0.9 deg behind on the left leg, and in the hybrid only there
    (3.6-5.0 mm), while on the mean of four occlusions it is level or better. What is left is in the model: the
    network, its input, score against noise prediction, or several of the factors that sections 6-9 ruled out one at
-   a time.
+   a time. Most of it is the network (section 17): with the per-axis noise, a wide residual network (14.5M) takes
+   half of the remaining 0.6 deg (11.57 to 11.21-11.24, two seeds and c10 agree) and is level with DPoser at the
+   end of SDS; about 0.3 deg remain against DPoser on c10. The network did not matter with the isotropic noise
+   (section 7); with the noise right, it does.
 3. In D-Flow the network does not matter either (512x4 MLP = dposer_like).
 4. Next: completion with the whole reverse process of RSGM (inpainting on SO(3)), where the hidden joints are pulled
    at large noise, which training covers, instead of extrapolating the score at small noise. Per-joint noise was
@@ -965,6 +1030,12 @@ prediction, while sections 6-9 ruled out the network size, the budget, the data 
    (and its width 2048) and `fact_RADW`, to be compared with `fact_N` at equal APD by an inpainting study.
 
 ## What it does not show
+
+- The wide network (section 17): width, depth, residual and dropout changed together, so which of them does it is not
+  known; one budget (30k x 4096), so whether the full data help with a longer training is not known either; one seed
+  on c10. Only the phase diagnostics and the hybrid, no completion protocol and no comparison with DPoser at equal
+  APD, although its hypotheses are narrower (APD 4.2 against 5.3 cm). The rule's first criterion was met by 0.06 deg
+  on the first run; the two later runs are at the same place.
 
 - The reverse test (section 16): one seed per DPoser variant; by the rule written before, `joint` is open (middle
   band) and its second seed was dropped after seeing the result. The noise is made isotropic in DPoser's flat
@@ -1018,6 +1089,14 @@ prediction, while sections 6-9 ruled out the network size, the budget, the data 
   [2026-11-14_score_network_architectures_reverse.txt](2026-11-14_score_network_architectures_reverse.txt); training by
   `scripts/train_dposer_posedflow.py --config joint` / `iso`; `trajectory.py` and `hybrid.py` take the DPoser run
   from `DP_RUN`.
+
+- The wide network (section 17): runs `~/data/experiments/full/rsgm_posedflow_wide_RAD_x_s1{0,1}` (full data) and
+  `~/data/experiments/factorial/rsgm_posedflow_wide_RAD_x_s10` (c10), trained on workstation2 and copied to the
+  Mac; the z statistics of the full data in `~/data/experiments/full/rsgm_z_statistics.json` on workstation2; the
+  diagnostic outputs `~/data/experiments/full/{trajectory,hybrid}_wide_RAD_x_s1{0,1}.txt` and
+  `~/data/experiments/factorial/{trajectory,hybrid}_wide_RAD_x_c10_s10.txt`, their lines in
+  [2026-11-14_score_network_architectures_wide.txt](2026-11-14_score_network_architectures_wide.txt); training by
+  `scripts/train_rsgm_posedflow.py --config wide_RAD_x`.
 
 - The factorial of section 13: runs in `~/data/experiments/factorial/rsgm_posedflow_fact_*_s1[01]` (on the Mac, on
   workstation1 and workstation2), the responses of the second evaluation in
