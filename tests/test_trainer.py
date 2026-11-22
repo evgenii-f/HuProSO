@@ -592,6 +592,40 @@ def test_the_device_loader_gives_every_pose_once_per_pass_in_random_order():
     assert torch.equal(in_order, data.poses)
 
 
+def test_the_device_loader_draws_poses_in_proportion_to_the_weights():
+    data = PoseTensor(n=4)
+    weights = torch.tensor([0.0, 1.0, 3.0, 0.0])
+    loader = DeviceLoader(data, batch_size=1000, shuffle=True, device="cpu", weights=weights)
+    torch.manual_seed(0)
+    rows = torch.cat([torch.cat(list(loader)) for _ in range(500)])
+    assert len(list(loader)) == len(loader) == 1  # still n poses per pass
+    counts = torch.stack([(rows == data.poses[i]).all(-1).sum() for i in range(4)]).float()
+    assert counts[0] == counts[3] == 0
+    assert abs(counts[2] / counts.sum() - 0.75) < 0.05
+
+
+def test_the_device_loader_refuses_bad_weights():
+    data = PoseTensor(n=4)
+    for weights in (torch.ones(3), torch.tensor([1.0, -1.0, 1.0, 1.0]), torch.zeros(4)):
+        with pytest.raises(ValueError, match="sample weights"):
+            DeviceLoader(data, 2, True, "cpu", weights=weights)
+    with pytest.raises(ValueError, match="sample weights"):
+        DeviceLoader(data, 2, False, "cpu", weights=torch.ones(4))
+
+
+def test_sample_weights_need_data_on_device(make_gaussian, tmp_path):
+    torch.save(torch.ones(64), tmp_path / "w.pt")
+    with pytest.raises(ValueError, match="data_on_device"):
+        Trainer(make_gaussian(), PoseTensor(), None, config(max_iterations=2, sample_weights=str(tmp_path / "w.pt")))
+
+
+def test_training_with_sample_weights_takes_its_steps(make_gaussian, tmp_path):
+    torch.save(torch.rand(64), tmp_path / "w.pt")
+    history = Trainer(make_gaussian(), PoseTensor(), None, config(max_iterations=10, data_on_device=True,
+                                                                   sample_weights=str(tmp_path / "w.pt"))).fit()
+    assert len(history.loss) == 10
+
+
 def test_the_device_loader_refuses_conditioned_or_plain_datasets():
     with pytest.raises(ValueError, match="data_on_device"):
         DeviceLoader(Poses(), 16, True, "cpu")  # no .data

@@ -12,6 +12,11 @@ batch is a slice of a random permutation drawn there every pass (DeviceLoader), 
 the poses of a batch one by one on the CPU and copies them: the same sampling (every pose once per pass, the last
 batch smaller), without the CPU in the loop, which otherwise is what a small network on a GPU waits for. tf32: the
 float32 matrix products of the network on cuda in TF32 (faster, with a 10-bit mantissa in the products).
+
+sample_weights (with data_on_device): a file with a tensor [N] of non-negative weights, one per training pose in the
+order of the dataset; every pass draws N poses with replacement, pose i with probability w_i / sum w, instead of a
+permutation (docs/experiments: the data-weighting study). The loss is not reweighted: the model learns the weighted
+distribution.
 """
 import copy
 import json
@@ -70,6 +75,7 @@ class TrainConfig:
     num_workers: int = 0
     data_on_device: bool = False  # the poses on the device, batches sliced there (see the module doc)
     tf32: bool = False  # TF32 matrix products on cuda (see the module doc)
+    sample_weights: Optional[str] = None  # a file with weights [N] of the training poses (see the module doc)
     progress: bool = True
 
     def __post_init__(self):
@@ -172,19 +178,32 @@ class DeviceLoader:
     random generator, so that a resumed run continues the stream), sliced into batches of batch_size (the last one
     smaller), as DataLoader(shuffle=shuffle) gives them, or in order with shuffle=False. `dataset` is kept for len()."""
 
-    def __init__(self, dataset, batch_size: int, shuffle: bool, device):
+    def __init__(self, dataset, batch_size: int, shuffle: bool, device, weights: Optional[torch.Tensor] = None):
+        """weights [N] (optional, with shuffle): every pass draws N poses with replacement in proportion to them."""
         data = getattr(dataset, "data", None)
         if not torch.is_tensor(data) or getattr(dataset, "feat_for_conditioning", None) is not None:
             raise ValueError("data_on_device needs a dataset with a pose tensor `.data` and no conditioning.")
         self.dataset, self.batch_size, self.shuffle = dataset, batch_size, shuffle
         self.data = data.to(device)
+        self.cdf = None
+        if weights is not None:
+            weights = torch.as_tensor(weights, dtype=torch.float64).flatten()
+            if not shuffle or len(weights) != len(data) or not bool((weights >= 0).all()) or not weights.sum() > 0:
+                raise ValueError(f"sample weights need shuffling and {len(data)} non-negative weights, not all zero; "
+                                 f"got {len(weights)}.")
+            cdf = weights.cumsum(0)
+            self.cdf = (cdf / cdf[-1]).float().to(device)
 
     def __len__(self) -> int:
         return math.ceil(len(self.data) / self.batch_size)
 
     def __iter__(self):
         n = len(self.data)
-        order = torch.randperm(n, device=self.data.device) if self.shuffle else None
+        if self.cdf is not None:  # n draws with replacement by the inverse of the cumulative weights
+            u = torch.rand(n, device=self.data.device)
+            order = torch.searchsorted(self.cdf, u, right=True).clamp_max(n - 1)
+        else:
+            order = torch.randperm(n, device=self.data.device) if self.shuffle else None
         for i in range(0, n, self.batch_size):
             yield self.data[i:i + self.batch_size] if order is None else self.data[order[i:i + self.batch_size]]
 
@@ -223,8 +242,11 @@ class Trainer:
             self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, factor)
         elif c.scheduler != "none":
             raise ValueError(f"Unknown scheduler '{c.scheduler}'. Use 'step', 'cosine' or 'none'.")
+        if c.sample_weights is not None and not c.data_on_device:
+            raise ValueError("sample_weights needs data_on_device=true.")
         if c.data_on_device:
-            self.train_loader = DeviceLoader(train_set, c.batch_size, True, c.device)
+            weights = None if c.sample_weights is None else torch.load(Path(c.sample_weights).expanduser(), weights_only=True)
+            self.train_loader = DeviceLoader(train_set, c.batch_size, True, c.device, weights)
         else:
             self.train_loader = DataLoader(train_set, batch_size=c.batch_size, shuffle=True, num_workers=c.num_workers)
         self.valid_loader = None
