@@ -147,6 +147,15 @@ CONFIGS["dposer_like_z"] = CONFIGS["dposer_like"] + Z_INPUT
 # noise only. For the full data, as dposer_like: --rotations ~/data/AMASS_rotations_posedflow --run-root ~/data/experiments/full
 CONFIGS["dposer_like_aniso"] = list(CONFIGS["dposer_like"])
 ANISO.add("dposer_like_aniso")
+# The data-weighting study (explore/evaluation/data_weighting/rarity.py): the network of fact_RDW of the factorial
+# (abl_base with residual, dropout 0.1 and width 1024, data on the device), the poses drawn in proportion to their
+# rarity, softly (ESS 0.7 N) or strongly (ESS 0.4 N); the uniform baseline is fact_RDW_s10 of the factorial.
+# --run-root ~/data/experiments/data_weighting
+RDW = ABL_BASE + ["model.args.net_residual=true", "model.args.dropout=0.1", "model.args.net_width=1024",
+                  "train.data_on_device=true"]
+CONFIGS["rdw"] = list(RDW)
+CONFIGS["rdw_soft"] = RDW + ["train.sample_weights=~/data/experiments/data_weighting/weights_soft.pt"]
+CONFIGS["rdw_strong"] = RDW + ["train.sample_weights=~/data/experiments/data_weighting/weights_strong.pt"]
 # ----------------------------------------------------------------------------------------
 
 
