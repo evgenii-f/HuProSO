@@ -59,6 +59,23 @@ def test_the_folders_of_the_splits(tmp_path):
     assert cli.splits("all") == ["valid", "test"] and cli.splits("test") == ["test"]
 
 
+def test_quick_is_a_prefix_of_the_validation():
+    def resolved(*argv, quick=200):
+        parser = argparse.ArgumentParser()
+        cli.add_common_arguments(parser, out="/tmp/out", quick=quick)
+        args = parser.parse_args(list(argv))
+        cli.resolve_poses(args)
+        return args.split, args.poses
+
+    assert resolved() == ("test", None) and resolved("--split", "all") == ("all", None)
+    assert resolved("--quick") == ("valid", 200) and resolved("--quick", "--split", "valid") == ("valid", 200)
+    assert resolved("--quick", "--poses", "100") == ("valid", 100)
+    with pytest.raises(cli.UsageError):
+        resolved("--quick", "--split", "test")
+    with pytest.raises(SystemExit):  # a protocol without a quick check has no --quick
+        resolved("--quick", quick=None)
+
+
 def test_models_of_the_run_registry_and_points(tmp_path):
     registry = {"A": {"run": "~/a"}, "B": {"run": "~/b", "method": "dposer"}}
     points = tmp_path / "points.yaml"
@@ -141,6 +158,14 @@ def test_a_quick_check_goes_to_a_folder_of_its_own(fake):
     evaluate.main(["completion", "--run", f"mine={run}", "--poses", "2", "--out", str(out), "--occlusions", "arms",
                    "--k", "1", "--device", "cpu", "--no-metrics"])
     assert (out / "test_first2" / "mine" / "arms.pt").is_file() and not (out / "mine").exists()
+
+
+def test_quick_runs_the_first_validation_poses(fake, capsys):
+    evaluate, run, out, calls = fake
+    evaluate.main(["completion", "--run", f"mine={run}", "--quick", "--poses", "3", "--out", str(out),
+                   "--occlusions", "arms", "--k", "1", "--device", "cpu"])
+    assert calls[0][0] == 3 and (out / "valid_first3" / "mine" / "arms.pt").is_file()
+    assert "valid: 3 poses" in capsys.readouterr().out
 
 
 def test_the_old_command_runs_the_registry_on_the_test(fake, monkeypatch):

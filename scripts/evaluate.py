@@ -8,6 +8,7 @@ generation and runtime are to follow.
     python scripts/evaluate.py completion --run ~/data/posedflow_ckpt/checkpoints/epoch-009_step-0_loss-0.0000.ckpt \\
         --settings '{"lr": 0.05, "steps": 200}' --split test --occlusions left_leg
     python scripts/evaluate.py completion --models "PoseD-Flow: their checkpoint" --split test --dry-run
+    python scripts/evaluate.py completion --run ~/data/experiments/x_s10/run_0001 --quick --together
     python scripts/evaluate.py completion --points config/completion_test_points.yaml --fronts "RSGM dflow" \\
         --split valid --together     # the validation numbers again, next to the ones recorded with the points
 
@@ -18,7 +19,10 @@ ode_steps, sampler, schedule, guess_weight) to its prior; for inpaint and dposer
 
 Poses: --split valid is the fixed draw of 1000 validation poses on which the settings are chosen (the Optuna studies of
 scripts/tune_completion.py), test their 5000 test poses, all both; --poses n takes the first n of them, as a quick
-check in a folder of its own. Results: completions and metrics per (model, occlusion) in the folder of the split
+check in a folder of its own. --quick is --split valid --poses 200 (QUICK): the first 200 of the validation draw, a
+random subset fixed by its seed. On random subsets of the test caches (71 models), 200 poses put the paired difference
+of two models' mean MPVPE within about 1.4 mm (one sd; 100 poses: 1.9, 1000: 0.6) and swap 0.3% of the pairs that
+differ by 2 mm or more: enough to see a change of a few mm, not to choose between close settings. Results: completions and metrics per (model, occlusion) in the folder of the split
 (test: --out itself, where pose_completion.ipynb reads them; valid: <out>/valid), and one row per (model,
 occlusion) in results.jsonl there; a table at the end. A result made with other settings is kept and reported
 unless --recompute; a finished one is skipped.
@@ -40,6 +44,8 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from hp.evaluation import protocol_cli as cli  # noqa: E402
 from hp.evaluation.completion import BATCH, OCCLUSIONS  # noqa: E402
 
+QUICK = 200  # poses of --quick
+
 
 def completion_parser(sub) -> None:
     from evaluate_completion import CACHE
@@ -47,7 +53,7 @@ def completion_parser(sub) -> None:
     p = sub.add_parser("completion", help="pose completion, PoseD-Flow's Tab. 2", description=__doc__,
                        formatter_class=argparse.RawDescriptionHelpFormatter)
     cli.add_model_arguments(p)
-    cli.add_common_arguments(p, out=CACHE)
+    cli.add_common_arguments(p, out=CACHE, quick=QUICK)
     g = p.add_argument_group("completion")
     g.add_argument("--occlusions", nargs="+", default=list(OCCLUSIONS), choices=list(OCCLUSIONS))
     g.add_argument("--k", type=int, default=10, help="hypotheses per pose")
@@ -159,6 +165,7 @@ def main(argv=None) -> int:
     completion_parser(sub)
     args = parser.parse_args(argv)
     try:
+        cli.resolve_poses(args)
         return args.protocol(args)
     except cli.UsageError as error:
         parser.error(str(error))
