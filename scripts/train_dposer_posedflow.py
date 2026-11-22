@@ -68,6 +68,8 @@ CONFIGS["elbo_fixed"] = CONFIGS["rsgm_budget"] + ["model.name=dposer_elbo", "mod
 # the learned d again with the logits 10x slower (scale 1): elbo collapsed onto one coordinate with an ELBO 2.9 nats
 # worse than elbo_fixed, so the collapse is the optimization (the first logit to grow takes the whole budget)
 CONFIGS["elbo_slow"] = CONFIGS["rsgm_budget"] + ["model.name=dposer_elbo", "model.args.noise_logit_scale=1.0"]
+# elbo_slow with the ELBO from t = 1e-3: rule 1 of the plan (d must not depend on the boundary)
+CONFIGS["elbo_slow_t0"] = CONFIGS["elbo_slow"] + ["model.args.elbo_t0=0.001"]
 CONFIGS["learned"] = CONFIGS["paper"]
 # ----------------------------------------------------------------------------------------
 
