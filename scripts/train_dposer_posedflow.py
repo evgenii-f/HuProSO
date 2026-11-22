@@ -113,6 +113,9 @@ def learned_noise(runs) -> list:
 
 def quick_check(run: Path, device: str, n: int, seed: int) -> None:
     """The EMA weights: valid rotations, and samples with mean ~0 and std ~1 in the normalized space of the model."""
+    cuda_missing = device.startswith("cuda") and not torch.cuda.is_available()
+    if cuda_missing or (device == "mps" and not torch.backends.mps.is_available()):
+        device = "cpu"  # as the training, which falls back to the CPU
     model = load_model(run, device=device, weights="weights_ema")
     torch.manual_seed(seed)
     samples = model.sample(n)
