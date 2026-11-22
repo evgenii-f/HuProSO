@@ -25,7 +25,7 @@ of two models' mean MPVPE within about 1.4 mm (one sd; 100 poses: 1.9, 1000: 0.6
 differ by 2 mm or more: enough to see a change of a few mm, not to choose between close settings. Results: completions and metrics per (model, occlusion) in the folder of the split
 (test: --out itself, where pose_completion.ipynb reads them; valid: <out>/valid), and one row per (model,
 occlusion) in results.jsonl there; a table at the end. A result made with other settings is kept and reported
-unless --recompute; a finished one is skipped.
+unless --recompute; a finished one is skipped unless --force (which computes everything again).
 
 The studies ran with --together and their batch (500 unless the study says otherwise), so the same settings give the
 same validation numbers only that way; without --together the hypotheses are drawn as theirs (other random draws,
@@ -137,7 +137,7 @@ def completion(args) -> int:
                 start = time.perf_counter()
                 try:
                     pred = cached_run(cache, label, spec, gt, occlusion, args.device, args.k, args.rotations, split,
-                                      overwrite=args.recompute, **speed)
+                                      overwrite=args.recompute or args.force, force=args.force, **speed)
                 except OtherSettings:
                     kept.append(f"{label} / {occlusion}")
                     continue

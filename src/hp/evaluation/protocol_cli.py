@@ -57,6 +57,8 @@ def add_common_arguments(parser: argparse.ArgumentParser, out: str, quick: Optio
     group.add_argument("--rotations", default=None, help="the data folder (default: that of the protocol)")
     group.add_argument("--recompute", action="store_true",
                        help="replace results made with other settings (otherwise they are reported and kept)")
+    group.add_argument("--force", action="store_true",
+                       help="compute every result again, even one made with these settings (implies --recompute)")
     group.add_argument("--dry-run", action="store_true",
                        help="print what would run and what is already there, run nothing")
 

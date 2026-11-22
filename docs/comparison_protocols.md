@@ -51,7 +51,7 @@ validation draw, in `<out>/valid_first200`; enough for changes of a few mm, not 
 `--dry-run`. Results go to the folder of the split (the test in `--out` itself, the validation in `<out>/valid`), one
 row per model and occlusion in `results.jsonl` there, and a table at the end. A result made with other settings is
 kept and reported unless `--recompute` (weights copied between machines get a new modification time and read as
-other settings). `scripts/evaluate_completion.py` keeps its flags and runs it on the test.
+other settings); `--force` computes everything again, even results made with the same settings. `scripts/evaluate_completion.py` keeps its flags and runs it on the test.
 
 ### What to watch for
 

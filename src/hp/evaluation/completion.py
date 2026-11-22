@@ -324,15 +324,17 @@ def cache_state(cache: Path, label: str, spec: dict, n: int, occlusion: str, k: 
 
 
 def cached_run(cache: Path, label: str, spec: dict, gt: torch.Tensor, occlusion: str, device: str, k: int = 10,
-               rotations: str = "", split: str = "test", overwrite: bool = True, **options) -> Optional[torch.Tensor]:
+               rotations: str = "", split: str = "test", overwrite: bool = True, force: bool = False,
+               **options) -> Optional[torch.Tensor]:
     """The completions of cache/<label>/<occlusion>.pt if they were made with these settings (whatever the SPEED
     settings were); otherwise made and saved (device=None: only read, None if missing). An entry made with other
     settings is replaced only with overwrite=True; otherwise OtherSettings. spec["dflow"], if given, holds arguments of
     run() for D-Flow (steps, lr, running_weight; e.g. a point of an Optuna study). split names the poses gt ("test",
-    "valid"): part of the settings unless "test"."""
+    "valid"): part of the settings unless "test". force=True: made again and saved even if cached with these settings
+    (the metrics follow, as they belong to the completions file)."""
     path = cache_path(cache, label, occlusion)
     settings = run_settings(spec, len(gt), rotations, k, split, **options)
-    if path.is_file():
+    if path.is_file() and not (force and device is not None):
         saved = torch.load(path, weights_only=True)
         if _results_settings(json.loads(saved["settings"])) == _results_settings(settings):
             return saved["pred"].float()

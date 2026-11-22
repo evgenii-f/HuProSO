@@ -152,6 +152,10 @@ def test_other_settings_are_kept_unless_recompute(fake, capsys):
     assert "legs other" in capsys.readouterr().out and len(calls) == 1
     evaluate.main(base + ["--set", "lr=0.05", "--recompute"])
     assert len(calls) == 2 and calls[1][2]["lr"] == 0.05
+    evaluate.main(base + ["--set", "lr=0.05"])  # finished: skipped
+    assert len(calls) == 2
+    evaluate.main(base + ["--set", "lr=0.05", "--force"])  # computed again all the same
+    assert len(calls) == 3
 
 
 def test_a_quick_check_goes_to_a_folder_of_its_own(fake):
