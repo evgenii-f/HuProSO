@@ -176,7 +176,7 @@ def models(args: argparse.Namespace, registry: Dict[str, dict], default_method: 
     unknown = [name for name in names if name not in registry and name not in points]
     if unknown:
         raise UsageError(f"not in the registry{' nor in ' + args.points if args.points else ''}: {unknown}")
-    named_points = [name for name in names if name in points]
+    named_points = [] if args.models == ["all"] else [name for name in names if name in points]
     for name in names:
         if name in registry:
             add(name, registry[name], "--models")

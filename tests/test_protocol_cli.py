@@ -88,6 +88,7 @@ def test_models_of_the_run_registry_and_points(tmp_path):
     assert list(cli.models(parse("--points", str(points)), registry)) == ["p1", "p2", "A"]
     assert list(cli.models(parse("--points", str(points), "--fronts", "F"), registry)) == ["p1", "p2"]
     assert list(cli.models(parse("--points", str(points), "--models", "p2"), registry)) == ["p2"]
+    assert list(cli.models(parse("--points", str(points), "--models", "all"), registry)) == ["A", "B", "p1", "p2"]
     assert cli.recorded(str(points)) == {"p1": {"mean": 1}}
     for wrong in (parse("--models", "C"), parse("--set", "lr=1"), parse(), parse("--fronts", "F"),
                   parse("--run", "A=~/other")):
