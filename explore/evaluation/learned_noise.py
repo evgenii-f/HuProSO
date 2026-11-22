@@ -11,6 +11,7 @@ HP_DEVICE: the device (default mps). Everything is per pose in nats of the densi
 import argparse
 import os
 from pathlib import Path
+from typing import Optional
 
 import torch
 
@@ -21,10 +22,13 @@ from hp.models.io import load_model
 DEVICE = os.environ.get("HP_DEVICE", "mps")
 
 
-def log_d(directory: Path) -> torch.Tensor:
+def log_d(directory: Path) -> Optional[torch.Tensor]:
+    """log d of the EMA weights; None for a run with a fixed d (the config elbo_fixed)."""
     model = load_model(directory, device="cpu", weights="weights_ema")
-    if getattr(model, "noise_logits", None) is None:
-        raise SystemExit(f"{directory} has no learned noise (a dposer_elbo run of the config elbo)")
+    if not hasattr(model, "elbo_terms"):
+        raise SystemExit(f"{directory} is not a dposer_elbo run")
+    if model.noise_logits is None:
+        return None
     return torch.log(model.noise_d.detach().double())
 
 
@@ -42,23 +46,30 @@ def main() -> int:
 
     final = {}
     for run in runs:
-        final[run] = log_d(run)
+        ld = log_d(run)
+        if ld is None:
+            print(f"== {run}: fixed d (no learned noise), only its ELBO below")
+            continue
+        final[run] = ld
         print(f"== {run}\n  checkpoint   corr(log d, final)   max |log d - final|")
         for ckpt in sorted(run.glob("checkpoint_*")):
             ld = log_d(ckpt)
             print(f"  {ckpt.name:12s} {corr(ld, final[run]):18.3f} {(ld - final[run]).abs().max():20.3f}")
 
-    print("\nd per joint, axis-angle coordinates x / y / z" + ("" if len(runs) == 1 else ", the runs and their geometric mean"))
-    mean = torch.stack(list(final.values())).mean(0)
-    for j, name in enumerate(AmassJoints4Learning):
-        cells = ["/".join(f"{v:.2f}" for v in torch.exp(ld[3 * j:3 * j + 3])) for ld in final.values()]
-        if len(runs) > 1:
-            cells.append("/".join(f"{v:.2f}" for v in torch.exp(mean[3 * j:3 * j + 3])))
-        print(f"  {name.name:14s} " + "   ".join(cells))
-    if len(runs) > 1:
+    learned = list(final)
+    if learned:
+        print("\nd per joint, axis-angle coordinates x / y / z" +
+              ("" if len(learned) == 1 else ", the runs and their geometric mean"))
+        mean = torch.stack([final[r] for r in learned]).mean(0)
+        for j, name in enumerate(AmassJoints4Learning):
+            cells = ["/".join(f"{v:.2f}" for v in torch.exp(final[r][3 * j:3 * j + 3])) for r in learned]
+            if len(learned) > 1:
+                cells.append("/".join(f"{v:.2f}" for v in torch.exp(mean[3 * j:3 * j + 3])))
+            print(f"  {name.name:14s} " + "   ".join(cells))
+    if len(learned) > 1:
         print("\ncorrelation of log d between the runs (rule 1: > 0.8)")
-        for i, a in enumerate(runs):
-            for b in runs[i + 1:]:
+        for i, a in enumerate(learned):
+            for b in learned[i + 1:]:
                 print(f"  {a.parent.name}/{a.name} - {b.parent.name}/{b.name}: {corr(final[a], final[b]):.3f}")
 
     gt = valid_poses(n=args.poses)[:, KEEP]

@@ -63,6 +63,8 @@ CONFIGS.update({name: CONFIGS["rsgm_budget" if name.startswith("rsgm_budget") el
 ELBO = ["model.name=dposer_elbo", "model.args.noise_logit_scale=10.0"]
 CONFIGS["elbo"] = CONFIGS["rsgm_budget"] + ELBO
 CONFIGS["elbo_t0"] = CONFIGS["rsgm_budget"] + ELBO + ["model.args.elbo_t0=0.001"]
+# the same ELBO with d = 1 fixed: the reference -ELBO for the learned d (which collapsed onto one coordinate)
+CONFIGS["elbo_fixed"] = CONFIGS["rsgm_budget"] + ["model.name=dposer_elbo", "model.args.learn_noise=false"]
 CONFIGS["learned"] = CONFIGS["paper"]
 # ----------------------------------------------------------------------------------------
 
