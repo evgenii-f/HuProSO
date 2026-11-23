@@ -361,7 +361,12 @@ sequences where the budget row is better):
   - `src/hp/visualization/denoising_figure.py`.
 - **Tests.** `tests/test_denoising.py`, `tests/test_denoising_results.py`.
 - **Scripts.**
-  - `scripts/evaluate_denoising.py`: the rows and the tuned settings `SDS`.
+  - `scripts/evaluate.py denoising --points config/denoising_test_points.yaml`: the 13 rows of the test with the
+    sources of their settings and their validation numbers, run by one command (e.g. on HPS later, or `--split valid`
+    to check them); the points file is written by `scripts/denoising_test_points.py`. Caches made on another machine
+    count as made with other settings when the weights file there has another modification time (res_norm and
+    abl_residual on the Mac): they are kept, not recomputed, unless `--recompute`.
+  - `scripts/evaluate_denoising.py`: the rows (`MODELS`) and the tuned settings `SDS`.
   - `scripts/tune_denoising.py`.
   - Configs: `config/denoising_tuning/rsgm_sds_{40,100}mm.yaml`, `dposer_sds_{40,100}mm.yaml`,
     `rsgm_sds_budget_{40,100}mm.yaml`; the settings are `SDS`, `DPOSER_TUNED` and `SDS_BUDGET` in
