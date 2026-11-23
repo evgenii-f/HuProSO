@@ -1,6 +1,7 @@
 # MACE-lite: a graph score network for RSGM (plan, not implemented)
 
-Status: draft for discussion, 2026-11-23. Branch `experimental/wigner-inputs`.
+Status: implemented and evaluated, negative (2026-11-24): see section 19 of
+[the score report](experiments/2026-11-14_score_network_architectures.md). Branch `experimental/wigner-inputs`.
 
 ## Why
 

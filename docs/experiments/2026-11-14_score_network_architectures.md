@@ -8,7 +8,7 @@ puts the three networks side by side and proposes the one to try.
 
 ## Summary
 
-Updated 2026-11-23 (sections 6-18). Validation numbers only; no test was run for this line of work.
+Updated 2026-11-24 (sections 6-19). Validation numbers only; no test was run for this line of work.
 
 - **Skip connections or LayerNorm in the score network remove the drift of SDS at the smallest noise** and improve the
   hybrid (DPoser's optimization with the RSGM denoiser) by 15-17 mm on the legs and 10-14 mm on the arms over a plain
@@ -97,6 +97,13 @@ Updated 2026-11-23 (sections 6-18). Validation numbers only; no test was run for
   So the harm of the pair harmonics was the higher degrees and the size of the input, not the relations. One seed.
   The rotations relative to the root alone (`local+global`) do not do it (11.27 deg): the 11 left-right and sibling
   pairs do.
+- **A graph score network on the joints does not work here** (section 19, negative): MACE-lite (`net="mace"`, the
+  joints as nodes, the tree and the same pairs as edges with their relative rotations, 2.2M parameters) is 24 mm
+  worse than `local+pairs` in completion (hybrid, 200 validation poses: 104.9 against 80.4 mm) and worse in
+  generation (Wasserstein 19.13 against 18.34 deg). A virtual node connected to every joint halves the loss in
+  completion (93.4 mm) and has the best validation loss of all networks, in every band of noise levels, yet its
+  completion and generation stay worse (precision 17.66 against 16.73 deg): a better fit of the denoising loss that
+  does not carry over to where the score is used.
 
 ## 1. The three networks
 
@@ -1150,6 +1157,74 @@ is at 79.1 mm in both, 2.2 mm below `local`; only the phase diagnostics do. In t
 as the others. For a graph network: the tree alone is not enough, the edges between left and right and between
 siblings are where the relations help.
 
+## 19. 2026-11-23: A graph score network on the joints (MACE-lite, negative)
+
+**Question.** The relations of the joints help as plain rotations (section 18), but in a dense network every relation
+is an input number with its own weights. A graph network sees them as edges of one kind with shared weights, as MACE
+(Batatia et al. 2022) does for atoms. Does it do as well or better with far fewer parameters? The plan, written
+before the code, is [docs/mace_lite_plan.md](../mace_lite_plan.md).
+
+**Method** (branch `experimental/wigner-inputs`, commits 28dc827 and a58f84f). `hp.models.graph_nets.GraphScoreNet`,
+RSGM's `net="mace"`:
+
+- nodes: the 19 joints, with a learned embedding, the local rotation x_j and the time;
+- edges: the 16 parent-child edges among the 19 joints and the 11 pairs of section 18, both directions (54), each
+  with the relative rotation G_i^T G_k and an embedding of the edge;
+- 3 layers of messages A_i = sum_k phi(R_ik) * W h_k, channel-wise products (U A_i)(V A_i) (body order 3), and a
+  residual update; the score of each joint read from its node; no equivariance (there is no symmetry to keep);
+- `mace_x`: 256 channels, dropout 0.1 (2.2M parameters); `mace_g_x`: and a virtual node connected to every joint,
+  fed the whole pose (3.1M), so that a joint sees all of it in one layer instead of one edge per layer;
+- tests: the edges, the locality (with one layer a joint does not see one two edges away, with two it does; with the
+  virtual node it sees one nine edges away in one layer), the exact divergence, finite gradients.
+
+The noise, data and budget of `wide_RAD_x` (per-axis noise, full data, 30k x 4096, seed 10); 37 and 39 minutes on
+workstation2, 3.7 times slower per step than the dense network on MPS.
+
+**Rule** (docs/mace_lite_plan.md, fixed before the runs, 2026-11-23): a staged evaluation on validation against
+`local+pairs`. Stage 0, the validation loss: stop if worse by > 0.03. Stage 1, completion (`hybrid.py 200`): stop if
+the mean or the best of 10 is worse by > 3 mm or the APD lower by > 0.8 cm. Stage 2, generation (the harness): the
+decision with stage 1. Stage 3 (phase diagnostics, quick protocol) only for the models that pass. Its thresholds come
+from the same panel on `local` (two seeds) and `local+pairs`.
+
+| model | params | valid loss | completion mean / APD / best of 10 | Wasserstein | recall | precision |
+|---|---|---|---|---|---|---|
+| local (`wide_RAD_x`) s10 | 14.5M | 1.639 | 81.7 / 4.27 / 53.2 | 18.64 | 14.03 | 17.03 |
+| local s11 | 14.5M | 1.645 | 81.4 / 4.25 / 53.7 | 18.56 | 14.05 | 16.98 |
+| local+pairs | 14.9M | 1.646 | 80.4 / 4.14 / 52.4 | 18.34 | 13.92 | 16.73 |
+| mace_x | 2.2M | 1.661 | 104.9 / 6.76 / 62.6 | 19.13 | 14.31 | 17.41 |
+| mace_g_x | 3.1M | 1.620 | 93.4 / 6.07 / 55.6 | 19.26 | 14.26 | 17.66 |
+| real training poses | | | | 14.75 | 11.78 | 12.15 |
+
+Completion per occlusion (mean, mm): `mace_x` 104.2 / 135.9 / 130.7 / 48.9, `mace_g_x` 99.3 / 113.9 / 113.0 / 47.5,
+`local+pairs` 78.7 / 99.5 / 102.0 / 41.4 (left leg, legs, arms, trunk).
+
+By the rule both stop at stage 1: completion 24.5 and 13.0 mm worse, best of 10 10.2 and 3.2 mm worse. Their
+generation is also worse than the tolerance (Wasserstein +0.8 and +0.9 deg, precision +0.7 and +0.9 deg). Stage 3
+was not run.
+
+**The validation loss by noise level** (`explore/evaluation/loss_by_noise_level.py`: 8192 validation poses, the same
+poses and noise for every model; lower is better). `mace_g_x` has the lowest loss of all at once, so the first guess,
+a worse score at the small noise where SDS works, was checked:
+
+| t | 0.002-0.01 | 0.01-0.03 | 0.03-0.06 | 0.06-0.1 | 0.1-0.2 | 0.2-0.5 | 0.5-1 |
+|---|---|---|---|---|---|---|---|
+| local | 47.17 | 28.10 | 11.78 | 4.87 | 1.454 | 0.117 | 0.005 |
+| local+pairs | 47.41 | 28.17 | 11.79 | 4.87 | 1.456 | 0.120 | 0.005 |
+| mace_g_x | 46.61 | 27.93 | 11.71 | 4.76 | 1.396 | 0.109 | 0.004 |
+| mace_x | 48.04 | 29.21 | 12.11 | 4.84 | 1.400 | 0.109 | 0.004 |
+
+It is not that: `mace_g_x` is the best in every band, the smallest noise included. Without the virtual node the graph
+is worse exactly at small noise (48.04), and better at large noise.
+
+**What it says.** Local messages are not enough for completion: without the virtual node the joints far from the
+visible ones (both legs, the arms) are worst, and the hypotheses are spread wider (APD 6.8 cm), as a score that knows
+little about the rest of the pose. The virtual node fixes half of it. But the best denoising loss of all, at every
+noise level, does not give the best completion or generation: the score is evaluated in SDS at the current
+hypotheses and in generation along the sampler's path, not at the noised data points the loss averages over, and
+the graph network does worse there. That this is a matter of generalization away from the training pairs is a
+guess, not checked. For the staged rule it means that the validation loss is a poor predictor and stays a loose gate
+only. The dense network with the pairs (`local+pairs`) remains the best of this line.
+
 ## Conclusions
 
 1. Residual connections or LayerNorm are what a score network on SO(3) needs for score distillation at small noise:
@@ -1172,7 +1247,8 @@ siblings are where the relations help.
    (section 7); with the noise right, it does. Richer inputs do not take the rest (section 18): harmonics of SO(3)
    and their pair products make the score more confident, not more accurate; the relations of the joints as plain
    rotations (l = 1) take 0.24 deg of the first phase and keep the spread (one seed), through the pairs of left and
-   right and of siblings, not the chains to the root. All of it is in the hybrid;
+   right and of siblings, not the chains to the root. A graph network over the same relations (section 19) does not
+   do it: worse in completion and generation, although it has the best denoising loss. All of it is in the hybrid;
    in RSGM's own SDS with DPoser's settings the per-joint and per-axis noise are worse than the isotropic noise
    (section 18).
 3. In D-Flow the network does not matter either (512x4 MLP = dposer_like).
@@ -1187,6 +1263,10 @@ siblings are where the relations help.
    (and its width 2048) and `fact_RADW`, to be compared with `fact_N` at equal APD by an inpainting study.
 
 ## What it does not show
+
+- The graph networks (section 19): one seed each, one size (256 channels, 3 layers), one budget, the per-axis noise
+  only; no tuning of the time input, of the depth or of the learning rate for a graph; whether the gap is the
+  generalization away from the training pairs is not checked.
 
 - The harmonics (section 18): one seed per input; the one-body harmonics on c10 and on the full data disagree, and
   no second seed was trained. Only the network of section 17 and its budget; no graph network with shared weights.
@@ -1272,6 +1352,12 @@ siblings are where the relations help.
   `local+global` in `~/data/experiments/full_global` (run `rsgm_posedflow_wide_RAD_x_s10`, its outputs
   `{trajectory,hybrid}_wide_RAD_x_global_s10.txt` there), trained by `--config wide_RAD_x` with
   `model.args.inputs=local+global`.
+
+- The graph networks (section 19): runs `~/data/experiments/full/rsgm_posedflow_mace{,_g}_x_s10` (trained on
+  workstation2, copied to the Mac); the panel rows of all candidates in `~/data/experiments/candidate_panel.jsonl`
+  (`explore/evaluation/candidate_panel.py`); the loss by noise level by `explore/evaluation/loss_by_noise_level.py`;
+  all lines in [2026-11-14_score_network_architectures_graph.txt](2026-11-14_score_network_architectures_graph.txt);
+  training by `scripts/train_rsgm_posedflow.py --config mace_x` / `mace_g_x`.
 
 - The factorial of section 13: runs in `~/data/experiments/factorial/rsgm_posedflow_fact_*_s1[01]` (on the Mac, on
   workstation1 and workstation2), the responses of the second evaluation in
