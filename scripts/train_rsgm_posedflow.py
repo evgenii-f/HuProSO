@@ -212,6 +212,13 @@ ANISO_X.add("wide_RAD_x_wigner_pairs")
 CONFIGS["wide_RAD_x_pairs_l1"] = CONFIGS["wide_RAD_x"] + ["model.args.inputs=local+pairs"]
 ANISO.add("wide_RAD_x_pairs_l1")
 ANISO_X.add("wide_RAD_x_pairs_l1")
+# The graph score network (net="mace", hp.models.graph_nets, docs/mace_lite_plan.md) with the noise and budget of
+# wide_RAD_x: the joints as nodes, the tree and the pairs of local+pairs as edges with their relative rotations,
+# 256 channels, 3 layers, dropout 0.1 (2.2M parameters). On the full data.
+CONFIGS["mace_x"] = ABL_BASE + ["model.args.net=mace", "model.args.net_width=256", "model.args.net_blocks=3",
+                                "model.args.dropout=0.1", "train.lr=1e-3", "train.data_on_device=true"]
+ANISO.add("mace_x")
+ANISO_X.add("mace_x")
 # fact_RDW one step further along width, the strongest factor of the factorial for inpainting
 CONFIGS["fact_RDW_w2048"] = CONFIGS["fact_RDW"] + ["model.args.net_width=2048"]
 # ----------------------------------------------------------------------------------------
@@ -341,7 +348,9 @@ def main() -> int:
         cfg = load_config(argv)
         t = cfg.train
         args_ = cfg.model.args
-        net = (f"timeres {args_.net_width} x {args_.net_blocks} blocks" if args_.get("net", "mlp") == "timeres"
+        kind = args_.get("net", "mlp")
+        net = (f"timeres {args_.net_width} x {args_.net_blocks} blocks" if kind == "timeres"
+               else f"graph {args_.net_width} channels x {args_.net_blocks} layers" if kind == "mace"
                else f"hidden {list(args_.hidden)}")
         plan = (f"{net}, weighting {args_.weighting}, lr {t.lr}, {t.max_iterations:,} steps x batch {t.batch_size} = "
                 f"{t.max_iterations * t.batch_size / frames:.1f} epochs")

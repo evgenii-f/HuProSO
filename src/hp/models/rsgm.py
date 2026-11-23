@@ -94,8 +94,9 @@ from torch.func import jacfwd, vmap
 
 from hp.data.amass_cfg import AmassJoints4Learning
 from hp.models import conditioning, igso3
+from hp.models.graph_nets import GraphScoreNet
 from hp.models.score_nets import TimeResNet
-from hp.models.so3_harmonics import WIGNER_PAIRS, pair_wigner_features, wigner_features
+from hp.models.so3_harmonics import PAIR_INDEX, WIGNER_PAIRS, pair_wigner_features, wigner_features
 from hp.models.base import PoseModel
 from hp.models.conditioning import move  # noqa: F401  (also imported from here by other models)
 from hp.models.registry import register_model
@@ -143,6 +144,14 @@ def global_rotations(x: torch.Tensor) -> torch.Tensor:
     for j, p in enumerate(PARENTS19):  # a parent comes before its children
         out.append(x[..., j, :, :] if p < 0 else out[p] @ x[..., j, :, :])
     return torch.stack(out, dim=-3)
+
+
+def graph_edges() -> list:
+    """The directed edges (target, source) of net="mace": the kinematic tree among the 19 joints (PARENTS19; the
+    joints whose parent is the root have no edge to it) and the pairs of WIGNER_PAIRS (left and right, siblings),
+    each in both directions."""
+    pairs = [(p, j) for j, p in enumerate(PARENTS19) if p >= 0] + list(PAIR_INDEX)
+    return [e for i, k in pairs for e in ((i, k), (k, i))]
 
 
 # the harmonics of SO(3) (hp.models.so3_harmonics): the degrees of the inputs "local+wigner" (D^l(x_j) next to the
@@ -275,7 +284,8 @@ class RSGM(PoseModel):
         z_mean: Optional[Sequence[float]] = None,  # of inputs="local+z": the rotation vectors of the means M_j [3J],
         z_std: Optional[Sequence[float]] = None,  # and the std of log(M_j^T x_j) [3J] (z_statistics)
         time_features: int = 0,  # sin and cos of t at this many frequencies, next to t itself; 0: t alone
-        net: str = "mlp",  # "mlp": Linear-activation layers of `hidden`, t at the input; "timeres": score_nets.TimeResNet
+        net: str = "mlp",  # "mlp": Linear-activation layers of `hidden`, t at the input; "timeres": score_nets.TimeResNet;
+        # "mace": graph_nets.GraphScoreNet on the joints and graph_edges() (its channels net_width, layers net_blocks)
         net_width: int = 1024,  # of net="timeres": the width,
         net_blocks: int = 2,  # its residual blocks (of two layers),
         net_embed: int = 256,  # the size of its embedding of the noise level,
@@ -291,8 +301,11 @@ class RSGM(PoseModel):
     ):
         if representation != "matrix":
             raise ValueError("RSGM works on rotation matrices directly; use representation='matrix'.")
-        if net not in ("mlp", "timeres"):
-            raise ValueError(f"Unknown net '{net}'. Use 'mlp' or 'timeres'.")
+        if net not in ("mlp", "timeres", "mace"):
+            raise ValueError(f"Unknown net '{net}'. Use 'mlp', 'timeres' or 'mace'.")
+        if net == "mace" and (num_joints != len(PARENTS19) or inputs != "local" or cond_dim or condition):
+            raise ValueError("net='mace' needs the 19 joints of AmassJoints4Learning, inputs='local' (the graph takes "
+                             "the relations itself) and no condition.")
         if net_level not in ("log_s", "t"):
             raise ValueError(f"Unknown net_level '{net_level}'. Use 'log_s' or 't'.")
         if net == "timeres" and time_features:
@@ -336,7 +349,9 @@ class RSGM(PoseModel):
         if inputs == "local+pairs":
             rotations += (num_joints + len(WIGNER_PAIRS)) * 9
         self.net_kind, self.net_level = net, net_level
-        if net == "timeres":
+        if net == "mace":
+            self.net = GraphScoreNet(num_joints, graph_edges(), net_width, net_blocks, dropout)
+        elif net == "timeres":
             self.net = TimeResNet(rotations + (cond_features if cond_dim else 0), 3 * num_joints, net_width, net_blocks,
                                   net_embed, dropout, net_time_in, net_time_embed, net_residual, net_norm,
                                   net_zero_init)
@@ -504,12 +519,14 @@ class RSGM(PoseModel):
                 inputs.append(pair_wigner_features(global_rotations(x), PAIR_DEGREES))
         elif self.inputs == "local+pairs":
             inputs.append(pair_wigner_features(global_rotations(x), (1,)))
-        if self.net_kind == "timeres":  # the time goes to every layer, as the noise level log(s) / 4
-            features = torch.cat(inputs + ([] if f is None else [f]), dim=1)
+        if self.net_kind in ("timeres", "mace"):  # the time goes to every layer, as the noise level log(s) / 4
             if self.net_level == "log_s":
                 level = torch.log(self.s(t.to(x.dtype))) / 4  # s(t) >= beta_0 eps ~ 2e-7: fine in float32
             else:
                 level = t.to(x.dtype)
+            if self.net_kind == "mace":
+                return self._unscale(self.net(x, global_rotations(x), level), t, x.dtype)
+            features = torch.cat(inputs + ([] if f is None else [f]), dim=1)
             return self._unscale(self.net(features, level), t, x.dtype)
         inputs.append(t_col)
         if self.time_features:  # frequencies pi, 2 pi, 4 pi, ...: periods from 2 down to 2^(2 - K) in t

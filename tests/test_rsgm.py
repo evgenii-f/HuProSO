@@ -843,3 +843,56 @@ def test_the_pair_control_with_l1_is_the_rotations_of_the_joints_and_pairs():
     assert torch.allclose(divergence, numeric, atol=1e-6)
     with pytest.raises(ValueError, match="inputs"):
         build_model("rsgm", num_joints=3, inputs="local+pairs")
+
+
+# ---- the graph score network (net="mace", hp.models.graph_nets) ----
+
+def test_the_graph_has_the_tree_and_the_pairs_in_both_directions():
+    from hp.models.rsgm import PARENTS19, graph_edges
+    from hp.models.so3_harmonics import PAIR_INDEX
+
+    edges = graph_edges()
+    tree = [(p, j) for j, p in enumerate(PARENTS19) if p >= 0]
+    assert len(edges) == 2 * (len(tree) + len(PAIR_INDEX)) == len(set(edges))
+    for i, k in tree + list(PAIR_INDEX):
+        assert (i, k) in edges and (k, i) in edges
+
+
+def test_the_graph_network_sees_only_its_neighbourhood():
+    """With one layer the score of a joint depends on its own rotation and on the joints that send it an edge, not on
+    a joint two edges away (the right arm and the right hand, through the elbow); with two layers it does."""
+    torch.manual_seed(0)
+    names = [j.name for j in AmassJoints4Learning]
+    x, t = poses19(2, dtype=torch.float64), torch.full((2,), 0.1, dtype=torch.float64)
+    arm, hand = names.index("RightArm"), names.index("RightHand")
+    e = torch.zeros(2, J19, 3, dtype=torch.float64)
+    e[:, hand] = 0.3
+    moved = {}
+    for layers in (1, 2):
+        model = build_model("rsgm", num_joints=J19, net="mace", net_width=32, net_blocks=layers).double().eval()
+        with torch.no_grad():
+            moved[layers] = model.score(exp_frame(x, e), t) - model.score(x, t)
+    assert moved[1][:, arm].abs().max() < 1e-12 and moved[1][:, hand].abs().max() > 1e-6
+    assert moved[2][:, arm].abs().max() > 1e-8
+
+
+def test_the_graph_network_keeps_the_divergence_exact_and_trains():
+    torch.manual_seed(0)
+    model = build_model("rsgm", num_joints=J19, net="mace", net_width=16, net_blocks=2).double()
+    x, t = poses19(2, dtype=torch.float64), torch.rand(2, dtype=torch.float64)
+    model.eval()
+    with torch.no_grad():
+        _, divergence = model.velocity_and_divergence(x, t)
+        numeric = torch.zeros(2, dtype=torch.float64)
+        for joint in range(J19):
+            for i in range(3):
+                e = torch.zeros(2, J19, 3, dtype=torch.float64)
+                e[:, joint, i] = 1e-5
+                numeric += (model.velocity(exp_frame(x, e), t) - model.velocity(exp_frame(x, -e), t))[:, joint, i] / 2e-5
+    assert torch.allclose(divergence, numeric, atol=1e-6)
+    model.train()
+    loss = model.loss(poses19(32, dtype=torch.float64).reshape(32, -1))
+    loss.backward()
+    assert torch.isfinite(loss) and all(torch.isfinite(p.grad).all() for p in model.parameters() if p.grad is not None)
+    with pytest.raises(ValueError, match="mace"):
+        build_model("rsgm", num_joints=J19, net="mace", inputs="local+pairs")
