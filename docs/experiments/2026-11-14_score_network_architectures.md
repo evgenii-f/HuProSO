@@ -95,6 +95,8 @@ Updated 2026-11-23 (sections 6-18). Validation numbers only; no test was run for
   11.00 deg and the end of SDS from 11.51 to 11.21 (DPoser 11.52), with the spread kept (6.13 against 6.17 deg) and
   the best of 10 unchanged (54.0 against 53.9 mm); the left leg in the hybrid is 79.1 mm, level with DPoser's 79.4.
   So the harm of the pair harmonics was the higher degrees and the size of the input, not the relations. One seed.
+  The rotations relative to the root alone (`local+global`) do not do it (11.27 deg): the 11 left-right and sibling
+  pairs do.
 
 ## 1. The three networks
 
@@ -1129,6 +1131,25 @@ deg behind DPoser on the full data. In the quick protocol it is where the others
 rotations as edges) this is the first positive signal: the relations are useful as plain rotations, which a graph
 network with weights shared over the edges would take as its edge features.
 
+**Which part helps: the chains to the root or the pairs** (2026-11-23). `local+pairs` gives the rotations of every
+joint relative to the root (G_j) and of the 11 pairs. `inputs="local+global"` (an option of RSGM from before: the
+matrices and G_j only, 342 inputs) on `wide_RAD_x`, full data, seed 10 (`model.args.inputs=local+global` on the
+command line, run root `~/data/experiments/full_global`; 21 minutes on workstation2). **Rule, written before the
+run:** the chains to the root carry the effect if `local+global` is <= 11.08 deg at step 100 (within 0.08 of
+`local+pairs`); the pairs carry it if it is >= 11.16 (within 0.08 of `local`); in between, both.
+
+| inputs | n | valid loss | left_leg 100 | spread 100 | left_leg 199 | arms 100 | hybrid mean / APD / best of 10 | hybrid left_leg |
+|---|---|---|---|---|---|---|---|---|
+| local | 171 | 1.639 | 11.24 | 6.17 | 11.51 | 21.21 | 81.5 / 4.21 / 53.9 | 81.3 |
+| local+global (G_j) | 342 | 1.646 | 11.27 | 6.01 | 11.61 | 21.12 | 81.0 / 4.11 / 53.9 | 79.1 |
+| local+pairs (G_j and 11 pairs) | 441 | 1.646 | 11.00 | 6.13 | 11.21 | 20.74 | 81.2 / 4.06 / 54.0 | 79.1 |
+
+By the rule the pairs carry it: with the chains to the root alone the first phase is where it is without them (11.27
+against 11.24), and the end of SDS is not lower either (11.61). The hybrid does not tell the two apart: the left leg
+is at 79.1 mm in both, 2.2 mm below `local`; only the phase diagnostics do. In the quick protocol it is at 107.2 mm,
+as the others. For a graph network: the tree alone is not enough, the edges between left and right and between
+siblings are where the relations help.
+
 ## Conclusions
 
 1. Residual connections or LayerNorm are what a score network on SO(3) needs for score distillation at small noise:
@@ -1150,7 +1171,8 @@ network with weights shared over the edges would take as its edge features.
    end of SDS; about 0.3 deg remain against DPoser on c10. The network did not matter with the isotropic noise
    (section 7); with the noise right, it does. Richer inputs do not take the rest (section 18): harmonics of SO(3)
    and their pair products make the score more confident, not more accurate; the relations of the joints as plain
-   rotations (l = 1) take 0.24 deg of the first phase and keep the spread (one seed). All of it is in the hybrid;
+   rotations (l = 1) take 0.24 deg of the first phase and keep the spread (one seed), through the pairs of left and
+   right and of siblings, not the chains to the root. All of it is in the hybrid;
    in RSGM's own SDS with DPoser's settings the per-joint and per-axis noise are worse than the isotropic noise
    (section 18).
 3. In D-Flow the network does not matter either (512x4 MLP = dposer_like).
@@ -1170,7 +1192,8 @@ network with weights shared over the edges would take as its edge features.
   no second seed was trained. Only the network of section 17 and its budget; no graph network with shared weights.
   The quick protocol has 200 poses (about 1.4 mm of paired noise) and DPoser's default settings, which are not tuned
   for RSGM, so it compares the models under one untuned procedure, not their best. The control with l = 1 is one seed
-  and met its rule by 0.04 deg; which of its parts help (the joints with the root or the pairs) is not separated.
+  and met its rule by 0.04 deg. Its split into the chains to the root and the pairs rests on one run of
+  `local+global`, 0.03 deg from `local`, within the noise of seeds; which of the 11 pairs matter is not known.
 
 - The wide network (section 17): width, depth, residual and dropout changed together, so which of them does it is not
   known; one budget (30k x 4096), so whether the full data help with a longer training is not known either; one seed
@@ -1245,7 +1268,10 @@ network with weights shared over the edges would take as its edge features.
   the diagnostic outputs `{trajectory,hybrid}_wide_RAD_x_{wigner,wigner_pairs,pairs_l1}_s10.txt` next to them; the
   quick protocol rows in `~/data/experiments/completion/cache/valid_first200` (`results.jsonl`); all lines in
   [2026-11-14_score_network_architectures_wigner.txt](2026-11-14_score_network_architectures_wigner.txt); training by
-  `scripts/train_rsgm_posedflow.py --config wide_RAD_x_wigner` / `wide_RAD_x_wigner_pairs` / `wide_RAD_x_pairs_l1`.
+  `scripts/train_rsgm_posedflow.py --config wide_RAD_x_wigner` / `wide_RAD_x_wigner_pairs` / `wide_RAD_x_pairs_l1`;
+  `local+global` in `~/data/experiments/full_global` (run `rsgm_posedflow_wide_RAD_x_s10`, its outputs
+  `{trajectory,hybrid}_wide_RAD_x_global_s10.txt` there), trained by `--config wide_RAD_x` with
+  `model.args.inputs=local+global`.
 
 - The factorial of section 13: runs in `~/data/experiments/factorial/rsgm_posedflow_fact_*_s1[01]` (on the Mac, on
   workstation1 and workstation2), the responses of the second evaluation in
