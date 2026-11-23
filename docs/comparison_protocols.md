@@ -62,6 +62,10 @@ names `ours`, `"rsgm budget"`, `dposer`, `"dposer tuned"` and `posedflow`; their
 `--set` applies on top at both. Both splits share `--out` (the file names carry the split); a result per (label,
 split, noise level) in `results.jsonl` there.
 
+**Quick check of a new model:** `scripts/evaluate.py completion --run <run> --quick [--like LABEL]`, 200 validation
+poses in minutes; how to read it and the reference numbers of all our rows and points are in
+[completion_quick_check.md](completion_quick_check.md).
+
 ### What to watch for
 
 - **FID** of our poses against their statistics is shifted: real poses of our AMASS score 0.022, their train poses 0.011. Models trained on another AMASS cannot be compared by FID alone.
