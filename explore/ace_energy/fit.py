@@ -3,6 +3,7 @@ line, docs/experiments: the ACE report). On the CPU, from the root of the reposi
 
     python explore/ace_energy/fit.py --check                        # the self-checks, a few seconds
     python explore/ace_energy/fit.py --out ~/data/experiments/ace/energy_b.pt
+    python explore/ace_energy/fit.py --wigner 1 2 3 --pairs 1 2 3 --device cuda:0 --out ...   # on a GPU server
 
 Model. E_t(x) = sum_p c_p(t) B_p(x), with B the descriptors of hp.models.ace_features (distances, angles, twists of
 the pose; smooth=True, polynomials with bounded gradients, unless --plain) and the score s(x, t) = -grad E_t(x), the derivative along the tangent directions x_j @ exp(eps e_a) (the
@@ -26,6 +27,7 @@ import json
 import sys
 import time
 from pathlib import Path
+from typing import Sequence
 
 import torch
 from torch.func import jacfwd, vmap
@@ -37,10 +39,12 @@ from hp.evaluation.data import load_reference  # noqa: E402
 from hp.models import igso3  # noqa: E402
 from hp.models.ace_features import AceFeatures  # noqa: E402
 from hp.models.io import load_model  # noqa: E402
-from hp.models.rsgm import exp_frame  # noqa: E402
+from hp.models.rsgm import exp_frame, global_rotations  # noqa: E402
+from hp.models.so3_harmonics import WIGNER_PAIRS, pair_wigner_features, wigner_features  # noqa: E402
 
 ROTATIONS, SPLIT = "~/data/AMASS_rotations_posedflow_c10", "posedflow"
 REFERENCE = "~/data/experiments/factorial/rsgm_posedflow_fact_RDW_s10/run_0001"
+DEVICE = torch.device("cpu")  # --device: where the Jacobians and the sums of the fit are computed
 COMPARE = ["~/data/experiments/factorial/rsgm_posedflow_fact_RDW_s10/run_0001",
            "~/data/experiments/factorial/rsgm_posedflow_fact_N_s10/run_0001"]
 
@@ -67,6 +71,26 @@ class WithOneBody(torch.nn.Module):
         return torch.cat(out, dim=-1)
 
 
+class WithHarmonics(torch.nn.Module):
+    """The descriptors and harmonics of SO(3) (hp.models.so3_harmonics): D^l(x_j) of every joint's own rotation for l
+    in `wigner` (one-body), and D^l(G_j), D^l(G_i^T G_k) of the joints with the root and the pairs of WIGNER_PAIRS for
+    l in `pairs` (two-body orientations; G relative to the root)."""
+
+    def __init__(self, ace, wigner: Sequence[int], pairs: Sequence[int]):
+        super().__init__()
+        self.ace, self.wigner, self.pairs = ace, tuple(wigner), tuple(pairs)
+        size = lambda degrees: sum((2 * l + 1) ** 2 for l in degrees)  # noqa: E731
+        self.dim = ace.dim + 19 * size(self.wigner) + (19 + len(WIGNER_PAIRS)) * size(self.pairs)
+
+    def forward(self, x):
+        out = [self.ace(x)]
+        if self.wigner:
+            out.append(wigner_features(x, self.wigner))
+        if self.pairs:
+            out.append(pair_wigner_features(global_rotations(x), self.pairs))
+        return torch.cat(out, dim=-1)
+
+
 def draw(ref, x0: torch.Tensor, t: torch.Tensor, generator=None):
     """(x_t, target, std) [B, J, 3, 3], [B, J, 3], [B, J] in float64 for poses x0 at times t [B] (float64), as
     RSGM.loss: s and std of every joint, an IGSO(3) angle and a uniform axis."""
@@ -79,13 +103,14 @@ def draw(ref, x0: torch.Tensor, t: torch.Tensor, generator=None):
 
 
 def jacobian(ace, x: torch.Tensor) -> torch.Tensor:
-    """G [B, 3J, P]: d B_p(x_j @ exp(eps e_a)) / d eps at 0, in float32."""
-    x = x.float()
+    """G [B, 3J, P]: d B_p(x_j @ exp(eps e_a)) / d eps at 0, in float32 on the device of the descriptors."""
+    device = next((b.device for b in ace.buffers()), torch.device("cpu"))
+    x = x.float().to(device)
 
     def one(delta, xi):
         return ace(exp_frame(xi, delta)[None])[0]
 
-    jac = vmap(jacfwd(one))(torch.zeros(x.shape[0], x.shape[1], 3), x)  # [B, P, J, 3]
+    jac = vmap(jacfwd(one))(torch.zeros(x.shape[0], x.shape[1], 3, device=device), x)  # [B, P, J, 3]
     return jac.flatten(2).transpose(1, 2)
 
 
@@ -117,13 +142,13 @@ class Bins:
 
 
 def fit(ace, ref, bins: Bins, train: torch.Tensor, per_bin: int, batch: int, ridge: float, seed: int) -> dict:
-    g = torch.Generator().manual_seed(seed)
-    p = ace.dim
+    g = torch.Generator().manual_seed(seed)  # the draws on the CPU: the same samples on every device
+    p, device = ace.dim, DEVICE
     w, fit_loss = [], []
     for k in range(len(bins.centres)):
         t0 = time.perf_counter()
-        a = torch.zeros(p, p, dtype=torch.float64)
-        b = torch.zeros(p, dtype=torch.float64)
+        a = torch.zeros(p, p, dtype=torch.float64, device=device)
+        b = torch.zeros(p, dtype=torch.float64, device=device)
         yy, rows = 0.0, 0
         lo, hi = bins.t_range(k)
         for _ in range(0, per_bin, batch):
@@ -131,15 +156,15 @@ def fit(ace, ref, bins: Bins, train: torch.Tensor, per_bin: int, batch: int, rid
             t = lo + (hi - lo) * torch.rand(batch, dtype=torch.float64, generator=g)
             xt, target, _ = draw(ref, x0, t, g)
             gm = jacobian(ace, xt).double().reshape(-1, p)  # [B 3J, P]
-            y = target.reshape(-1)
+            y = target.reshape(-1).to(device)
             a += gm.T @ gm
             b += gm.T @ y
             yy += float(y @ y)
             rows += batch
         lam = ridge * float(a.diagonal().mean())
-        wk = -torch.linalg.solve(a + lam * torch.eye(p, dtype=torch.float64), b)
+        wk = -torch.linalg.solve(a + lam * torch.eye(p, dtype=torch.float64, device=device), b)
         loss = (wk @ a @ wk + 2 * wk @ b + yy) / rows
-        w.append(wk)
+        w.append(wk.cpu())
         fit_loss.append(float(loss))
         print(f"bin {k + 1:2d}/{len(bins.centres)}: t in [{lo:.4f}, {hi:.4f}], s in [{bins.edges[k].exp():.2e}, "
               f"{bins.edges[k + 1].exp():.2e}]: fit loss {loss:.3f} (zero score {yy / rows:.3f}), "
@@ -157,22 +182,23 @@ def evaluate(ace, ref, bins: Bins, w: torch.Tensor, valid: torch.Tensor, compare
     energy = []
     for i in range(0, len(valid), batch):
         gm = jacobian(ace, xt[i:i + batch]).double()  # [b, 3J, P]
-        pred = -torch.einsum("bkp,bp->bk", gm, bins.weights(w, t[i:i + batch], interp))
-        energy.append(((pred - target[i:i + batch].reshape(len(gm), -1)) ** 2).sum(1))
+        pred = -torch.einsum("bkp,bp->bk", gm, bins.weights(w, t[i:i + batch], interp).to(gm.device)).cpu()
+        energy.append(((pred - target[i:i + batch].reshape(len(pred), -1)) ** 2).sum(1))
     out["ACE energy"] = torch.cat(energy)
     for name, model in compare.items():
         losses = []
         with torch.no_grad():
             for i in range(0, len(valid), batch):
                 sl = slice(i, i + batch)
-                scaled = model.score(xt[sl].float(), t[sl].float()).double() * std[sl][..., None]
+                scaled = model.score(xt[sl].float().to(DEVICE), t[sl].float().to(DEVICE)).double().cpu() * std[sl][..., None]
                 losses.append(((scaled - target[sl]) ** 2).sum((1, 2)))
         out[name] = torch.cat(losses)
     return out
 
 
 def check(ace, ref, valid) -> None:
-    """The draws reproduce RSGM.loss, and the tangent Jacobian matches finite differences."""
+    """The draws reproduce RSGM.loss, and the tangent Jacobian matches finite differences (on the CPU)."""
+    ace = ace.cpu()
     x0 = valid[:300]
     ref.eval()
     g = torch.Generator().manual_seed(0)  # RSGM.loss in eval mode: t, then the angles, then the axes, seed 0
@@ -208,22 +234,32 @@ def main() -> None:
     parser.add_argument("--valid", type=int, default=5000, help="validation poses of the evaluation")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--threads", type=int, default=None)
+    parser.add_argument("--device", default="cpu", help="cpu or cuda:N (float64 sums; mps has no float64)")
     parser.add_argument("--out", default=None, help="a .pt file for w, the bins and the losses")
     parser.add_argument("--check", action="store_true", help="only the self-checks")
     parser.add_argument("--plain", action="store_true",
                         help="the plain descriptors of the input (1 / r gradients) instead of the smooth ones")
     parser.add_argument("--one-body", type=int, choices=(0, 1, 2), default=0,
                         help="also terms of each joint's own rotation: 1 its matrix entries, 2 also their products")
+    parser.add_argument("--wigner", type=int, nargs="*", default=[], choices=(1, 2, 3),
+                        help="one-body harmonics D^l(x_j) of these degrees (instead of --one-body)")
+    parser.add_argument("--pairs", type=int, nargs="*", default=[], choices=(1, 2, 3),
+                        help="two-body harmonics D^l(G_j), D^l(G_i^T G_k) of WIGNER_PAIRS of these degrees")
     parser.add_argument("--load", default=None, help="a .pt file of an earlier fit: evaluate it, fit nothing")
     parser.add_argument("--interp", choices=("linear", "nearest"), default="linear", help="w between bins")
     args = parser.parse_args()
     if args.threads:
         torch.set_num_threads(args.threads)
+    global DEVICE
+    DEVICE = torch.device(args.device)
 
     ref = load_model(Path(args.reference).expanduser(), device="cpu", weights="weights_ema").eval()
     ace = AceFeatures(smooth=not args.plain)
     if args.one_body:
         ace = WithOneBody(ace, args.one_body)
+    if args.wigner or args.pairs:
+        ace = WithHarmonics(ace, args.wigner, args.pairs)
+    ace = ace.to(DEVICE)
     valid = load_reference("valid", ROTATIONS, SPLIT)
     valid = valid[torch.randperm(len(valid), generator=torch.Generator().manual_seed(0))[:args.valid]]
     if args.check:
@@ -241,7 +277,7 @@ def main() -> None:
           f"{len(train) if train is not None else 0:,} training poses, {len(valid)} validation poses", flush=True)
     if result is None:
         result = fit(ace, ref, bins, train, args.per_bin, args.batch, args.ridge, args.seed)
-    compare = {Path(r).expanduser().parent.name: load_model(Path(r).expanduser(), device="cpu",
+    compare = {Path(r).expanduser().parent.name: load_model(Path(r).expanduser(), device=args.device,
                                                              weights="weights_ema").eval() for r in args.compare}
     losses = evaluate(ace, ref, bins, result["w"], valid, compare, args.batch, ref.loss_t_min, args.interp)
     k = bins.index(losses["t"])
