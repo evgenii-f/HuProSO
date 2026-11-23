@@ -1,6 +1,7 @@
 """Evaluation of the data-weighting runs on validation: inpainting and log-likelihood, by how far a pose is from the data.
 
-Runs: the uniform baseline fact_RDW_s10 of the factorial and rdw_soft / rdw_strong (sampling weights of rarity.py).
+Runs: the uniform baseline fact_RDW_s10 of the factorial, rdw_soft / rdw_strong (sampling weights of rarity.py) and
+the beta grid rdw_b<beta> (runs not trained yet are skipped).
 On the 1000 validation poses of the completion studies (valid_poses, seed 0):
 - inpainting at the fixed point of the factorial (the rule point of the abl_norm study: 200 EDM steps, guidance
   0.0952, resample 5, no replacement), K = 10, four occlusions: MPVPE per pose and hypothesis, APD;
@@ -30,10 +31,14 @@ import torch
 from hp.evaluation.completion import KEEP, OCCLUSIONS, Body, build, metrics, run, valid_poses
 
 E = Path("~/data/experiments").expanduser()
-RUNS = {
+RUNS = {  # in the order of beta: 0 (uniform), 0.6, 1.16 (soft), 1.8, 2.52 (strong), 3.3, 4.2
     "uniform": E / "factorial/rsgm_posedflow_fact_RDW_s10/run_0001",
+    "b0.6": E / "data_weighting/rsgm_posedflow_rdw_b0.6_s10/run_0001",
     "soft": E / "data_weighting/rsgm_posedflow_rdw_soft_s10/run_0001",
+    "b1.8": E / "data_weighting/rsgm_posedflow_rdw_b1.8_s10/run_0001",
     "strong": E / "data_weighting/rsgm_posedflow_rdw_strong_s10/run_0001",
+    "b3.3": E / "data_weighting/rsgm_posedflow_rdw_b3.3_s10/run_0001",
+    "b4.2": E / "data_weighting/rsgm_posedflow_rdw_b4.2_s10/run_0001",
 }
 OUT = E / "data_weighting/eval"
 COVERAGE = E / "data_coverage/coverage.pt"
@@ -125,7 +130,7 @@ def report():
         print(f"| {n} | {ll.mean():.2f} | " + " | ".join(f"{ll[qp == q].mean():.2f}" for q in range(QUINTILES)) + " |")
     if "uniform" in summary:
         base_mean, base_far = summary["uniform"]
-        print("\nRule (far quintile -2 mm or more, all poses at most +0.5 mm):")
+        print("\nRule of the first study, soft and strong (far quintile -2 mm or more, all poses at most +0.5 mm):")
         for n in names:
             if n != "uniform":
                 d_far, d_all = summary[n][1] - base_far, summary[n][0] - base_mean

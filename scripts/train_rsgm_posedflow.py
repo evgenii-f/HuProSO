@@ -156,6 +156,9 @@ RDW = ABL_BASE + ["model.args.net_residual=true", "model.args.dropout=0.1", "mod
 CONFIGS["rdw"] = list(RDW)
 CONFIGS["rdw_soft"] = RDW + ["train.sample_weights=~/data/experiments/data_weighting/weights_soft.pt"]
 CONFIGS["rdw_strong"] = RDW + ["train.sample_weights=~/data/experiments/data_weighting/weights_strong.pt"]
+# the beta grid (rarity.py BETAS; soft and strong are beta 1.16 and 2.52)
+for _beta in (0.6, 1.8, 3.3, 4.2):
+    CONFIGS[f"rdw_b{_beta}"] = RDW + [f"train.sample_weights=~/data/experiments/data_weighting/weights_b{_beta}.pt"]
 # ----------------------------------------------------------------------------------------
 
 

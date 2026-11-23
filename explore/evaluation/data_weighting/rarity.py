@@ -33,6 +33,8 @@ K = 5
 REF_STRIDE = 10
 W_MIN, W_MAX = 0.1, 10.0
 ESS_TARGETS = {"soft": 0.7, "strong": 0.4}
+# the grid of the beta study (one knob, cap and floor fixed): weights_b<beta>.pt; 1.16 and 2.52 are soft and strong
+BETAS = (0.6, 1.8, 3.3, 4.2)
 
 
 def matrices(quat: torch.Tensor) -> torch.Tensor:
@@ -106,6 +108,13 @@ def main():
         info[name] = {"beta": round(beta, 4), "ess": round(ess(w), 4), "share_of_top10pct": round(float(top), 4),
                       "at_cap": round(float((w >= W_MAX).float().mean()), 5),
                       "at_floor": round(float((w <= W_MIN).float().mean()), 5)}
+    for beta in BETAS:
+        w = weights(r, beta)
+        torch.save(w, OUT / f"weights_b{beta}.pt")
+        top = w.topk(int(0.1 * len(w))).values.sum() / w.sum()
+        info[f"b{beta}"] = {"beta": beta, "ess": round(ess(w), 4), "share_of_top10pct": round(float(top), 4),
+                            "at_cap": round(float((w >= W_MAX).float().mean()), 5),
+                            "at_floor": round(float((w <= W_MIN).float().mean()), 5)}
     (OUT / "weights.json").write_text(json.dumps(info, indent=1))
     print(json.dumps(info, indent=1))
 
