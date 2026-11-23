@@ -824,3 +824,43 @@ def test_a_timeres_model_with_wigner_inputs_has_finite_losses_and_gradients():
     assert torch.isfinite(loss) and all(torch.isfinite(p.grad).all() for p in model.parameters())
     assert model.net.first.dense.weight.grad[:, 9 * J19:].abs().sum() > 0  # the harmonics reach the network
     assert torch.isfinite(model.score(x, torch.full((64,), 0.1))).all()
+
+
+def test_the_pair_harmonics_are_the_contracted_products_of_the_two_joints():
+    """D^l(G_i^T G_k) = D^l(G_i)^T D^l(G_k) = sum_m D^l_mn(G_i) D^l_mn'(G_k): the two-body products of the joints'
+    harmonics, contracted; the joints are the named pairs and the root."""
+    from hp.models.rsgm import WIGNER_PAIRS, global_rotations, pair_wigner_features, wigner_d
+
+    x = poses19(4, dtype=torch.float64)
+    f = pair_wigner_features(x)
+    assert f.shape == (4, (J19 + len(WIGNER_PAIRS)) * (9 + 25 + 49))
+    g = global_rotations(x)
+    names = [j.name for j in AmassJoints4Learning]
+    a, b = names.index("LeftLeg"), names.index("RightLeg")
+    p = len(WIGNER_PAIRS)  # the layout: the joints' blocks of l = 1, 2, 3, then the pairs' blocks of l = 1, 2, 3
+    joints2 = f[:, J19 * 9:J19 * (9 + 25)].reshape(4, J19, 5, 5)
+    start = J19 * 83 + p * 9
+    pairs2 = f[:, start:start + p * 25].reshape(4, p, 5, 5)
+    knees = list(WIGNER_PAIRS).index(("LeftLeg", "RightLeg"))
+    assert torch.allclose(pairs2[:, knees], wigner_d(g[:, a], 2).transpose(-1, -2) @ wigner_d(g[:, b], 2), atol=1e-10)
+    assert torch.allclose(joints2[:, a], wigner_d(g[:, a], 2), atol=1e-10)  # a joint with the root: its own G
+    with pytest.raises(ValueError, match="inputs"):
+        build_model("rsgm", num_joints=3, inputs="local+wigner+pairs")
+
+
+def test_pair_inputs_keep_the_divergence_exact():
+    from hp.models.rsgm import WIGNER_PAIRS
+
+    torch.manual_seed(0)
+    model = build_model("rsgm", num_joints=J19, hidden=[16], inputs="local+wigner+pairs").double()
+    assert model.net[0].in_features == (9 + 25 + 49) * J19 + (J19 + len(WIGNER_PAIRS)) * 83 + 1
+    x, t = poses19(2, dtype=torch.float64), torch.rand(2, dtype=torch.float64)
+    with torch.no_grad():
+        _, divergence = model.velocity_and_divergence(x, t)
+        numeric = torch.zeros(2, dtype=torch.float64)
+        for joint in range(J19):
+            for i in range(3):
+                e = torch.zeros(2, J19, 3, dtype=torch.float64)
+                e[:, joint, i] = 1e-5
+                numeric += (model.velocity(exp_frame(x, e), t) - model.velocity(exp_frame(x, -e), t))[:, joint, i] / 2e-5
+    assert torch.allclose(divergence, numeric, atol=1e-6)

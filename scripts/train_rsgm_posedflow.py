@@ -200,6 +200,12 @@ ANISO_X.add("wide_RAD_x")
 CONFIGS["wide_RAD_x_wigner"] = CONFIGS["wide_RAD_x"] + ["model.args.inputs=local+wigner"]
 ANISO.add("wide_RAD_x_wigner")
 ANISO_X.add("wide_RAD_x_wigner")
+# and with the two-body terms: the contracted products of the harmonics of the joints with the root and of the pairs
+# of left and right and of siblings (inputs="local+wigner+pairs", 4067 inputs). The pair wide_RAD_x_wigner /
+# wide_RAD_x_wigner_pairs differs by the pairs only. On the full data: the one-body harmonics overfit on c10.
+CONFIGS["wide_RAD_x_wigner_pairs"] = CONFIGS["wide_RAD_x"] + ["model.args.inputs=local+wigner+pairs"]
+ANISO.add("wide_RAD_x_wigner_pairs")
+ANISO_X.add("wide_RAD_x_wigner_pairs")
 # fact_RDW one step further along width, the strongest factor of the factorial for inpainting
 CONFIGS["fact_RDW_w2048"] = CONFIGS["fact_RDW"] + ["model.args.net_width=2048"]
 # ----------------------------------------------------------------------------------------

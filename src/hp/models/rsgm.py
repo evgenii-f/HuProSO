@@ -72,6 +72,12 @@ SO(3) of higher frequency, as Fourier features of the input, which a plain MLP f
 numbers (its bias towards low frequencies), while the score at small noise changes fast. They are taken in the real
 basis of the orthonormal real spherical harmonics, D^l(R) = Y_l(R p) Y_l(p)^+ on fixed points p of the sphere
 (wigner_d): exact, polynomials of degree l in the entries of R, orthogonal, and D^l(R1 R2) = D^l(R1) D^l(R2).
+inputs = "local+wigner+pairs" adds to those the products of the harmonics of joints that are not neighbours in the
+tree, contracted as in the two-body terms of the atomic cluster expansion: D^l(G_i^T G_k) = D^l(G_i)^T D^l(G_k), the
+sum over m of the products of the harmonics of the two joints, for l = 1, 2, 3, with G the rotations relative to the
+root (global_rotations): for every joint with the root (D^l(G_j), the contractions along its chain) and for the pairs
+of WIGNER_PAIRS (left and right, siblings), (19 + 11) x 83 numbers more. For a parent and its child the relative
+rotation is x_j itself, already in the input.
 A function of x only, like "local+global".
 """
 import math
@@ -175,6 +181,26 @@ def wigner_d(r: torch.Tensor, l: int) -> torch.Tensor:
 def wigner_features(x: torch.Tensor, degrees: Sequence[int] = WIGNER_DEGREES) -> torch.Tensor:
     """The entries of D^l(x_j) for l in degrees, [B, J * sum (2l+1)^2], of poses x [B, J, 3, 3]."""
     return torch.cat([wigner_d(x, l).reshape(x.shape[0], -1) for l in degrees], dim=1)
+
+
+# inputs="local+wigner+pairs": pairs of joints (AmassJoints4Learning names) that are not parent and child: left and
+# right, and the siblings that are not left and right (the children of the root and of Spine2)
+WIGNER_PAIRS = (("LeftUpLeg", "RightUpLeg"), ("LeftLeg", "RightLeg"), ("LeftFoot", "RightFoot"),
+                ("LeftShoulder", "RightShoulder"), ("LeftArm", "RightArm"), ("LeftElbow", "RightElbow"),
+                ("LeftHand", "RightHand"), ("LeftUpLeg", "Spine0"), ("RightUpLeg", "Spine0"),
+                ("Neck", "LeftShoulder"), ("Neck", "RightShoulder"))
+_NAMES = [joint.name for joint in AmassJoints4Learning]
+_PAIR_INDEX = tuple((_NAMES.index(a), _NAMES.index(b)) for a, b in WIGNER_PAIRS)
+PAIR_DEGREES = (1, 2, 3)
+
+
+def pair_wigner_features(x: torch.Tensor, degrees: Sequence[int] = PAIR_DEGREES) -> torch.Tensor:
+    """The entries of D^l(G_j) for every joint and of D^l(G_i^T G_k) for the pairs of WIGNER_PAIRS, l in degrees,
+    [B, (19 + len(WIGNER_PAIRS)) * sum (2l+1)^2], of poses x [B, 19, 3, 3] (G = global_rotations(x))."""
+    g = global_rotations(x)
+    i, k = (list(v) for v in zip(*_PAIR_INDEX))
+    rel = g[:, i].transpose(-1, -2) @ g[:, k]
+    return torch.cat([wigner_features(g, degrees), wigner_features(rel, degrees)], dim=1)
 
 
 @torch.no_grad()
@@ -323,12 +349,13 @@ class RSGM(PoseModel):
             raise ValueError(f"Unknown net_level '{net_level}'. Use 'log_s' or 't'.")
         if net == "timeres" and time_features:
             raise ValueError("net='timeres' embeds the noise level itself; use time_features=0.")
-        if inputs not in ("local", "local+global", "local+z", "local+wigner"):
-            raise ValueError(f"Unknown inputs '{inputs}'. Use 'local', 'local+global', 'local+z' or 'local+wigner'.")
+        if inputs not in ("local", "local+global", "local+z", "local+wigner", "local+wigner+pairs"):
+            raise ValueError(f"Unknown inputs '{inputs}'. Use 'local', 'local+global', 'local+z', 'local+wigner' or "
+                             f"'local+wigner+pairs'.")
         if (inputs == "local+z") != (z_mean is not None and z_std is not None):
             raise ValueError("inputs='local+z' needs z_mean and z_std (z_statistics of the training poses), and only it.")
-        if inputs == "local+global" and num_joints != len(PARENTS19):
-            raise ValueError(f"inputs='local+global' needs the {len(PARENTS19)} joints of AmassJoints4Learning, got {num_joints}.")
+        if inputs in ("local+global", "local+wigner+pairs") and num_joints != len(PARENTS19):
+            raise ValueError(f"inputs='{inputs}' needs the {len(PARENTS19)} joints of AmassJoints4Learning, got {num_joints}.")
         cond_dim = conditioning.resolve(condition, cond_dim, cond_mask)
         super().__init__(num_joints, "matrix", cond_dim)
         self.condition, self.cond_mask = condition, cond_mask
@@ -354,8 +381,10 @@ class RSGM(PoseModel):
             self.register_buffer("z_rot", roma.rotvec_to_rotmat(z_mean.reshape(num_joints, 3)))
             self.register_buffer("z_std", z_std.reshape(num_joints, 3))
         rotations = 9 * num_joints * (2 if inputs == "local+global" else 1) + (3 * num_joints if inputs == "local+z" else 0)
-        if inputs == "local+wigner":
+        if inputs in ("local+wigner", "local+wigner+pairs"):
             rotations += num_joints * sum((2 * l + 1) ** 2 for l in WIGNER_DEGREES)
+        if inputs == "local+wigner+pairs":
+            rotations += (num_joints + len(WIGNER_PAIRS)) * sum((2 * l + 1) ** 2 for l in PAIR_DEGREES)
         self.net_kind, self.net_level = net, net_level
         if net == "timeres":
             self.net = TimeResNet(rotations + (cond_features if cond_dim else 0), 3 * num_joints, net_width, net_blocks,
@@ -519,8 +548,10 @@ class RSGM(PoseModel):
         elif self.inputs == "local+z":
             z = log_rotations(self.z_rot.to(x.dtype).transpose(-1, -2) @ x) / self.z_std.to(x.dtype)
             inputs.append(z.reshape(b, -1))
-        elif self.inputs == "local+wigner":
+        elif self.inputs in ("local+wigner", "local+wigner+pairs"):
             inputs.append(wigner_features(x))
+            if self.inputs == "local+wigner+pairs":
+                inputs.append(pair_wigner_features(x))
         if self.net_kind == "timeres":  # the time goes to every layer, as the noise level log(s) / 4
             features = torch.cat(inputs + ([] if f is None else [f]), dim=1)
             if self.net_level == "log_s":
