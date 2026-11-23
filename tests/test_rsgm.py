@@ -864,3 +864,36 @@ def test_pair_inputs_keep_the_divergence_exact():
                 e[:, joint, i] = 1e-5
                 numeric += (model.velocity(exp_frame(x, e), t) - model.velocity(exp_frame(x, -e), t))[:, joint, i] / 2e-5
     assert torch.allclose(divergence, numeric, atol=1e-6)
+
+
+def test_the_pair_control_with_l1_is_the_rotations_of_the_joints_and_pairs():
+    """inputs="local+pairs": D^1 of G_j and of G_i^T G_k, i.e. the matrices themselves in the order y, z, x."""
+    from hp.models.rsgm import WIGNER_PAIRS, global_rotations, pair_wigner_features
+
+    x = poses19(3, dtype=torch.float64)
+    f = pair_wigner_features(x, (1,))
+    p = len(WIGNER_PAIRS)
+    assert f.shape == (3, (J19 + p) * 9)
+    g = global_rotations(x)
+    order = [1, 2, 0]
+    names = [j.name for j in AmassJoints4Learning]
+    a, b = names.index("LeftElbow"), names.index("RightElbow")
+    elbows = list(WIGNER_PAIRS).index(("LeftElbow", "RightElbow"))
+    joints, pairs = f[:, :J19 * 9].reshape(3, J19, 3, 3), f[:, J19 * 9:].reshape(3, p, 3, 3)
+    assert torch.allclose(joints, g[:, :, order][:, :, :, order], atol=1e-10)
+    rel = g[:, a].transpose(-1, -2) @ g[:, b]
+    assert torch.allclose(pairs[:, elbows], rel[:, order][:, :, order], atol=1e-10)
+    model = build_model("rsgm", num_joints=J19, hidden=[16], inputs="local+pairs").double()
+    assert model.net[0].in_features == 9 * J19 + (J19 + p) * 9 + 1
+    t = torch.rand(3, dtype=torch.float64)
+    with torch.no_grad():
+        _, divergence = model.velocity_and_divergence(x, t)
+        numeric = torch.zeros(3, dtype=torch.float64)
+        for joint in range(J19):
+            for i in range(3):
+                e = torch.zeros(3, J19, 3, dtype=torch.float64)
+                e[:, joint, i] = 1e-5
+                numeric += (model.velocity(exp_frame(x, e), t) - model.velocity(exp_frame(x, -e), t))[:, joint, i] / 2e-5
+    assert torch.allclose(divergence, numeric, atol=1e-6)
+    with pytest.raises(ValueError, match="inputs"):
+        build_model("rsgm", num_joints=3, inputs="local+pairs")

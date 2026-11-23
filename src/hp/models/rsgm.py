@@ -78,6 +78,9 @@ sum over m of the products of the harmonics of the two joints, for l = 1, 2, 3, 
 root (global_rotations): for every joint with the root (D^l(G_j), the contractions along its chain) and for the pairs
 of WIGNER_PAIRS (left and right, siblings), (19 + 11) x 83 numbers more. For a parent and its child the relative
 rotation is x_j itself, already in the input.
+inputs = "local+pairs" is its control with l = 1 only (D^1 is the rotation matrix itself): the matrices G_j and
+G_i^T G_k of the same joints and pairs, (19 + 11) x 9 numbers more, the relations of the joints without the higher
+harmonics.
 A function of x only, like "local+global".
 """
 import math
@@ -349,12 +352,12 @@ class RSGM(PoseModel):
             raise ValueError(f"Unknown net_level '{net_level}'. Use 'log_s' or 't'.")
         if net == "timeres" and time_features:
             raise ValueError("net='timeres' embeds the noise level itself; use time_features=0.")
-        if inputs not in ("local", "local+global", "local+z", "local+wigner", "local+wigner+pairs"):
-            raise ValueError(f"Unknown inputs '{inputs}'. Use 'local', 'local+global', 'local+z', 'local+wigner' or "
-                             f"'local+wigner+pairs'.")
+        if inputs not in ("local", "local+global", "local+z", "local+wigner", "local+wigner+pairs", "local+pairs"):
+            raise ValueError(f"Unknown inputs '{inputs}'. Use 'local', 'local+global', 'local+z', 'local+wigner', "
+                             f"'local+wigner+pairs' or 'local+pairs'.")
         if (inputs == "local+z") != (z_mean is not None and z_std is not None):
             raise ValueError("inputs='local+z' needs z_mean and z_std (z_statistics of the training poses), and only it.")
-        if inputs in ("local+global", "local+wigner+pairs") and num_joints != len(PARENTS19):
+        if inputs in ("local+global", "local+wigner+pairs", "local+pairs") and num_joints != len(PARENTS19):
             raise ValueError(f"inputs='{inputs}' needs the {len(PARENTS19)} joints of AmassJoints4Learning, got {num_joints}.")
         cond_dim = conditioning.resolve(condition, cond_dim, cond_mask)
         super().__init__(num_joints, "matrix", cond_dim)
@@ -385,6 +388,8 @@ class RSGM(PoseModel):
             rotations += num_joints * sum((2 * l + 1) ** 2 for l in WIGNER_DEGREES)
         if inputs == "local+wigner+pairs":
             rotations += (num_joints + len(WIGNER_PAIRS)) * sum((2 * l + 1) ** 2 for l in PAIR_DEGREES)
+        if inputs == "local+pairs":
+            rotations += (num_joints + len(WIGNER_PAIRS)) * 9
         self.net_kind, self.net_level = net, net_level
         if net == "timeres":
             self.net = TimeResNet(rotations + (cond_features if cond_dim else 0), 3 * num_joints, net_width, net_blocks,
@@ -552,6 +557,8 @@ class RSGM(PoseModel):
             inputs.append(wigner_features(x))
             if self.inputs == "local+wigner+pairs":
                 inputs.append(pair_wigner_features(x))
+        elif self.inputs == "local+pairs":
+            inputs.append(pair_wigner_features(x, (1,)))
         if self.net_kind == "timeres":  # the time goes to every layer, as the noise level log(s) / 4
             features = torch.cat(inputs + ([] if f is None else [f]), dim=1)
             if self.net_level == "log_s":

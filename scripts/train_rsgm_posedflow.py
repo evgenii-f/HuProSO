@@ -206,6 +206,12 @@ ANISO_X.add("wide_RAD_x_wigner")
 CONFIGS["wide_RAD_x_wigner_pairs"] = CONFIGS["wide_RAD_x"] + ["model.args.inputs=local+wigner+pairs"]
 ANISO.add("wide_RAD_x_wigner_pairs")
 ANISO_X.add("wide_RAD_x_wigner_pairs")
+# the control of the pairs with l = 1 only: the rotations G_j and G_i^T G_k of the same joints and pairs, without
+# the higher harmonics (inputs="local+pairs", 441 inputs). The pair wide_RAD_x / wide_RAD_x_pairs_l1 differs by the
+# relations of the joints only. On the full data.
+CONFIGS["wide_RAD_x_pairs_l1"] = CONFIGS["wide_RAD_x"] + ["model.args.inputs=local+pairs"]
+ANISO.add("wide_RAD_x_pairs_l1")
+ANISO_X.add("wide_RAD_x_pairs_l1")
 # fact_RDW one step further along width, the strongest factor of the factorial for inpainting
 CONFIGS["fact_RDW_w2048"] = CONFIGS["fact_RDW"] + ["model.args.net_width=2048"]
 # ----------------------------------------------------------------------------------------
