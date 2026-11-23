@@ -34,6 +34,11 @@ of the quaternion; undefined only where x turns a into -a (a swing of pi), where
 cannot see this angle (it does not move the child), and the leaves have no other way to show it. Spine2, with three
 children, has no twist axis; its rotation is fixed by the positions of the children.
 
+smooth=True (the energy of explore/ace_energy) makes every descriptor a polynomial in the positions and in x: the
+distances enter squared, the angles as solid harmonics (|u| |v|)^l P_l(cos theta) of the scaled vectors, the twist as
+(w^2 - u^2, 2 w u) without the division. Their gradients stay bounded where points meet or a swing reaches pi, where
+those of the plain descriptors (1 / r, 1 / (w^2 + u^2)) blow up at the large noise of RSGM.
+
 All operations are out of place and without data-dependent branches, so torch.func can vmap and differentiate them
 (the exact divergence of RSGM's log_prob).
 """
@@ -82,8 +87,9 @@ class AceFeatures(nn.Module):
     """Descriptors [..., dim] of poses [..., 19, 3, 3] (module doc); every option fixes the set of descriptors."""
 
     def __init__(self, radial: int = 4, angular: int = 2, triple_radial: int = 2, twist: int = 1, hops: int = 2,
-                 seed: int = 0, probes: int = 256):
+                 seed: int = 0, probes: int = 256, smooth: bool = False):
         super().__init__()
+        self.smooth = smooth
         if radial < 1 or angular < 0 or triple_radial < 1 or twist < 0 or hops < 1:
             raise ValueError("radial, triple_radial and hops must be >= 1, angular and twist >= 0.")
         self.radial, self.angular, self.triple_radial, self.twist, self.hops = radial, angular, triple_radial, twist, hops
@@ -177,21 +183,24 @@ class AceFeatures(nn.Module):
             rotations.append(local if parent is None else (parent if local is None else parent @ local))
         return torch.stack(positions, dim=-2)
 
-    def twist_cos_sin(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """(cos psi, sin psi) [..., T] of the twist joints (module doc)."""
+    def twist_cos_sin(self, x: torch.Tensor, scaled: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
+        """(cos psi, sin psi) [..., T] of the twist joints (module doc); scaled: times w^2 + u^2, i.e.
+        (w^2 - u^2, 2 w u), polynomials in x without the division (smooth also where the swing is pi)."""
         r = x[..., self.twist_slot, :, :]
         a = self.twist_axis.to(dtype=x.dtype, device=x.device)
         w2 = (1 + r.diagonal(dim1=-2, dim2=-1).sum(-1)) / 4
         vee = torch.stack([r[..., 2, 1] - r[..., 1, 2], r[..., 0, 2] - r[..., 2, 0], r[..., 1, 0] - r[..., 0, 1]], -1)
         wu = (vee * a).sum(-1) / 4
         ara = (a * (r @ a[..., None])[..., 0]).sum(-1)
+        if scaled:
+            return 2 * w2 - (1 + ara) / 2, 2 * wu
         den = ((1 + ara) / 2).clamp_min(1e-6)
         return (2 * w2 - den) / den, 2 * wu / den  # w^2 - u^2 = 2 w^2 - (w^2 + u^2)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         out = [self.point_descriptors(self.positions(x))]
         if self.twist_joints:
-            c, sn = self.twist_cos_sin(x)
+            c, sn = self.twist_cos_sin(x, scaled=self.smooth)
             ck, sk = c, sn
             for q in range(self.twist):
                 if q:  # cos and sin of (q + 1) psi from those of q psi
@@ -204,18 +213,33 @@ class AceFeatures(nn.Module):
         x = p
         out = []
         d = p[..., self.pair_k, :] - p[..., self.pair_j, :]
-        s = 2 * d.norm(dim=-1) / self.pair_rmax.to(x.dtype) - 1
-        out += chebyshev(s, self.radial)[1:]
+        out += chebyshev(self._scaled(d, self.pair_rmax), self.radial)[1:]
         if len(self.triples):
             u = p[..., self.tri_k, :] - p[..., self.tri_j, :]
             v = p[..., self.tri_q, :] - p[..., self.tri_j, :]
-            ru, rv = u.norm(dim=-1), v.norm(dim=-1)
-            cos = (u * v).sum(-1) / (ru * rv)
-            tu = chebyshev(2 * ru / self.tri_rmax_k.to(x.dtype) - 1, self.triple_radial - 1)
-            tv = chebyshev(2 * rv / self.tri_rmax_q.to(x.dtype) - 1, self.triple_radial - 1)
-            for pl in legendre(cos, self.angular):
+            tu = chebyshev(self._scaled(u, self.tri_rmax_k), self.triple_radial - 1)
+            tv = chebyshev(self._scaled(v, self.tri_rmax_q), self.triple_radial - 1)
+            if self.smooth:  # solid harmonics (|u| |v|)^l P_l(cos), u and v scaled by their r_max: polynomials
+                u, v = u / self.tri_rmax_k.to(x.dtype)[:, None], v / self.tri_rmax_q.to(x.dtype)[:, None]
+                dot, n2 = (u * v).sum(-1), (u * u).sum(-1) * (v * v).sum(-1)
+                angular, q = [torch.ones_like(dot), dot], 1
+                while len(angular) <= self.angular:  # (l + 1) Q_{l+1} = (2l + 1) dot Q_l - l n2 Q_{l-1}
+                    angular.append(((2 * q + 1) * dot * angular[-1] - q * n2 * angular[-2]) / (q + 1))
+                    q += 1
+                angular = angular[1:self.angular + 1]
+            else:
+                angular = legendre((u * v).sum(-1) / (u.norm(dim=-1) * v.norm(dim=-1)), self.angular)
+            for pl in angular:
                 out += [a * b * pl for a in tu[:self.triple_radial] for b in tv[:self.triple_radial]]
         return torch.cat(out, dim=-1)
+
+    def _scaled(self, d: torch.Tensor, rmax: torch.Tensor) -> torch.Tensor:
+        """The distances |d| [..., K] into [-1, 1] by r_max [K]: 2 |d| / r_max - 1, or with smooth
+        2 |d|^2 / r_max^2 - 1 (a polynomial in the positions, smooth also at |d| = 0)."""
+        rmax = rmax.to(d.dtype)
+        if self.smooth:
+            return 2 * (d * d).sum(-1) / rmax ** 2 - 1
+        return 2 * d.norm(dim=-1) / rmax - 1
 
 
 def _random_rotations(n: int, joints: int, generator: torch.Generator) -> torch.Tensor:

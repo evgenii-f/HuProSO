@@ -135,3 +135,24 @@ def test_the_std_floor_bounds_the_z_scores(ace):
     assert min(std) >= 0.1
     z = (ace(poses(2000, seed=2)) - torch.tensor(mean)) / torch.tensor(std)
     assert z.abs().max() <= 2 / 0.1 + 1e-6
+
+
+def test_smooth_descriptors_are_polynomials_with_bounded_gradients():
+    """smooth: the same descriptors up to their form, with bounded tangent gradients also where points meet."""
+    from torch.func import jacfwd, vmap
+    from hp.models.rsgm import exp_frame
+    smooth = AceFeatures(smooth=True)
+    assert smooth.dim == AceFeatures().dim
+    x = poses(200, seed=12)
+    b = smooth(x)
+    assert torch.isfinite(b).all() and b.abs().max() <= 1 + 1e-5
+    p = smooth.positions(x)
+    r = smooth.point_descriptors(p @ roma.random_rotmat(1, dtype=torch.float64)[0].T)
+    assert torch.allclose(smooth.point_descriptors(p), r, atol=1e-10)  # still rotation invariant
+
+    def jac(ace, y):
+        return vmap(jacfwd(lambda d, yi: ace(exp_frame(yi, d)[None])[0]))(torch.zeros(len(y), 19, 3, dtype=y.dtype), y)
+
+    j_smooth, j_plain = jac(smooth, x).abs().amax((1, 2, 3)), jac(AceFeatures(), x).abs().amax((1, 2, 3))
+    assert j_smooth.max() < 20  # bounded by the polynomial degree and the scaled lengths
+    assert j_plain.max() > j_smooth.max()

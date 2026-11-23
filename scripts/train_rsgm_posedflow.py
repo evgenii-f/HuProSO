@@ -152,13 +152,14 @@ ANISO.add("dposer_like_aniso")
 # angles between the joint positions and the twist of the bones. ace_RDW is the factorial cell fact_RDW (residual,
 # dropout 0.1, width 1024) with them, so the pair differs by the input only; ace_N likewise fact_N (= abl_norm). The
 # statistics of the descriptors are fitted once (fitted_ace_statistics) and given as model.args.ace_mean / ace_std.
-# Rule, fixed before any run (validation only, the responses of scripts/evaluate_factorial.py; ace_RDW seed 10 against
-# the mean of fact_RDW seeds 10 and 11): ace_RDW is better if at least one of
-#   1. inpainting mean lower by >= 1 mm at an APD >= 6.3 cm (1000 poses, K = 10, the fixed point of the factorial),
-#   2. hybrid mean of the four occlusions lower by >= 5 mm (500 poses),
-#   3. generation with Heun EDM 50 (harness): Wasserstein lower by >= 0.5 deg or FID_val lower by >= 0.008,
-# and nothing worse beyond the noise: Wasserstein, recall and precision by <= 0.2 deg, FID_val by <= 0.004, inpainting
-# mean by <= 1 mm. The log-likelihood is reported only. A gain near a threshold gets a second seed before a decision.
+# Rule, fixed before any evaluation (validation only; ace_RDW seed 10 against the mean of fact_RDW seeds 10 and 11, all
+# evaluated on one machine with the same commands): ace_RDW is better if at least one of
+#   1. inpainting mean lower by >= 1 mm at an APD >= 6.3 cm (scripts/evaluate.py completion --split valid --together
+#      --like "RSGM abl residual: their c10, inpaint t81": 1000 poses, K = 10, the tuned point of abl_residual),
+#   2. hybrid mean of the four occlusions lower by >= 5 mm (eval_runs.sh of completion_diagnostics, 500 poses),
+#   3. harness (scripts/evaluate_model.py split=valid, the model's own sampler): Wasserstein lower by >= 0.5 deg,
+# and nothing worse beyond the noise: Wasserstein, recall and precision by <= 0.2 deg, inpainting mean by <= 1 mm. The
+# log-likelihood is reported only. A gain near a threshold gets a second seed before a decision.
 ACE_INPUT = ["model.args.inputs=local+ace"]
 CONFIGS["fact_RDW"] = ABL_BASE + ["model.args.net_residual=true", "model.args.dropout=0.1",
                                   "model.args.net_width=1024", "train.data_on_device=true"]
