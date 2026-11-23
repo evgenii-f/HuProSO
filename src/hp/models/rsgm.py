@@ -296,6 +296,7 @@ class RSGM(PoseModel):
         net_residual: bool = True,  # residual,
         net_norm: bool = True,  # norm,
         net_zero_init: bool = True,  # zero_init
+        net_global: bool = False,  # of net="mace": a virtual node connected to every joint (graph_nets)
         joint_scale: Optional[Sequence[float]] = None,  # c [J]: the Brownian time c_j s(t) per joint (module doc)
         joint_cov: Optional[Sequence[float]] = None,  # [J * 9]: the noise of each joint shaped by it (aniso_x, module doc)
     ):
@@ -350,7 +351,7 @@ class RSGM(PoseModel):
             rotations += (num_joints + len(WIGNER_PAIRS)) * 9
         self.net_kind, self.net_level = net, net_level
         if net == "mace":
-            self.net = GraphScoreNet(num_joints, graph_edges(), net_width, net_blocks, dropout)
+            self.net = GraphScoreNet(num_joints, graph_edges(), net_width, net_blocks, dropout, global_node=net_global)
         elif net == "timeres":
             self.net = TimeResNet(rotations + (cond_features if cond_dim else 0), 3 * num_joints, net_width, net_blocks,
                                   net_embed, dropout, net_time_in, net_time_embed, net_residual, net_norm,

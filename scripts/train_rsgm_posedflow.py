@@ -219,6 +219,11 @@ CONFIGS["mace_x"] = ABL_BASE + ["model.args.net=mace", "model.args.net_width=256
                                 "model.args.dropout=0.1", "train.lr=1e-3", "train.data_on_device=true"]
 ANISO.add("mace_x")
 ANISO_X.add("mace_x")
+# and with a virtual node connected to every joint (net_global): every joint sees the whole pose in one layer instead
+# of one edge per layer (mace_x failed in completion, worst where the hidden joints are far from the visible ones)
+CONFIGS["mace_g_x"] = CONFIGS["mace_x"] + ["model.args.net_global=true"]
+ANISO.add("mace_g_x")
+ANISO_X.add("mace_g_x")
 # fact_RDW one step further along width, the strongest factor of the factorial for inpainting
 CONFIGS["fact_RDW_w2048"] = CONFIGS["fact_RDW"] + ["model.args.net_width=2048"]
 # ----------------------------------------------------------------------------------------

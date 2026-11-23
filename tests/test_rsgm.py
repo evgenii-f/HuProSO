@@ -896,3 +896,26 @@ def test_the_graph_network_keeps_the_divergence_exact_and_trains():
     assert torch.isfinite(loss) and all(torch.isfinite(p.grad).all() for p in model.parameters() if p.grad is not None)
     with pytest.raises(ValueError, match="mace"):
         build_model("rsgm", num_joints=J19, net="mace", inputs="local+pairs")
+
+
+def test_the_global_node_lets_a_joint_see_the_whole_pose_in_one_layer():
+    torch.manual_seed(0)
+    names = [j.name for j in AmassJoints4Learning]
+    x, t = poses19(2, dtype=torch.float64), torch.full((2,), 0.1, dtype=torch.float64)
+    foot, hand = names.index("LeftFoot"), names.index("RightHand")
+    e = torch.zeros(2, J19, 3, dtype=torch.float64)
+    e[:, hand] = 0.3
+    model = build_model("rsgm", num_joints=J19, net="mace", net_width=32, net_blocks=1, net_global=True).double().eval()
+    with torch.no_grad():
+        moved = model.score(exp_frame(x, e), t) - model.score(x, t)
+    assert moved[:, foot].abs().max() > 1e-6  # 9 edges apart, one layer
+    x2 = poses19(2, seed=1, dtype=torch.float64)
+    with torch.no_grad():
+        _, divergence = model.velocity_and_divergence(x2, t)
+        numeric = torch.zeros(2, dtype=torch.float64)
+        for joint in range(J19):
+            for i in range(3):
+                d = torch.zeros(2, J19, 3, dtype=torch.float64)
+                d[:, joint, i] = 1e-5
+                numeric += (model.velocity(exp_frame(x2, d), t) - model.velocity(exp_frame(x2, -d), t))[:, joint, i] / 2e-5
+    assert torch.allclose(divergence, numeric, atol=1e-6)
