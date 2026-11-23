@@ -493,6 +493,74 @@ def test_the_z_input_needs_its_statistics_and_only_it_takes_them():
         build_model("rsgm", num_joints=J19, inputs="local+z", z_mean=[0.0] * 57, z_std=[0.0] * 57)
 
 
+# ---- the ACE descriptors at the input (inputs="local+ace") ----
+
+from hp.models.ace_features import AceFeatures, ace_statistics  # noqa: E402
+
+SMALL_ACE = dict(ace_radial=2, ace_angular=1, ace_triple_radial=1, ace_twist=1, ace_hops=1)
+
+
+def ace_model(seed=0, **kwargs):
+    torch.manual_seed(seed)
+    poses, _, _ = concentrated_poses(2_000, seed)
+    ace = AceFeatures(*(SMALL_ACE[k] for k in ("ace_radial", "ace_angular", "ace_triple_radial", "ace_twist", "ace_hops")))
+    mean, std = ace_statistics(ace, poses)
+    model = build_model("rsgm", num_joints=J19, inputs="local+ace", ace_mean=mean, ace_std=std, **SMALL_ACE, **kwargs)
+    return model, poses, ace
+
+
+def test_the_ace_input_is_z_scored_and_kept_as_buffers(tmp_path):
+    model, poses, ace = ace_model(hidden=[16])
+    assert model.net[0].in_features == 9 * J19 + ace.dim + 1
+    assert {"ace_mean", "ace_std"} <= set(dict(model.named_buffers()))
+    assert not any("ace" in name for name, _ in model.named_parameters())
+    z = (model.ace(poses.float()) - model.ace_mean) / model.ace_std
+    assert z.mean(0).abs().max() < 1e-3
+    free = model.ace_std > 0.1 + 1e-6  # above the std floor of ace_statistics: unit std, below it: less
+    assert (z.std(0)[free] - 1).abs().max() < 1e-3 and (z.std(0) <= 1 + 1e-3).all()
+    save_model(model, tmp_path)
+    state = torch.load(tmp_path / "weights.pt", weights_only=True)
+    assert set(k for k in state if "ace" in k) == {"ace_mean", "ace_std"}  # the descriptor tables are rebuilt
+    loaded = load_model(tmp_path)
+    x, t = poses19(3), torch.tensor([0.01, 0.3, 0.9])
+    with torch.no_grad():
+        assert torch.equal(model.eval().score(x, t), loaded.score(x, t))
+
+
+def test_the_timeres_net_takes_the_ace_input():
+    model, _, _ = ace_model(net="timeres", net_width=64, net_blocks=2, net_embed=32, net_zero_init=False)
+    x, t = poses19(3), torch.tensor([0.003, 0.1, 0.9])
+    assert model.eval().score(x, t).shape == (3, J19, 3)
+    assert torch.isfinite(model.loss(poses19(8)))
+
+
+def test_the_ace_input_keeps_the_divergence_exact():
+    model, _, _ = ace_model(hidden=[32])
+    model = model.double()
+    x, t = poses19(3, dtype=torch.float64), torch.rand(3, dtype=torch.float64)
+    with torch.no_grad():
+        _, divergence = model.velocity_and_divergence(x, t)
+        numeric = torch.zeros(3, dtype=torch.float64)
+        for joint in range(J19):
+            for i in range(3):
+                e = torch.zeros(3, J19, 3, dtype=torch.float64)
+                e[:, joint, i] = 1e-5
+                numeric += (model.velocity(exp_frame(x, e), t) - model.velocity(exp_frame(x, -e), t))[:, joint, i] / 2e-5
+    assert torch.allclose(divergence, numeric, atol=1e-6)
+
+
+def test_the_ace_input_needs_its_statistics_and_only_it_takes_them():
+    dim = AceFeatures().dim
+    with pytest.raises(ValueError, match="ace_mean"):
+        build_model("rsgm", num_joints=J19, inputs="local+ace")
+    with pytest.raises(ValueError, match="ace_mean"):
+        build_model("rsgm", num_joints=J19, ace_mean=[0.0] * dim, ace_std=[1.0] * dim)
+    with pytest.raises(ValueError, match="entries"):
+        build_model("rsgm", num_joints=J19, inputs="local+ace", ace_mean=[0.0] * 5, ace_std=[1.0] * 5)
+    with pytest.raises(ValueError, match="positive"):
+        build_model("rsgm", num_joints=J19, inputs="local+ace", ace_mean=[0.0] * dim, ace_std=[0.0] * dim)
+
+
 def test_the_plain_log_is_roma_s_away_from_pi():
     from hp.models.rsgm import log_rotations
     r = roma.random_rotmat(10_000, generator=torch.Generator().manual_seed(3), dtype=torch.float64)

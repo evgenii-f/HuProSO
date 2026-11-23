@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from hp.evaluation.data import load_reference  # noqa: E402
 from hp.models.io import load_model  # noqa: E402
+from hp.models.ace_features import AceFeatures, ace_statistics  # noqa: E402
 from hp.models.rsgm import fit_joint_scale, z_statistics  # noqa: E402
 from hp.training import cli  # noqa: E402
 from hp.training.config import load_config  # noqa: E402
@@ -147,6 +148,24 @@ CONFIGS["dposer_like_z"] = CONFIGS["dposer_like"] + Z_INPUT
 # noise only. For the full data, as dposer_like: --rotations ~/data/AMASS_rotations_posedflow --run-root ~/data/experiments/full
 CONFIGS["dposer_like_aniso"] = list(CONFIGS["dposer_like"])
 ANISO.add("dposer_like_aniso")
+# ACE descriptors next to the matrices at the input (inputs="local+ace", hp.models.ace_features): the distances and
+# angles between the joint positions and the twist of the bones. ace_RDW is the factorial cell fact_RDW (residual,
+# dropout 0.1, width 1024) with them, so the pair differs by the input only; ace_N likewise fact_N (= abl_norm). The
+# statistics of the descriptors are fitted once (fitted_ace_statistics) and given as model.args.ace_mean / ace_std.
+# Rule, fixed before any run (validation only, the responses of scripts/evaluate_factorial.py; ace_RDW seed 10 against
+# the mean of fact_RDW seeds 10 and 11): ace_RDW is better if at least one of
+#   1. inpainting mean lower by >= 1 mm at an APD >= 6.3 cm (1000 poses, K = 10, the fixed point of the factorial),
+#   2. hybrid mean of the four occlusions lower by >= 5 mm (500 poses),
+#   3. generation with Heun EDM 50 (harness): Wasserstein lower by >= 0.5 deg or FID_val lower by >= 0.008,
+# and nothing worse beyond the noise: Wasserstein, recall and precision by <= 0.2 deg, FID_val by <= 0.004, inpainting
+# mean by <= 1 mm. The log-likelihood is reported only. A gain near a threshold gets a second seed before a decision.
+ACE_INPUT = ["model.args.inputs=local+ace"]
+CONFIGS["fact_RDW"] = ABL_BASE + ["model.args.net_residual=true", "model.args.dropout=0.1",
+                                  "model.args.net_width=1024", "train.data_on_device=true"]
+CONFIGS["fact_N"] = ABL_BASE + ["model.args.net_norm=true", "train.data_on_device=true"]
+CONFIGS["ace_RDW"] = CONFIGS["fact_RDW"] + ACE_INPUT
+CONFIGS["ace_N"] = CONFIGS["fact_N"] + ACE_INPUT
+STD_FLOOR = 0.1  # the smallest std of a descriptor (ace_statistics): |z| <= 20 at any noise
 # ----------------------------------------------------------------------------------------
 
 
@@ -185,6 +204,27 @@ def fitted_z_statistics(rotations: str, split: str, run_root: str, frames: int) 
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(stats, indent=1))
         print(f"z statistics fitted on {len(train):,} training poses, written to {path}", flush=True)
+    return stats
+
+
+def fitted_ace_statistics(rotations: str, split: str, run_root: str, frames: int, poses: int = 500_000) -> dict:
+    """ace_mean and ace_std of inputs="local+ace" (the default descriptors) on `poses` random training poses, from
+    <run root>/rsgm_ace_statistics.json or fitted now (and written there) when the file is missing or of other data or
+    other descriptors."""
+    path = Path(run_root).expanduser() / "rsgm_ace_statistics.json"
+    ace = AceFeatures()
+    stats = json.loads(path.read_text()) if path.is_file() else None
+    key = (rotations, split, frames, ace.dim, STD_FLOOR)
+    if stats is None or (stats["rotations"], stats["split"], stats["frames"], len(stats["ace_mean"]),
+                         stats.get("std_floor")) != key:
+        train = load_reference("train", rotations, split)
+        pick = torch.randperm(len(train), generator=torch.Generator().manual_seed(0))[:poses]
+        mean, std = ace_statistics(ace, train[pick], chunk=20_000, std_floor=STD_FLOOR)
+        stats = {"rotations": rotations, "split": split, "frames": len(train), "poses": len(pick),
+                 "std_floor": STD_FLOOR, "ace_mean": mean, "ace_std": std}
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(stats))
+        print(f"ACE statistics fitted on {len(pick):,} training poses, written to {path}", flush=True)
     return stats
 
 
@@ -250,6 +290,10 @@ def main() -> int:
         if "model.args.inputs=local+z" in argv:
             stats = fitted_z_statistics(rotations, split, args.run_root, frames)
             argv += [f"model.args.z_mean={json.dumps(stats['z_mean'])}", f"model.args.z_std={json.dumps(stats['z_std'])}"]
+        if "model.args.inputs=local+ace" in argv:
+            stats = fitted_ace_statistics(rotations, split, args.run_root, frames)
+            argv += [f"model.args.ace_mean={json.dumps(stats['ace_mean'])}",
+                     f"model.args.ace_std={json.dumps(stats['ace_std'])}"]
         if config in ANISO:
             stats = fitted_z_statistics(rotations, split, args.run_root, frames)
             argv += [f"model.args.joint_scale={json.dumps(fit_joint_scale(stats['z_std']))}"]
@@ -275,7 +319,8 @@ def main() -> int:
             plan = f"resuming {stopped[-1]}; " + plan
         if args.dry_run:
             shown = [a.split("=")[0] + "=[...]" if a.startswith(("model.args.z_mean=", "model.args.z_std=",
-                                                                  "model.args.joint_scale=")) else a for a in argv]
+                                                                  "model.args.joint_scale=", "model.args.ace_mean=",
+                                                                  "model.args.ace_std=")) else a for a in argv]
             print(f"{head}: {plan}\n  would run scripts/train_model.py {' '.join(shown)}", flush=True)
             continue
         print(f"\n{head}: {plan}; started {time.strftime('%H:%M')}, {minutes(time.perf_counter() - started)} into the script",

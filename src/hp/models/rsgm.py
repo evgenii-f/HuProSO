@@ -52,6 +52,10 @@ sigma_j the std of each of the 3 coordinates of log(M_j^T x_j) (z_statistics; th
 vectors of M_j, and z_std, kept as buffers). Joints of small spread (the wrists, the spine) move their 9 matrix numbers
 little and their z by about 1. The matrices stay in the input: near angle pi from M_j the log jumps (large t), they
 do not. A function of x only, like "local+global".
+inputs = "local+ace" gives it, next to the matrices, the ACE descriptors of the pose (hp.models.ace_features): the
+distances and angles between the joint positions in Chebyshev and Legendre polynomials and the twist of the bones,
+z-scored by their mean and std on the training poses (ace_statistics; the arguments ace_mean and ace_std, kept as
+buffers). Also a function of x only.
 """
 import math
 from typing import Optional, Sequence
@@ -63,6 +67,7 @@ from torch.func import jacfwd, vmap
 
 from hp.data.amass_cfg import AmassJoints4Learning
 from hp.models import conditioning, igso3
+from hp.models.ace_features import AceFeatures
 from hp.models.score_nets import TimeResNet
 from hp.models.base import PoseModel
 from hp.models.conditioning import move  # noqa: F401  (also imported from here by other models)
@@ -182,6 +187,13 @@ class RSGM(PoseModel):
         inputs: str = "local",  # of the score network: "local" (the rotations), "local+global" or "local+z" (module doc)
         z_mean: Optional[Sequence[float]] = None,  # of inputs="local+z": the rotation vectors of the means M_j [3J],
         z_std: Optional[Sequence[float]] = None,  # and the std of log(M_j^T x_j) [3J] (z_statistics)
+        ace_mean: Optional[Sequence[float]] = None,  # of inputs="local+ace": the mean and std of the descriptors on
+        ace_std: Optional[Sequence[float]] = None,  # the training poses (ace_features.ace_statistics)
+        ace_radial: int = 4,  # the descriptors (ace_features.AceFeatures): Chebyshev polynomials of the distances,
+        ace_angular: int = 2,  # Legendre polynomials of the angles of the triples,
+        ace_triple_radial: int = 2,  # Chebyshev polynomials of their distances,
+        ace_twist: int = 1,  # harmonics of the twist,
+        ace_hops: int = 2,  # and the bones from the centre of a triple to its ends
         time_features: int = 0,  # sin and cos of t at this many frequencies, next to t itself; 0: t alone
         net: str = "mlp",  # "mlp": Linear-activation layers of `hidden`, t at the input; "timeres": score_nets.TimeResNet
         net_width: int = 1024,  # of net="timeres": the width,
@@ -204,12 +216,15 @@ class RSGM(PoseModel):
             raise ValueError(f"Unknown net_level '{net_level}'. Use 'log_s' or 't'.")
         if net == "timeres" and time_features:
             raise ValueError("net='timeres' embeds the noise level itself; use time_features=0.")
-        if inputs not in ("local", "local+global", "local+z"):
-            raise ValueError(f"Unknown inputs '{inputs}'. Use 'local', 'local+global' or 'local+z'.")
+        if inputs not in ("local", "local+global", "local+z", "local+ace"):
+            raise ValueError(f"Unknown inputs '{inputs}'. Use 'local', 'local+global', 'local+z' or 'local+ace'.")
         if (inputs == "local+z") != (z_mean is not None and z_std is not None):
             raise ValueError("inputs='local+z' needs z_mean and z_std (z_statistics of the training poses), and only it.")
-        if inputs == "local+global" and num_joints != len(PARENTS19):
-            raise ValueError(f"inputs='local+global' needs the {len(PARENTS19)} joints of AmassJoints4Learning, got {num_joints}.")
+        if (inputs == "local+ace") != (ace_mean is not None and ace_std is not None):
+            raise ValueError("inputs='local+ace' needs ace_mean and ace_std (ace_statistics of the training poses), and "
+                             "only it.")
+        if inputs in ("local+global", "local+ace") and num_joints != len(PARENTS19):
+            raise ValueError(f"inputs='{inputs}' needs the {len(PARENTS19)} joints of AmassJoints4Learning, got {num_joints}.")
         cond_dim = conditioning.resolve(condition, cond_dim, cond_mask)
         super().__init__(num_joints, "matrix", cond_dim)
         self.condition, self.cond_mask = condition, cond_mask
@@ -235,6 +250,17 @@ class RSGM(PoseModel):
             self.register_buffer("z_rot", roma.rotvec_to_rotmat(z_mean.reshape(num_joints, 3)))
             self.register_buffer("z_std", z_std.reshape(num_joints, 3))
         rotations = 9 * num_joints * (2 if inputs == "local+global" else 1) + (3 * num_joints if inputs == "local+z" else 0)
+        if inputs == "local+ace":
+            self.ace = AceFeatures(ace_radial, ace_angular, ace_triple_radial, ace_twist, ace_hops)
+            ace_mean = torch.as_tensor(ace_mean, dtype=torch.float32).reshape(-1)
+            ace_std = torch.as_tensor(ace_std, dtype=torch.float32).reshape(-1)
+            if ace_mean.shape != (self.ace.dim,) or ace_std.shape != (self.ace.dim,):
+                raise ValueError(f"ace_mean and ace_std must have {self.ace.dim} entries (the descriptors).")
+            if not (ace_std > 0).all():
+                raise ValueError("ace_std must be positive.")
+            self.register_buffer("ace_mean", ace_mean)
+            self.register_buffer("ace_std", ace_std)
+            rotations += self.ace.dim
         self.net_kind, self.net_level = net, net_level
         if net == "timeres":
             self.net = TimeResNet(rotations + (cond_features if cond_dim else 0), 3 * num_joints, net_width, net_blocks,
@@ -345,6 +371,8 @@ class RSGM(PoseModel):
         elif self.inputs == "local+z":
             z = log_rotations(self.z_rot.to(x.dtype).transpose(-1, -2) @ x) / self.z_std.to(x.dtype)
             inputs.append(z.reshape(b, -1))
+        elif self.inputs == "local+ace":
+            inputs.append((self.ace(x) - self.ace_mean.to(x.dtype)) / self.ace_std.to(x.dtype))
         if self.net_kind == "timeres":  # the time goes to every layer, as the noise level log(s) / 4
             features = torch.cat(inputs + ([] if f is None else [f]), dim=1)
             if self.net_level == "log_s":
