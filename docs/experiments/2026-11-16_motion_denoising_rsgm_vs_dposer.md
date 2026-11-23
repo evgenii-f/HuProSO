@@ -112,7 +112,7 @@ isotropic networks.
 | RSGM 1536x6, tuned DPoser's budget | 100 mm | 0.0515 | 0.0454 (0.881 t_max) | 4.38 | 0.0422 | 3 x 267 = 801 | `rsgm_sds_budget_100mm`, trial 0, on 512x4 c10 | 30.89 (512x4) | 28.50 |
 | w/o prior | 40 / 100 mm | – | – | – (no prior term) | 0.03 | 3 x 60 / 3 x 80 | DPoser's settings without the prior term | 23.43 / 50.54 | 22.73 / 49.57 |
 
-D-Flow: the ODE start of every frame is optimized through Euler 100, start mixing alpha 0.75, with RiemannianAdam
+D-Flow: the ODE start of every frame is optimized through Euler 100, start weight guess_weight 0.75, with RiemannianAdam
 for the priors on SO(3)^J and Adam for DPoser's Euclidean latent.
 
 | model | noise | lr | steps | temp_weight | running_weight | chosen by | valid | test |

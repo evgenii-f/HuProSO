@@ -1,0 +1,814 @@
+# Points of the completion fronts for the test, chosen by the rule of scripts/select_test_points.py
+# (fixed before the test); run by scripts/evaluate_completion.py --points. Validation numbers:
+# mean and best of 10 MPVPE (mm), APD (cm), 1000 poses, K = 10.
+DPoser dposer:
+- label: DPoser dposer_posedflow_rsgm_budget_s10, dposer_c10_method_mean_apd t29
+  study: dposer_c10_method_mean_apd
+  trial: 29
+  thresholds:
+  - 4.0
+  validation:
+    mean: 80.611
+    best_of_k: 53.201
+    apd: 4.219
+  spec:
+    run: ~/data/experiments/dposer_posedflow_rsgm_budget_s10/run_0001
+    method: dposer
+    prior:
+      lr: 0.07624382245126446
+      t_max: 0.2739830185607087
+      iterations: 3
+      steps_per_iter: 100
+      t_min: 0.055861558810945504
+- label: DPoser full/dposer_posedflow_s10, dposer_full_method_mean_apd t3
+  study: dposer_full_method_mean_apd
+  trial: 3
+  thresholds:
+  - 4.5
+  - 5.0
+  - 5.5
+  validation:
+    mean: 83.692
+    best_of_k: 48.725
+    apd: 5.663
+  spec:
+    run: ~/data/experiments/full/dposer_posedflow_s10/run_0001
+    method: dposer
+    prior:
+      lr: 0.1
+      t_max: 0.15
+      iterations: 3
+      steps_per_iter: 200
+      t_min: 0.049999999999999996
+- label: 'DPoser: their c10, RSGM budget, DPoser method t3'
+  study: dposer_c10_method_mean_apd
+  trial: 3
+  thresholds:
+  - 6.0
+  validation:
+    mean: 86.173
+    best_of_k: 49.993
+    apd: 6.024
+  spec:
+    run: ~/data/experiments/dposer_posedflow_rsgm_budget_s10/run_0001
+    method: dposer
+    prior:
+      lr: 0.1
+      t_max: 0.15
+      iterations: 3
+      steps_per_iter: 200
+      t_min: 0.049999999999999996
+- label: 'DPoser: their full, DPoser method t28'
+  study: dposer_full_method_mean_apd
+  trial: 28
+  thresholds:
+  - 6.5
+  - 7.0
+  validation:
+    mean: 91.162
+    best_of_k: 48.558
+    apd: 7.321
+  spec:
+    run: ~/data/experiments/full/dposer_posedflow_s10/run_0001
+    method: dposer
+    prior:
+      lr: 0.16364850392520697
+      t_max: 0.1560343553378305
+      iterations: 3
+      steps_per_iter: 100
+      t_min: 0.05502625394728783
+- label: DPoser full/dposer_posedflow_s10, dposer_full_method_mean_apd t47
+  study: dposer_full_method_mean_apd
+  trial: 47
+  thresholds:
+  - 7.5
+  validation:
+    mean: 94.682
+    best_of_k: 49.995
+    apd: 7.823
+  spec:
+    run: ~/data/experiments/full/dposer_posedflow_s10/run_0001
+    method: dposer
+    prior:
+      lr: 0.1372100749412645
+      t_max: 0.13249180587931736
+      iterations: 3
+      steps_per_iter: 100
+      t_min: 0.036254716288364804
+- label: DPoser full/dposer_posedflow_s10, dposer_full_method_mean_apd t112
+  study: dposer_full_method_mean_apd
+  trial: 112
+  thresholds:
+  - 8.0
+  validation:
+    mean: 97.415
+    best_of_k: 50.829
+    apd: 8.358
+  spec:
+    run: ~/data/experiments/full/dposer_posedflow_s10/run_0001
+    method: dposer
+    prior:
+      lr: 0.15786013466248278
+      t_max: 0.20086277933830807
+      iterations: 3
+      steps_per_iter: 100
+      t_min: 0.020794053241768154
+- label: DPoser dposer_posedflow_rsgm_budget_s10, dposer_c10_method_mean_apd t68
+  study: dposer_c10_method_mean_apd
+  trial: 68
+  thresholds:
+  - 8.5
+  validation:
+    mean: 99.093
+    best_of_k: 52.731
+    apd: 8.522
+  spec:
+    run: ~/data/experiments/dposer_posedflow_rsgm_budget_s10/run_0001
+    method: dposer
+    prior:
+      lr: 0.1774028030292704
+      t_max: 0.26088774607386944
+      iterations: 3
+      steps_per_iter: 100
+      t_min: 0.029980160739919992
+DPoser inpaint:
+- label: DPoser full/dposer_posedflow_s10, dposer_full_inpaint_mean_apd t56
+  study: dposer_full_inpaint_mean_apd
+  trial: 56
+  thresholds:
+  - 4.0
+  - 4.5
+  - 5.0
+  - 5.5
+  - 6.0
+  validation:
+    mean: 86.307
+    best_of_k: 47.653
+    apd: 6.317
+  spec:
+    run: ~/data/experiments/full/dposer_posedflow_s10/run_0001
+    method: inpaint
+    prior:
+      schedule: edm
+      steps: 200
+      guidance: 0.7792609439046615
+      resample: 5
+      replace: true
+- label: 'DPoser: their full, inpaint t90'
+  study: dposer_full_inpaint_mean_apd
+  trial: 90
+  thresholds:
+  - 6.5
+  validation:
+    mean: 86.746
+    best_of_k: 47.379
+    apd: 6.524
+  spec:
+    run: ~/data/experiments/full/dposer_posedflow_s10/run_0001
+    method: inpaint
+    prior:
+      schedule: edm
+      steps: 100
+      guidance: 0.9806648250542185
+      resample: 5
+      replace: true
+- label: DPoser full/dposer_posedflow_s10, dposer_full_inpaint_mean_apd t89
+  study: dposer_full_inpaint_mean_apd
+  trial: 89
+  thresholds:
+  - 7.0
+  validation:
+    mean: 90.508
+    best_of_k: 48.331
+    apd: 7.042
+  spec:
+    run: ~/data/experiments/full/dposer_posedflow_s10/run_0001
+    method: inpaint
+    prior:
+      schedule: edm
+      steps: 100
+      guidance: 0.757412150877914
+      resample: 3
+      replace: true
+- label: DPoser full/dposer_posedflow_s10, dposer_full_inpaint_mean_apd t49
+  study: dposer_full_inpaint_mean_apd
+  trial: 49
+  thresholds:
+  - 7.5
+  validation:
+    mean: 94.619
+    best_of_k: 49.924
+    apd: 7.508
+  spec:
+    run: ~/data/experiments/full/dposer_posedflow_s10/run_0001
+    method: inpaint
+    prior:
+      schedule: edm
+      steps: 100
+      guidance: 0.6326864100119507
+      resample: 2
+      replace: true
+- label: DPoser dposer_posedflow_rsgm_budget_s10, dposer_c10_inpaint_mean_apd t103
+  study: dposer_c10_inpaint_mean_apd
+  trial: 103
+  thresholds:
+  - 8.0
+  validation:
+    mean: 100.027
+    best_of_k: 53.117
+    apd: 8.025
+  spec:
+    run: ~/data/experiments/dposer_posedflow_rsgm_budget_s10/run_0001
+    method: inpaint
+    prior:
+      schedule: edm
+      steps: 100
+      guidance: 0.3127747971966944
+      resample: 2
+      replace: true
+- label: DPoser full/dposer_posedflow_s10, dposer_full_inpaint_mean_apd t38
+  study: dposer_full_inpaint_mean_apd
+  trial: 38
+  thresholds:
+  - 8.5
+  validation:
+    mean: 103.847
+    best_of_k: 53.799
+    apd: 8.52
+  spec:
+    run: ~/data/experiments/full/dposer_posedflow_s10/run_0001
+    method: inpaint
+    prior:
+      schedule: edm
+      steps: 200
+      guidance: 0.19819570280497467
+      resample: 1
+      replace: true
+PoseD-Flow dflow:
+- label: PoseD-Flow their checkpoint, posedflow_dflow_guess_mean_apd t14
+  study: posedflow_dflow_guess_mean_apd
+  trial: 14
+  thresholds:
+  - 4.0
+  validation:
+    mean: 84.23
+    best_of_k: 56.789
+    apd: 4.008
+  spec:
+    posedflow: ~/data/posedflow_ckpt/checkpoints/epoch-009_step-0_loss-0.0000.ckpt
+    dflow:
+      lr: 0.11788940310117006
+      running_weight: 0.0013057267433857936
+      steps: 100
+    prior:
+      guess_weight: 0.4698021656754063
+- label: PoseD-Flow their checkpoint, posedflow_dflow_guess_mean_apd t8
+  study: posedflow_dflow_guess_mean_apd
+  trial: 8
+  thresholds:
+  - 4.5
+  validation:
+    mean: 85.871
+    best_of_k: 54.39
+    apd: 4.759
+  spec:
+    posedflow: ~/data/posedflow_ckpt/checkpoints/epoch-009_step-0_loss-0.0000.ckpt
+    dflow:
+      lr: 0.1
+      running_weight: 0.001
+      steps: 100
+    prior:
+      guess_weight: 0.4
+- label: 'PoseD-Flow: their checkpoint, D-Flow t17'
+  study: posedflow_dflow_mean_apd
+  trial: 17
+  thresholds:
+  - 5.0
+  validation:
+    mean: 86.342
+    best_of_k: 53.035
+    apd: 5.102
+  spec:
+    posedflow: ~/data/posedflow_ckpt/checkpoints/epoch-009_step-0_loss-0.0000.ckpt
+    dflow:
+      lr: 0.05
+      running_weight: 0.001
+      steps: 200
+- label: PoseD-Flow their checkpoint, posedflow_dflow_guess_mean_apd t12
+  study: posedflow_dflow_guess_mean_apd
+  trial: 12
+  thresholds:
+  - 5.5
+  validation:
+    mean: 88.449
+    best_of_k: 52.579
+    apd: 5.527
+  spec:
+    posedflow: ~/data/posedflow_ckpt/checkpoints/epoch-009_step-0_loss-0.0000.ckpt
+    dflow:
+      lr: 0.06911063009083955
+      running_weight: 0.0010452332539916803
+      steps: 100
+    prior:
+      guess_weight: 0.22720856520324487
+- label: PoseD-Flow their checkpoint, posedflow_dflow_guess_mean_apd t4
+  study: posedflow_dflow_guess_mean_apd
+  trial: 4
+  thresholds:
+  - 6.0
+  - 6.5
+  validation:
+    mean: 91.999
+    best_of_k: 51.178
+    apd: 6.517
+  spec:
+    posedflow: ~/data/posedflow_ckpt/checkpoints/epoch-009_step-0_loss-0.0000.ckpt
+    dflow:
+      lr: 0.1
+      running_weight: 0.001
+      steps: 100
+    prior:
+      guess_weight: 0.0
+- label: PoseD-Flow their checkpoint, posedflow_dflow_guess_mean_apd t19
+  study: posedflow_dflow_guess_mean_apd
+  trial: 19
+  thresholds:
+  - 7.0
+  validation:
+    mean: 94.768
+    best_of_k: 51.48
+    apd: 7.013
+  spec:
+    posedflow: ~/data/posedflow_ckpt/checkpoints/epoch-009_step-0_loss-0.0000.ckpt
+    dflow:
+      lr: 0.07363223996100231
+      running_weight: 0.0006074079607863847
+      steps: 100
+    prior:
+      guess_weight: 0.03646724770122822
+- label: PoseD-Flow their checkpoint, posedflow_dflow_mean_apd t11
+  study: posedflow_dflow_mean_apd
+  trial: 11
+  thresholds:
+  - 7.5
+  - 8.0
+  validation:
+    mean: 104.661
+    best_of_k: 56.589
+    apd: 8.004
+  spec:
+    posedflow: ~/data/posedflow_ckpt/checkpoints/epoch-009_step-0_loss-0.0000.ckpt
+    dflow:
+      lr: 0.13832385457509597
+      running_weight: 1.869261181496777e-05
+      steps: 50
+RSGM dflow:
+- label: RSGM full/rsgm_posedflow_dposer_like_aniso_s10, rsgm_dflow_mean_apd_full_dposer_like_aniso t29
+  study: rsgm_dflow_mean_apd_full_dposer_like_aniso
+  trial: 29
+  thresholds:
+  - 4.0
+  - 4.5
+  validation:
+    mean: 87.71
+    best_of_k: 56.263
+    apd: 4.559
+  spec:
+    run: ~/data/experiments/full/rsgm_posedflow_dposer_like_aniso_s10/run_0001
+    dflow:
+      lr: 0.07458536657792954
+      running_weight: 0.0014996507230121126
+      steps: 300
+    prior:
+      ode_steps: 25
+      sampler: heun
+      schedule: edm
+- label: RSGM full/rsgm_posedflow_dposer_like_aniso_s10, rsgm_dflow_mean_apd_full_dposer_like_aniso t51
+  study: rsgm_dflow_mean_apd_full_dposer_like_aniso
+  trial: 51
+  thresholds:
+  - 5.0
+  - 5.5
+  validation:
+    mean: 89.684
+    best_of_k: 52.953
+    apd: 5.566
+  spec:
+    run: ~/data/experiments/full/rsgm_posedflow_dposer_like_aniso_s10/run_0001
+    dflow:
+      lr: 0.0730585436649755
+      running_weight: 0.000906653925043017
+      steps: 300
+    prior:
+      ode_steps: 25
+      sampler: heun
+      schedule: edm
+- label: RSGM full/rsgm_posedflow_dposer_like_aniso_s10, rsgm_dflow_mean_apd_full_dposer_like_aniso t58
+  study: rsgm_dflow_mean_apd_full_dposer_like_aniso
+  trial: 58
+  thresholds:
+  - 6.0
+  validation:
+    mean: 91.123
+    best_of_k: 51.261
+    apd: 6.183
+  spec:
+    run: ~/data/experiments/full/rsgm_posedflow_dposer_like_aniso_s10/run_0001
+    dflow:
+      lr: 0.059778615743881276
+      running_weight: 0.0006404370262512468
+      steps: 300
+    prior:
+      ode_steps: 25
+      sampler: heun
+      schedule: edm
+- label: RSGM full/rsgm_posedflow_dposer_like_aniso_s10, rsgm_dflow_mean_apd_full_dposer_like_aniso t25
+  study: rsgm_dflow_mean_apd_full_dposer_like_aniso
+  trial: 25
+  thresholds:
+  - 6.5
+  validation:
+    mean: 93.539
+    best_of_k: 51.5
+    apd: 6.613
+  spec:
+    run: ~/data/experiments/full/rsgm_posedflow_dposer_like_aniso_s10/run_0001
+    dflow:
+      lr: 0.04148206123277935
+      running_weight: 0.0005669078153370664
+      steps: 300
+    prior:
+      ode_steps: 25
+      sampler: heun
+      schedule: edm
+- label: RSGM full/rsgm_posedflow_dposer_like_s10, rsgm_dflow_mean_apd_full_dposer_like t51
+  study: rsgm_dflow_mean_apd_full_dposer_like
+  trial: 51
+  thresholds:
+  - 7.0
+  validation:
+    mean: 96.278
+    best_of_k: 51.216
+    apd: 7.262
+  spec:
+    run: ~/data/experiments/full/rsgm_posedflow_dposer_like_s10/run_0001
+    dflow:
+      lr: 0.0625291264900851
+      running_weight: 0.0005379253707353663
+      steps: 300
+    prior:
+      ode_steps: 25
+      sampler: heun
+      schedule: edm
+- label: RSGM full/rsgm_posedflow_dposer_like_aniso_s10, rsgm_dflow_mean_apd_full_dposer_like_aniso t19
+  study: rsgm_dflow_mean_apd_full_dposer_like_aniso
+  trial: 19
+  thresholds:
+  - 7.5
+  validation:
+    mean: 98.393
+    best_of_k: 51.116
+    apd: 7.738
+  spec:
+    run: ~/data/experiments/full/rsgm_posedflow_dposer_like_aniso_s10/run_0001
+    dflow:
+      lr: 0.04416165024304048
+      running_weight: 0.00011196540130047145
+      steps: 300
+    prior:
+      ode_steps: 25
+      sampler: heun
+      schedule: edm
+- label: RSGM full/rsgm_posedflow_dposer_like_aniso_s10, rsgm_dflow_mean_apd_full_dposer_like_aniso t36
+  study: rsgm_dflow_mean_apd_full_dposer_like_aniso
+  trial: 36
+  thresholds:
+  - 8.0
+  validation:
+    mean: 100.508
+    best_of_k: 51.754
+    apd: 8.061
+  spec:
+    run: ~/data/experiments/full/rsgm_posedflow_dposer_like_aniso_s10/run_0001
+    dflow:
+      lr: 0.037563346836039437
+      running_weight: 1.836256691889771e-05
+      steps: 300
+    prior:
+      ode_steps: 25
+      sampler: heun
+      schedule: edm
+- label: RSGM full/rsgm_posedflow_dposer_like_s10, rsgm_dflow_mean_apd_full_dposer_like t45
+  study: rsgm_dflow_mean_apd_full_dposer_like
+  trial: 45
+  thresholds:
+  - 8.5
+  validation:
+    mean: 103.817
+    best_of_k: 53.001
+    apd: 8.504
+  spec:
+    run: ~/data/experiments/full/rsgm_posedflow_dposer_like_s10/run_0001
+    dflow:
+      lr: 0.024999088396379432
+      running_weight: 2.087372551106214e-05
+      steps: 300
+    prior:
+      ode_steps: 25
+      sampler: heun
+      schedule: edm
+RSGM dposer:
+- label: RSGM full/rsgm_posedflow_dposer_like_s10, rsgm_sds_mean_apd_full_dposer_like t15
+  study: rsgm_sds_mean_apd_full_dposer_like
+  trial: 15
+  thresholds:
+  - 4.0
+  - 4.5
+  validation:
+    mean: 92.032
+    best_of_k: 61.655
+    apd: 4.615
+  spec:
+    run: ~/data/experiments/full/rsgm_posedflow_dposer_like_s10/run_0001
+    method: dposer
+    prior:
+      start: noise
+      scale: std
+      t_max: 0.03069657326271095
+      lr: 0.1160748594162681
+      prior_weight: 0.01748741102436864
+      steps_per_iter: 200
+      t_min: 0.005332697742510199
+- label: RSGM full/rsgm_posedflow_dposer_like_s10, rsgm_sds_mean_apd_full_dposer_like t24
+  study: rsgm_sds_mean_apd_full_dposer_like
+  trial: 24
+  thresholds:
+  - 5.0
+  validation:
+    mean: 93.736
+    best_of_k: 60.033
+    apd: 5.196
+  spec:
+    run: ~/data/experiments/full/rsgm_posedflow_dposer_like_s10/run_0001
+    method: dposer
+    prior:
+      start: noise
+      scale: std
+      t_max: 0.03953962603446758
+      lr: 0.08997649928490735
+      prior_weight: 0.9816708435793384
+      steps_per_iter: 200
+      t_min: 0.00663110447612487
+- label: RSGM full/rsgm_posedflow_dposer_like_s10, rsgm_sds_mean_apd_full_dposer_like t99
+  study: rsgm_sds_mean_apd_full_dposer_like
+  trial: 99
+  thresholds:
+  - 5.5
+  validation:
+    mean: 94.806
+    best_of_k: 57.932
+    apd: 5.79
+  spec:
+    run: ~/data/experiments/full/rsgm_posedflow_dposer_like_s10/run_0001
+    method: dposer
+    prior:
+      start: noise
+      scale: std
+      t_max: 0.05643361199204119
+      lr: 0.1264391231299016
+      prior_weight: 0.6246710042482329
+      steps_per_iter: 200
+      t_min: 0.007074985483719722
+- label: RSGM full/rsgm_posedflow_dposer_like_s10, rsgm_sds_mean_apd_full_dposer_like t64
+  study: rsgm_sds_mean_apd_full_dposer_like
+  trial: 64
+  thresholds:
+  - 6.0
+  validation:
+    mean: 95.457
+    best_of_k: 57.156
+    apd: 6.102
+  spec:
+    run: ~/data/experiments/full/rsgm_posedflow_dposer_like_s10/run_0001
+    method: dposer
+    prior:
+      start: noise
+      scale: std
+      t_max: 0.056852946951984014
+      lr: 0.14754124250214343
+      prior_weight: 0.4496718150646136
+      steps_per_iter: 200
+      t_min: 0.008605364076647427
+- label: RSGM full/rsgm_posedflow_dposer_like_s10, rsgm_sds_mean_apd_full_dposer_like t63
+  study: rsgm_sds_mean_apd_full_dposer_like
+  trial: 63
+  thresholds:
+  - 6.5
+  validation:
+    mean: 97.095
+    best_of_k: 56.668
+    apd: 6.549
+  spec:
+    run: ~/data/experiments/full/rsgm_posedflow_dposer_like_s10/run_0001
+    method: dposer
+    prior:
+      start: noise
+      scale: std
+      t_max: 0.04495078503842303
+      lr: 0.1520812239467623
+      prior_weight: 0.43756782505027353
+      steps_per_iter: 200
+      t_min: 0.007992430128253883
+- label: RSGM full/rsgm_posedflow_dposer_like_s10, rsgm_sds_mean_apd_full_dposer_like t106
+  study: rsgm_sds_mean_apd_full_dposer_like
+  trial: 106
+  thresholds:
+  - 7.0
+  validation:
+    mean: 99.019
+    best_of_k: 55.923
+    apd: 7.158
+  spec:
+    run: ~/data/experiments/full/rsgm_posedflow_dposer_like_s10/run_0001
+    method: dposer
+    prior:
+      start: noise
+      scale: std
+      t_max: 0.0622602226047319
+      lr: 0.18772706259142719
+      prior_weight: 0.5798037507941739
+      steps_per_iter: 200
+      t_min: 0.007084394381686368
+- label: RSGM full/rsgm_posedflow_dposer_like_s10, rsgm_sds_mean_apd_full_dposer_like t82
+  study: rsgm_sds_mean_apd_full_dposer_like
+  trial: 82
+  thresholds:
+  - 7.5
+  validation:
+    mean: 100.951
+    best_of_k: 55.827
+    apd: 7.512
+  spec:
+    run: ~/data/experiments/full/rsgm_posedflow_dposer_like_s10/run_0001
+    method: dposer
+    prior:
+      start: noise
+      scale: std
+      t_max: 0.04844984470414231
+      lr: 0.19187353668955115
+      prior_weight: 0.918945056689494
+      steps_per_iter: 200
+      t_min: 0.008013824259957421
+- label: RSGM full/rsgm_posedflow_dposer_like_s10, rsgm_sds_mean_apd_full_dposer_like t22
+  study: rsgm_sds_mean_apd_full_dposer_like
+  trial: 22
+  thresholds:
+  - 8.0
+  validation:
+    mean: 104.265
+    best_of_k: 56.225
+    apd: 8.184
+  spec:
+    run: ~/data/experiments/full/rsgm_posedflow_dposer_like_s10/run_0001
+    method: dposer
+    prior:
+      start: noise
+      scale: std
+      t_max: 0.03995047757777482
+      lr: 0.19649259982105663
+      prior_weight: 0.6061946970668334
+      steps_per_iter: 200
+      t_min: 0.005955316327419261
+- label: RSGM full/rsgm_posedflow_dposer_like_s10, rsgm_sds_mean_apd_full_dposer_like t56
+  study: rsgm_sds_mean_apd_full_dposer_like
+  trial: 56
+  thresholds:
+  - 8.5
+  validation:
+    mean: 106.356
+    best_of_k: 56.698
+    apd: 8.514
+  spec:
+    run: ~/data/experiments/full/rsgm_posedflow_dposer_like_s10/run_0001
+    method: dposer
+    prior:
+      start: noise
+      scale: std
+      t_max: 0.03280207274111372
+      lr: 0.19100486591616117
+      prior_weight: 0.3474859737964946
+      steps_per_iter: 200
+      t_min: 0.004503300627017114
+RSGM inpaint:
+- label: RSGM rsgm_posedflow_abl_residual_s10, rsgm_inpaint_mean_apd_residual t59
+  study: rsgm_inpaint_mean_apd_residual
+  trial: 59
+  thresholds:
+  - 4.0
+  - 4.5
+  - 5.0
+  - 5.5
+  - 6.0
+  validation:
+    mean: 88.22
+    best_of_k: 49.301
+    apd: 6.391
+  spec:
+    run: ~/data/experiments/rsgm_posedflow_abl_residual_s10/run_0001
+    method: inpaint
+    prior:
+      schedule: edm
+      steps: 400
+      guidance: 0.05457452885996979
+      resample: 5
+      replace: false
+- label: 'RSGM abl norm: their c10, inpaint t118'
+  study: rsgm_inpaint_mean_apd_norm
+  trial: 118
+  thresholds:
+  - 6.5
+  validation:
+    mean: 89.553
+    best_of_k: 49.716
+    apd: 6.573
+  spec:
+    run: ~/data/experiments/rsgm_posedflow_abl_norm_s10/run_0001
+    method: inpaint
+    prior:
+      schedule: edm
+      steps: 200
+      guidance: 0.09515197497012039
+      resample: 5
+      replace: false
+- label: RSGM rsgm_posedflow_small_s10, rsgm_inpaint_pareto t56
+  study: rsgm_inpaint_pareto
+  trial: 56
+  thresholds:
+  - 7.0
+  validation:
+    mean: 92.493
+    best_of_k: 50.819
+    apd: 7.004
+  spec:
+    run: ~/data/experiments/rsgm_posedflow_small_s10/run_0001
+    method: inpaint
+    prior:
+      schedule: edm
+      steps: 400
+      guidance: 0.05480996845579721
+      resample: 5
+      replace: false
+- label: RSGM full/rsgm_posedflow_small_s10, rsgm_inpaint_mean_apd_full_small t63
+  study: rsgm_inpaint_mean_apd_full_small
+  trial: 63
+  thresholds:
+  - 7.5
+  validation:
+    mean: 95.567
+    best_of_k: 50.547
+    apd: 7.524
+  spec:
+    run: ~/data/experiments/full/rsgm_posedflow_small_s10/run_0001
+    method: inpaint
+    prior:
+      schedule: edm
+      steps: 400
+      guidance: 0.05414195592956303
+      resample: 2
+      replace: false
+- label: RSGM full/rsgm_posedflow_small_s10, rsgm_inpaint_mean_apd_full_small t26
+  study: rsgm_inpaint_mean_apd_full_small
+  trial: 26
+  thresholds:
+  - 8.0
+  validation:
+    mean: 99.454
+    best_of_k: 51.962
+    apd: 8.034
+  spec:
+    run: ~/data/experiments/full/rsgm_posedflow_small_s10/run_0001
+    method: inpaint
+    prior:
+      schedule: edm
+      steps: 400
+      guidance: 0.0937913872338533
+      resample: 1
+      replace: false
+- label: RSGM full/rsgm_posedflow_small_s10, rsgm_inpaint_mean_apd_full_small t105
+  study: rsgm_inpaint_mean_apd_full_small
+  trial: 105
+  thresholds:
+  - 8.5
+  validation:
+    mean: 103.662
+    best_of_k: 53.064
+    apd: 8.522
+  spec:
+    run: ~/data/experiments/full/rsgm_posedflow_small_s10/run_0001
+    method: inpaint
+    prior:
+      schedule: edm
+      steps: 200
+      guidance: 0.0857126351845745
+      resample: 1
+      replace: false

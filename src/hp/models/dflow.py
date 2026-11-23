@@ -5,7 +5,8 @@ on SO(3)^J as PoseD-Flow, Nadar, Foti, Birdal, CVPR 2026, their pose_completion.
     loss(x_1) + running_weight * mean_t sum_joints (3 - tr x_t),
 
 the gradients going through all ODE steps; x_0 = start exp(hat(delta)) with Adam on delta. The start mixes noise with
-a guess of the latent of the observations, as theirs. A prior wraps the ODE of one model:
+a guess of the latent of the observations, as theirs: sqrt(w) guess + sqrt(1 - w) noise, w = guess_weight (theirs
+1/4; smaller: more noise, more diverse hypotheses). A prior wraps the ODE of one model:
   - FlowPrior: the pretrained PoseD-Flow (hp/models/posedflow.py), 21 joints: their ambient Euler steps from t = 0
     to 1 without projection, their projx at the end; the start projx(sqrt(1/4) F(y_0) + sqrt(3/4) noise), F(y_0) the
     flow run from the observed pose y_0 (their code does exactly this, from the data side);
@@ -40,11 +41,13 @@ def trace_cost(x: torch.Tensor) -> torch.Tensor:
 
 
 class _RotationLatent:
-    """The latent of the priors on SO(3)^J: their start projx(sqrt(1/4) guess + sqrt(3/4) noise), steps x exp(delta)."""
+    """The latent of the priors on SO(3)^J: the start projx(sqrt(w) guess + sqrt(1 - w) noise), w = guess_weight
+    (theirs 1/4), steps x exp(delta)."""
+    guess_weight = 0.25
 
-    def start(self, y0: torch.Tensor, alpha: float = 0.25) -> torch.Tensor:
-        """projx(sqrt(alpha) guess + sqrt(1 - alpha) noise): alpha 0.25 in their completion, 0.75 in denoising."""
-        return projx(math.sqrt(alpha) * self.guess(y0) + math.sqrt(1 - alpha) * self.noise(y0.shape[0]))
+    def start(self, y0: torch.Tensor) -> torch.Tensor:
+        w = self.guess_weight
+        return projx(math.sqrt(w) * self.guess(y0) + math.sqrt(1 - w) * self.noise(y0.shape[0]))
 
     @staticmethod
     def zero_delta(start: torch.Tensor) -> torch.Tensor:
@@ -56,8 +59,8 @@ class _RotationLatent:
 
 
 class FlowPrior(_RotationLatent):
-    def __init__(self, model: PoseDFlowPretrained, ode_steps: int = 100):
-        self.model, self.ode_steps, self.joints = model, ode_steps, 21
+    def __init__(self, model: PoseDFlowPretrained, ode_steps: int = 100, guess_weight: float = 0.25):
+        self.model, self.ode_steps, self.joints, self.guess_weight = model, ode_steps, 21, guess_weight
 
     def _times(self):
         return torch.linspace(0.0, 1.0, self.ode_steps + 1, device=self.model.device, dtype=self.model.dtype)
@@ -83,13 +86,13 @@ class FlowPrior(_RotationLatent):
 
 class ScorePrior(_RotationLatent):
     def __init__(self, model: RSGM, ode_steps: int = 100, invert: bool = False, sampler: str = "euler",
-                 schedule: str = "uniform"):
+                 schedule: str = "uniform", guess_weight: float = 0.25):
         if sampler not in ("euler", "heun"):
             raise ValueError(f"Unknown sampler '{sampler}' for D-Flow. Use 'euler' or 'heun' (an ODE).")
         if schedule not in ("uniform", "edm"):
             raise ValueError(f"Unknown schedule '{schedule}'. Use 'uniform' or 'edm'.")
         self.model, self.ode_steps, self.joints, self.invert = model, ode_steps, model.num_joints, invert
-        self.sampler, self.schedule = sampler, schedule
+        self.sampler, self.schedule, self.guess_weight = sampler, schedule, guess_weight
 
     @property
     def dtype(self):
@@ -128,8 +131,9 @@ class ScorePrior(_RotationLatent):
 
 
 class DPoserPrior:
-    def __init__(self, model: DPoser, ode_steps: int = 100, invert: bool = False):
+    def __init__(self, model: DPoser, ode_steps: int = 100, invert: bool = False, guess_weight: float = 0.25):
         self.model, self.ode_steps, self.joints, self.invert = model, ode_steps, model.num_joints, invert
+        self.guess_weight = guess_weight
 
     @property
     def dtype(self):
@@ -161,8 +165,9 @@ class DPoserPrior:
         x = self.model.normalize(y0.to(self.model.device, self.dtype))
         return self._run(x, self._times(not self.invert), False)[0]
 
-    def start(self, y0: torch.Tensor, alpha: float = 0.25) -> torch.Tensor:
-        return math.sqrt(alpha) * self.guess(y0) + math.sqrt(1 - alpha) * self.noise(y0.shape[0])
+    def start(self, y0: torch.Tensor) -> torch.Tensor:
+        w = self.guess_weight
+        return math.sqrt(w) * self.guess(y0) + math.sqrt(1 - w) * self.noise(y0.shape[0])
 
     @staticmethod
     def zero_delta(start: torch.Tensor) -> torch.Tensor:
@@ -178,12 +183,12 @@ class DPoserPrior:
 
 
 def prior_of(model, ode_steps: int = 100, **options):
-    """The D-Flow prior of a model; options go to its prior class (ScorePrior: sampler, schedule, invert;
-    DPoserPrior: invert)."""
+    """The D-Flow prior of a model; options go to its prior class (all: guess_weight; ScorePrior: sampler, schedule,
+    invert; DPoserPrior: invert)."""
     if isinstance(model, PoseDFlowPretrained):
-        if options:
-            raise ValueError(f"The PoseD-Flow prior takes no options, got {sorted(options)}.")
-        return FlowPrior(model, ode_steps)
+        if set(options) - {"guess_weight"}:
+            raise ValueError(f"The PoseD-Flow prior takes only guess_weight, got {sorted(options)}.")
+        return FlowPrior(model, ode_steps, **options)
     if isinstance(model, RSGM):
         return ScorePrior(model, ode_steps, **options)
     if isinstance(model, DPoser):

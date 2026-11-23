@@ -39,8 +39,19 @@ Joints: ours are 19 (`AmassJoints4Learning`, no toes). PoseD-Flow has 21; the to
 | `explore/evaluation/posedflow_vs_rsgm.ipynb` | Harness + PoseD-Flow | **their** test; contrast: 100k train | `~/data/experiments/posedflow_comparison/cache/` (with older names too: the settings count, not the name) |
 | `explore/evaluation/conditional_flow_occlusion.ipynb` | Occlusion | our test, all frames | none |
 | `explore/evaluation/conditional_flow_occlusion-3models.ipynb` | Occlusion + D-Flow | our test, 100 poses | none |
+| `explore/evaluation/pose_completion.ipynb` | PoseD-Flow completion (their Tab. 2) | **their** test, 5000 poses, K = 10; valid: a fixed draw of 1000 | `~/data/experiments/completion/cache/` (test), `.../cache/valid/` |
 
 `scripts/evaluate_posedflow_comparison.py` computes Harness and PoseD-Flow on a server with the same settings and writes into the same cache. The constants of the script and the notebook must stay equal.
+
+`scripts/evaluate.py <protocol>` runs any model through a protocol with the same flags for every protocol (for now
+`completion`): the model as `--run [LABEL=]PATH` (a run folder or a PoseD-Flow `.ckpt`, with `--method`, `--set
+key=value` and `--settings JSON`), as rows of the registry (`--models`) or as points of the fronts (`--points`);
+`--split valid|test|all`, `--poses n` (a quick check, in a folder of its own), `--quick` (the first 200 poses of the
+validation draw, in `<out>/valid_first200`; enough for changes of a few mm, not for close settings), `--out`, `--device`, `--recompute`,
+`--dry-run`. Results go to the folder of the split (the test in `--out` itself, the validation in `<out>/valid`), one
+row per model and occlusion in `results.jsonl` there, and a table at the end. A result made with other settings is
+kept and reported unless `--recompute` (weights copied between machines get a new modification time and read as
+other settings); `--force` computes everything again, even results made with the same settings. `scripts/evaluate_completion.py` keeps its flags and runs it on the test.
 
 ### What to watch for
 

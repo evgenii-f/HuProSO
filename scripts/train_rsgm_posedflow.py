@@ -143,6 +143,10 @@ CONFIGS["dposer_like"] = ["model.args.net=timeres", "model.args.net_width=1024",
                           "train.checkpoint_every=10000"]
 # and with the z-scored tangent input (Z_INPUT): the pair dposer_like / dposer_like_z differs by the input only
 CONFIGS["dposer_like_z"] = CONFIGS["dposer_like"] + Z_INPUT
+# and with the per-joint noise (joint_scale, as abl_aniso): the pair dposer_like / dposer_like_aniso differs by the
+# noise only. For the full data, as dposer_like: --rotations ~/data/AMASS_rotations_posedflow --run-root ~/data/experiments/full
+CONFIGS["dposer_like_aniso"] = list(CONFIGS["dposer_like"])
+ANISO.add("dposer_like_aniso")
 # ----------------------------------------------------------------------------------------
 
 

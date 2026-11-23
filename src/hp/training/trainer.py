@@ -6,6 +6,12 @@ model families need: an exponential moving average (EMA) of the weights, and con
 
 A dataset item is a pose, flattened [J * 9] or [J, 3, 3], or a dict {"theta": pose, "condition": features}
 as the AMASS dataset gives for conditioning. The model gets poses [B, J, 3, 3].
+
+data_on_device: the poses of a dataset without conditioning (its `.data` tensor) are moved to the device once, and a
+batch is a slice of a random permutation drawn there every pass (DeviceLoader), instead of a DataLoader that collates
+the poses of a batch one by one on the CPU and copies them: the same sampling (every pose once per pass, the last
+batch smaller), without the CPU in the loop, which otherwise is what a small network on a GPU waits for. tf32: the
+float32 matrix products of the network on cuda in TF32 (faster, with a 10-bit mantissa in the products).
 """
 import copy
 import json
@@ -62,6 +68,8 @@ class TrainConfig:
     time_limit_minutes: Optional[float] = None  # stop cleanly (with a checkpoint) after this long; None: no limit
     device: str = "cpu"
     num_workers: int = 0
+    data_on_device: bool = False  # the poses on the device, batches sliced there (see the module doc)
+    tf32: bool = False  # TF32 matrix products on cuda (see the module doc)
     progress: bool = True
 
     def __post_init__(self):
@@ -85,6 +93,12 @@ class History:
     valid_loss: List[float] = field(default_factory=list)
 
 
+def _cuda_index(device: str) -> int:
+    """The index of a CUDA device ("cuda" alone: the current one)."""
+    index = torch.device(device).index
+    return torch.cuda.current_device() if index is None else index
+
+
 def _rng_state(device: str) -> dict:
     """The random generators as tensors, numbers and lists only, so that torch.load(weights_only=True) reads them."""
     version, internal, gauss = random.getstate()
@@ -95,8 +109,8 @@ def _rng_state(device: str) -> dict:
         "numpy": {"keys": torch.from_numpy(keys.astype(np.int64)), "pos": int(pos), "has_gauss": int(has_gauss), "cached": float(cached)},
     }
     kind = torch.device(device).type
-    if kind == "cuda":
-        state["cuda"] = torch.cuda.get_rng_state_all()
+    if kind == "cuda":  # the run's GPU only: get_rng_state_all would open a CUDA context on every GPU of the machine
+        state["cuda"] = torch.cuda.get_rng_state(_cuda_index(device))
     elif kind == "mps":
         state["mps"] = torch.mps.get_rng_state()
     return state
@@ -110,7 +124,11 @@ def _set_rng_state(state: dict, device: str) -> None:
     np.random.set_state(("MT19937", n["keys"].numpy().astype(np.uint32), n["pos"], n["has_gauss"], n["cached"]))
     kind = torch.device(device).type
     if kind == "cuda" and "cuda" in state:
-        torch.cuda.set_rng_state_all(state["cuda"])
+        index, saved = _cuda_index(device), state["cuda"]
+        if isinstance(saved, (list, tuple)):  # a checkpoint from before: the states of all GPUs, take the run's
+            saved = saved[index] if index < len(saved) else None
+        if saved is not None:
+            torch.cuda.set_rng_state(saved, index)
     elif kind == "mps" and "mps" in state:
         torch.mps.set_rng_state(state["mps"])
 
@@ -143,10 +161,32 @@ class EMA:
     def update(self, model: PoseModel) -> None:
         self.updates += 1
         decay = min(self.decay, (1 + self.updates) / (10 + self.updates))
-        for averaged, p in zip(self.model.parameters(), model.parameters()):
-            averaged.lerp_(p, 1 - decay)  # decay * averaged + (1 - decay) * p
+        # decay * averaged + (1 - decay) * p, for all parameters in a few kernels (one per parameter on a GPU is slow)
+        torch._foreach_lerp_(list(self.model.parameters()), list(model.parameters()), 1 - decay)
         for averaged, b in zip(self.model.buffers(), model.buffers()):
             averaged.copy_(b)
+
+
+class DeviceLoader:
+    """Batches of the poses `data` [N, ...] kept on `device`: every pass a permutation drawn on the device (with its
+    random generator, so that a resumed run continues the stream), sliced into batches of batch_size (the last one
+    smaller), as DataLoader(shuffle=shuffle) gives them, or in order with shuffle=False. `dataset` is kept for len()."""
+
+    def __init__(self, dataset, batch_size: int, shuffle: bool, device):
+        data = getattr(dataset, "data", None)
+        if not torch.is_tensor(data) or getattr(dataset, "feat_for_conditioning", None) is not None:
+            raise ValueError("data_on_device needs a dataset with a pose tensor `.data` and no conditioning.")
+        self.dataset, self.batch_size, self.shuffle = dataset, batch_size, shuffle
+        self.data = data.to(device)
+
+    def __len__(self) -> int:
+        return math.ceil(len(self.data) / self.batch_size)
+
+    def __iter__(self):
+        n = len(self.data)
+        order = torch.randperm(n, device=self.data.device) if self.shuffle else None
+        for i in range(0, n, self.batch_size):
+            yield self.data[i:i + self.batch_size] if order is None else self.data[order[i:i + self.batch_size]]
 
 
 class Trainer:
@@ -183,10 +223,19 @@ class Trainer:
             self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, factor)
         elif c.scheduler != "none":
             raise ValueError(f"Unknown scheduler '{c.scheduler}'. Use 'step', 'cosine' or 'none'.")
-        self.train_loader = DataLoader(train_set, batch_size=c.batch_size, shuffle=True, num_workers=c.num_workers)
+        if c.data_on_device:
+            self.train_loader = DeviceLoader(train_set, c.batch_size, True, c.device)
+        else:
+            self.train_loader = DataLoader(train_set, batch_size=c.batch_size, shuffle=True, num_workers=c.num_workers)
         self.valid_loader = None
         if valid_set is not None:
-            self.valid_loader = DataLoader(valid_set, batch_size=c.batch_size, shuffle=False, num_workers=c.num_workers)
+            if c.data_on_device:
+                self.valid_loader = DeviceLoader(valid_set, c.batch_size, False, c.device)
+            else:
+                self.valid_loader = DataLoader(valid_set, batch_size=c.batch_size, shuffle=False, num_workers=c.num_workers)
+        if torch.device(c.device).type == "cuda":  # a process-wide switch: set it either way, so a run says what it used
+            torch.backends.cuda.matmul.allow_tf32 = c.tf32
+            torch.backends.cudnn.allow_tf32 = c.tf32
         self.run_dir = None if run_dir is None else Path(run_dir)
         self.writer = writer
         self.history = History()

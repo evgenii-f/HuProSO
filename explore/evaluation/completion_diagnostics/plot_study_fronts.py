@@ -28,11 +28,17 @@ from hp.visualization.fronts import draw_front  # noqa: E402
 STUDIES = {  # name: (label, colour, marker)
     "rsgm_inpaint_mean_apd_residual": ("RSGM abl residual, inpainting", "tab:blue", "o"),
     "rsgm_inpaint_mean_apd_norm": ("RSGM abl norm, inpainting", "tab:cyan", "o"),
+    "rsgm_inpaint_mean_apd_norm_aniso": ("RSGM abl norm aniso, inpainting", "navy", "P"),
     "rsgm_inpaint_mean_apd_deep": ("RSGM deep, inpainting", "tab:purple", "o"),
     "rsgm_inpaint_mean_apd_search_lik_full": ("RSGM 1536x6 lik full, inpainting", "tab:gray", "o"),
     "rsgm_inpaint_pareto": ("RSGM small, inpainting (mean / best of 10)", "tab:green", "o"),
     "dposer_c10_inpaint_mean_apd": ("DPoser c10, inpainting", "tab:red", "s"),
     "dposer_c10_method_mean_apd": ("DPoser c10, DPoser's method", "tab:orange", "^"),
+    "rsgm_inpaint_mean_apd_full_dposer_like": ("RSGM dposer-like full, inpainting", "tab:olive", "D"),
+    "rsgm_inpaint_mean_apd_full_dposer_like_aniso": ("RSGM dposer-like aniso full, inpainting", "darkgreen", "P"),
+    "rsgm_inpaint_mean_apd_full_small":("RSGM small full, inpainting", "tab:brown", "D"),
+    "dposer_full_method_mean_apd": ("DPoser full, DPoser's method", "tab:pink", "v"),
+    "dposer_full_inpaint_mean_apd": ("DPoser full, inpainting", "black", "s"),
 }
 RULE_APD = 6.40  # D-Flow Heun EDM 50 of small std c10 on the same poses
 PANELS = (("mean", "mean MPVPE (mm) ↓"), ("best_of_k", "best of 10 MPVPE (mm) ↓"))

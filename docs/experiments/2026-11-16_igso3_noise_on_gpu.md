@@ -21,8 +21,9 @@ the GPU without changing what is learned or sampled?
   that were started at the same time ran at 2-3 it/s, so a 30k-step run would take hours.
 - **The same model.** On cuda the training loss has the same distribution as on the CPU path (a test over the 4
   weighting x noise variants), and the validation loss is the same number. Training curves agree within 0.02 nats
-  at 1k-6k steps. Inpainting metrics agree over 8 seeds (no significant difference in 15 comparisons). The float32
-  sampler matches float64 to about 6e-8 on average.
+  at 1k-6k steps. After 30k steps three runs end within 0.002-0.011 nats of their CPU-path twins, against a gap of
+  0.008 nats between two seeds of the same run. Inpainting metrics agree over 8 seeds (no significant difference in
+  15 comparisons). The float32 sampler matches float64 to about 6e-8 on average.
 - **Decision.** Merged into dev (2aaf2e8). All new trainings and inpainting studies run on the new path.
   `RSGM.noise_on_cpu = True` restores the old path for comparisons.
 
@@ -122,6 +123,20 @@ Validation loss of `abl_aniso` seed 11 during training (nats; the old path from 
 | noise on CPU | 2.03 | 1.83 | 1.74 | 1.69 | 1.67 | 1.64 |
 | noise on GPU | 2.03 | 1.81 | 1.72 | 1.68 | 1.66 | 1.64 |
 
+Final validation loss after 30k steps, the same configs and seeds on the two paths (nats; `history.json` of each
+run, workstation1, cuda; the configs differ only in `run_root`):
+
+| run | noise on CPU | noise on GPU | difference |
+|---|---|---|---|
+| `abl_aniso`, seed 11 | 1.5470 | 1.5486 | +0.0016 |
+| `abl_residual_aniso`, seed 10 | 1.5406 | 1.5514 | +0.0108 |
+| `abl_norm_aniso`, seed 10 | 1.5516 | 1.5562 | +0.0046 |
+
+For scale: `abl_aniso` seeds 10 and 11, both on the CPU path, end at 1.5389 and 1.5470 (0.0081 apart). The GPU
+runs end higher in all three rows (mean +0.006 nats). Three of three with the same sign is not evidence of a shift
+(p = 0.25, two-sided sign test). Two of the differences are within the seed gap; `abl_residual_aniso` is slightly above
+it. A systematic shift of the order of 0.005 nats cannot be excluded with one seed per path.
+
 The CUDA tests pass on bigmama (8 passed): the loss in all four variants and the float32 sampler on cuda.
 
 Inpainting, 300 validation poses, K = 10, mean +- std over 8 seeds (`2026-11-16_igso3_noise_on_gpu_inpainting.json`):
@@ -174,8 +189,9 @@ Precision of the sampler (400k draws per s, `2026-11-16_igso3_noise_on_gpu_bench
 
 ## What it does not show
 
-- Final validation loss of the old path for the same run: the CPU-path runs of `abl_aniso` s11, `abl_residual_aniso`
-  and `abl_norm_aniso` are still training on workstation1. Only 1k-6k steps are compared so far.
+- The final validation loss is compared on one seed per path for three configs. A shift smaller than about
+  0.01 nats would need several seeds per path to detect. The finished models were not compared in completion or
+  denoising.
 - Inpainting metrics on cuda were not compared (only on mps). The code path is the same (float32 on the device),
   and the sampler on cuda passes its tests.
 - One network size in the benchmark (MLP 512 x 4) and one GPU type (RTX 4090). Larger networks gain less in relative
@@ -191,6 +207,6 @@ Precision of the sampler (400k draws per s, `2026-11-16_igso3_noise_on_gpu_bench
 - Outputs: [2026-11-16_igso3_noise_on_gpu_benchmark.txt](2026-11-16_igso3_noise_on_gpu_benchmark.txt),
   [2026-11-16_igso3_noise_on_gpu_inpainting.json](2026-11-16_igso3_noise_on_gpu_inpainting.json).
 - Runs of the new path: `~/data/experiments/igso_speed/rsgm_posedflow_{abl_aniso_s11,abl_residual_aniso_s10,abl_norm_aniso_s10}`
-  (on the Mac and on workstation1). Runs of the old path: `~/data/experiments/rsgm_posedflow_abl_*_s1{0,1}`
-  (workstation1; `abl_aniso_s10` also on the Mac).
+  (on the Mac and on workstation1). Runs of the old path: the same three in `~/data/experiments/cpu_noise/` (on the
+  Mac; on workstation1 in `~/data/experiments/`), and `~/data/experiments/rsgm_posedflow_abl_aniso_s10`.
 - Branch: `experimental/igso_gpu` (merged into dev, 2aaf2e8).

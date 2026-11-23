@@ -54,7 +54,8 @@ def make_run_dir(root, name: str) -> Path:
 # What may be changed when a run is resumed: where the data is (the same data: the trainer checks its size), how it
 # is loaded, the device, how often things are written. Everything else (the data split, the model, the optimization)
 # must stay as the run had it.
-RESUMABLE = ("data.rotations", "data.load_dtype", "tensorboard", "train.device", "train.num_workers", "train.progress",
+RESUMABLE = ("data.rotations", "data.load_dtype", "tensorboard", "train.device", "train.num_workers", "train.data_on_device",
+             "train.tf32", "train.progress",
              "train.checkpoint_every", "train.keep_last", "train.keep_best", "train.time_limit_minutes")
 
 

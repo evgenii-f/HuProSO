@@ -26,6 +26,7 @@ Three procedures:
 The joints J come from Skeleton (forward kinematics of the rest joints of SMPL-X with betas 0: the pose blend shapes
 do not move the joints), the vertices V for DPoser's temporal term from the body model.
 """
+import copy
 from pathlib import Path
 from typing import Optional, Sequence
 
@@ -81,10 +82,12 @@ def to_body(x: torch.Tensor, joints: Optional[Sequence[int]]) -> torch.Tensor:
 
 def dflow_denoise(prior, skeleton: Skeleton, noisy: torch.Tensor, joints: Optional[Sequence[int]] = None,
                   steps: int = 300, lr: float = 0.25, temp_weight: float = 1e-2, running_weight: float = 1e-5,
-                  alpha: float = 0.75, optimizer: Optional[str] = None) -> torch.Tensor:
+                  guess_weight: float = 0.75, optimizer: Optional[str] = None) -> torch.Tensor:
     """Poses [S, T, 21, 3, 3] of S sequences of T frames of noisy joints [S, T, 22, 3] by D-Flow on `prior`
-    (hp.models.dflow.prior_of); `joints`: the body joints of the prior (None: all 21). optimizer (hp.models.dflow.dflow):
-    None is theirs, "riemannian", for the priors on SO(3)^J, and "adam" for DPoser's Euclidean latent."""
+    (hp.models.dflow.prior_of); `joints`: the body joints of the prior (None: all 21). guess_weight: w of the start
+    sqrt(w) guess + sqrt(1 - w) noise (theirs: 0.75 in denoising, 0.25 in completion), used for this call only.
+    optimizer (hp.models.dflow.dflow): None is theirs, "riemannian", for the priors on SO(3)^J, and "adam" for DPoser's
+    Euclidean latent."""
     if optimizer is None:
         optimizer = "adam" if isinstance(prior, DPoserPrior) else "riemannian"
     s, t = noisy.shape[:2]
@@ -92,7 +95,9 @@ def dflow_denoise(prior, skeleton: Skeleton, noisy: torch.Tensor, joints: Option
     noisy = noisy.to(device, dtype)
     skeleton = skeleton.to(device)
     rest = torch.eye(3, device=device, dtype=dtype).repeat(s * t, prior.joints, 1, 1)
-    start = prior.start(rest, alpha)
+    weighted = copy.copy(prior)  # the prior with this guess_weight; the caller's prior is left as it is
+    weighted.guess_weight = guess_weight
+    start = weighted.start(rest)
 
     def loss_fn(x1):
         body = to_body(x1, joints)
