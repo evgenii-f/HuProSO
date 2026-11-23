@@ -92,7 +92,7 @@ class Embedded(torch.nn.Module):
     def coefficients(self, t: torch.Tensor) -> torch.Tensor:
         """c(t) [K, B, entries], linear in log s between bin centres."""
         b = self.bins
-        u = b.ref.s(t.double()).log()
+        u = b.ref.s(t.detach().cpu().double()).log()  # in float64 on the CPU (mps has no float64)
         pos = ((u - b.centres[0]) / (b.centres[1] - b.centres[0])).clamp(0, len(b.centres) - 1)
         lo = pos.floor().long().clamp(max=len(b.centres) - 2)
         a = (pos - lo).to(self.c)[None, :, None]
