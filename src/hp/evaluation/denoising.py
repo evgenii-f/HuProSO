@@ -15,8 +15,9 @@ joints (mm, the pelvis included, its error 0) averaged over all frames.
   joints (the input). In mm.
 """
 import json
+import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import roma
@@ -159,13 +160,18 @@ def summary(m: Dict[str, np.ndarray]) -> Dict[str, float]:
 
 def run(model, gt: torch.Tensor, noisy: torch.Tensor, sigma: float, body: Body, method: str = "dflow",
         batch: int = 10, seed: int = 0, progress: bool = True, prior: Optional[dict] = None,
-        **settings) -> torch.Tensor:
+        partial: Optional[Path] = None, key: str = "", stop: Optional[Callable[[], bool]] = None,
+        **settings) -> Optional[torch.Tensor]:
     """Denoised sequences [N, T, 21, 3, 3] of noisy joints [N, T, 22, 3].
 
     method "dflow": D-Flow on `model` (hp.models.dflow.prior_of; prior: its options, e.g. dict(sampler="heun",
     schedule="edm", ode_steps=25)) with POSEDFLOW_SETTINGS[sigma] updated by `settings`; "dposer": DPoser's
     optimization with DPOSER_SETTINGS[sigma] updated by `settings`, model a DPoser or None (no prior). `batch`
-    sequences at a time; the random draws of a batch from torch.manual_seed(seed + index of its first sequence)."""
+    sequences at a time; the random draws of a batch from torch.manual_seed(seed + index of its first sequence).
+
+    With `partial` (a file), the predictions are saved there after every batch with `key`, and a run with the same
+    key continues after the last saved batch; the batches are seeded on their own, so the result is that of a run
+    without a stop. `stop()` is asked after every batch: True ends the run (None returned, the file kept)."""
     from hp.models.motion_denoising import dflow_denoise, dposer_denoise, mean_pose
 
     out = torch.empty(*gt.shape)
@@ -182,7 +188,16 @@ def run(model, gt: torch.Tensor, noisy: torch.Tensor, sigma: float, body: Body, 
         start = mean_pose(conf.pop("mean_pose", "~/data/experiments/denoising/smpl_mean_params.npz"))
     else:
         raise ValueError(f"Unknown denoising method '{method}'. Use 'dflow' or 'dposer'.")
-    for first in range(0, len(gt), batch):
+    done = 0
+    if partial is not None and partial.is_file():
+        saved = torch.load(partial, weights_only=True)
+        if saved["key"] == key and saved["batch"] == batch:
+            done = int(saved["done"])
+            out[:done] = saved["pred"][:done].float()
+            if progress:
+                print(f"  continues after sequence {done} / {len(gt)}", flush=True)
+    t0 = time.time()
+    for first in range(done, len(gt), batch):
         y = noisy[first:first + batch]
         torch.manual_seed(seed + first)
         if method == "dflow":
@@ -193,11 +208,28 @@ def run(model, gt: torch.Tensor, noisy: torch.Tensor, sigma: float, body: Body, 
             bm = body.model.to(device)
             x = dposer_denoise(bm, y.to(device), init, model, joints, **conf)
         out[first:first + len(y)] = x.detach().float().cpu()
+        now = first + len(y)
+        if partial is not None and now < len(gt):
+            partial.parent.mkdir(parents=True, exist_ok=True)
+            tmp = partial.with_suffix(".partial_tmp")
+            torch.save({"key": key, "batch": batch, "done": now, "pred": out[:now].clone()}, tmp)
+            tmp.replace(partial)
         if progress:
-            print(f"\r  sequences {first + len(y)} / {len(gt)}", end="", flush=True)
+            spent = time.time() - t0
+            eta = spent / (now - done) * (len(gt) - now)
+            print(f"\r  sequences {now} / {len(gt)}, {_clock(spent)} spent, {_clock(eta)} left  ", end="", flush=True)
+        if stop is not None and now < len(gt) and stop():
+            if progress:
+                print(f"\n  stopped after sequence {now} / {len(gt)}, saved in {partial}", flush=True)
+            return None
     if progress:
         print(flush=True)
     return out
+
+
+def _clock(seconds: float) -> str:
+    m, s = divmod(int(seconds), 60)
+    return f"{m // 60}h{m % 60:02d}m" if m >= 60 else f"{m}m{s:02d}s"
 
 
 def identity(spec: dict) -> dict:
@@ -222,34 +254,84 @@ def cache_path(cache, label: str, split: str, sigma: float) -> Path:
     return Path(cache).expanduser() / label.replace("/", "_").replace(" ", "_") / f"{split}_{round(sigma * 1000)}mm.pt"
 
 
+class OtherSettings(Exception):
+    """A cached result of a label was made with other settings (or other weights or sequences), and is to be kept."""
+
+
+def settings_of(spec: dict, sigma: float, **overrides) -> dict:
+    """The settings of a spec at a noise level: spec["settings"] is one dict for every noise level or {sigma: dict}."""
+    settings = spec.get("settings", {})
+    per_sigma = any(isinstance(k, float) for k in settings)
+    return {**(settings.get(sigma, {}) if per_sigma else settings), **overrides}
+
+
+def run_key(spec: dict, split: str, sigma: float, names: List[str], settings: dict) -> dict:
+    """What a cached result depends on (compared as JSON)."""
+    return json.loads(json.dumps({"model": identity(spec), "split": split, "sigma": sigma, "names": names,
+                                  "settings": settings, "version": METRICS_VERSION}))
+
+
+def split_sequences(split: str, sequences_file: str = "~/data/experiments/denoising/sequences.pt",
+                    first: Optional[int] = None, n_valid: int = 100) -> Tuple[torch.Tensor, List[str]]:
+    """The sequences of a split (`n_valid` of the validation draw), only the `first` n if given: the noise is seeded
+    by the index of a sequence, so the first n get the noise they get in the whole split."""
+    gt, names = sequences(split, sequences_file, n_valid=n_valid)
+    return (gt, names) if first is None else (gt[:first], names[:first])
+
+
+def cache_state(cache, label: str, spec: dict, split: str, sigma: float,
+                sequences_file: str = "~/data/experiments/denoising/sequences.pt", first: Optional[int] = None,
+                n_valid: int = 100, **overrides) -> str:
+    """"done" (cached with these settings), "other" (cached with others), "partial" (a stopped run of these settings
+    to continue) or "missing"."""
+    path = cache_path(cache, label, split, sigma)
+    _, names = split_sequences(split, sequences_file, first, n_valid)
+    key = run_key(spec, split, sigma, names, settings_of(spec, sigma, **overrides))
+    if path.is_file():
+        return "done" if json.loads(torch.load(path, weights_only=True)["key"]) == key else "other"
+    partial = path.with_suffix(".partial")
+    if partial.is_file() and torch.load(partial, weights_only=True).get("key") == json.dumps(key):
+        return "partial"
+    return "missing"
+
+
 def cached_run(cache, label: str, spec: dict, split: str, sigma: float, device: Optional[str], batch: int = 10,
                sequences_file: str = "~/data/experiments/denoising/sequences.pt",
-               **overrides) -> Optional[Dict[str, np.ndarray]]:
-    """The per-frame metrics of a spec (model, method "dflow"/"dposer", prior options, settings) on a split and a
-    noise level, from cache/<label>/<split>_<sigma>mm.pt if made with the same settings; otherwise computed (on
-    `device`; None: only read) and saved with the predictions. spec["settings"] is one dict for every noise level
-    or a dict {sigma: settings}."""
+               stop: Optional[Callable[[], bool]] = None, first: Optional[int] = None, n_valid: int = 100,
+               overwrite: bool = True, force: bool = False, **overrides) -> Optional[Dict[str, np.ndarray]]:
+    """The per-frame metrics of a spec (model, method "dflow"/"dposer", prior options, settings) on a split (its
+    `first` n sequences if given) and a noise level, from cache/<label>/<split>_<sigma>mm.pt if made with the same
+    settings; otherwise computed (on `device`; None: only read) and saved with the predictions. spec["settings"] is
+    one dict for every noise level or a dict {sigma: settings}. A result made with other settings is replaced, unless
+    `overwrite` is False (then OtherSettings is raised); `force` computes it again in any case. The predictions in
+    progress are kept in <split>_<sigma>mm.partial after every batch, so a run stopped by `stop()` (None returned) or
+    killed continues from there."""
     path = cache_path(cache, label, split, sigma)
-    gt, names = sequences(split, sequences_file)
-    settings = spec.get("settings", {})
-    settings = {**settings.get(sigma, {} if any(isinstance(k, float) for k in settings) else settings), **overrides}
-    key = json.loads(json.dumps({"model": identity(spec), "split": split, "sigma": sigma, "names": names,
-                                 "settings": settings, "version": METRICS_VERSION}))
-    if path.is_file():
+    gt, names = split_sequences(split, sequences_file, first, n_valid)
+    settings = settings_of(spec, sigma, **overrides)
+    key = run_key(spec, split, sigma, names, settings)
+    if path.is_file() and not force:
         saved = torch.load(path, weights_only=True)
         if json.loads(saved["key"]) == key:
             return {k: v.numpy() for k, v in saved["metrics"].items()}
+        if not overwrite:
+            raise OtherSettings(f"{label} / {split} / {sigma}")
         print(f"  {label} / {split} / {sigma}: cached with other settings")
     if device is None:
         return None
     body = Body(device=device)
     noisy = noisy_joints(gt_joints(gt, body), sigma)
     model = build(spec, device)
-    pred = run(model, gt, noisy, sigma, body, spec.get("method", "dflow"), batch, prior=spec.get("prior"), **settings)
+    partial = path.with_suffix(".partial")
+    pred = run(model, gt, noisy, sigma, body, spec.get("method", "dflow"), batch, prior=spec.get("prior"),
+               partial=partial, key=json.dumps(key), stop=stop, **settings)
+    if pred is None:
+        return None
     m = metrics(pred, gt, noisy, body)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
     torch.save({"key": json.dumps(key), "pred": pred.half(), "metrics": {k: torch.from_numpy(v) for k, v in m.items()}},
                tmp)
     tmp.replace(path)
+    partial.unlink(missing_ok=True)
     return m

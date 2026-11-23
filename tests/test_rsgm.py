@@ -761,40 +761,7 @@ def test_lognormal_weighting_draws_log_s_from_the_truncated_normal():
         build_model("rsgm", num_joints=1, hidden=[8], weighting="lognormal", loss_log_s_std=0.0)
 
 
-# ---- the Wigner D-matrices of the joints (inputs="local+wigner") ----
-
-@pytest.mark.parametrize("l", [1, 2, 3])
-def test_the_wigner_matrices_are_an_orthogonal_representation(l):
-    from hp.models.rsgm import wigner_d
-
-    g = torch.Generator().manual_seed(l)
-    r1, r2 = (roma.random_rotmat(500, generator=g, dtype=torch.float64) for _ in range(2))
-    d1, d2, d12 = wigner_d(r1, l), wigner_d(r2, l), wigner_d(r1 @ r2, l)
-    eye = torch.eye(2 * l + 1, dtype=torch.float64)
-    assert d1.shape == (500, 2 * l + 1, 2 * l + 1)
-    assert torch.allclose(d12, d1 @ d2, atol=1e-10)  # D(R1 R2) = D(R1) D(R2)
-    assert torch.allclose(d1 @ d1.transpose(-1, -2), eye.expand_as(d1), atol=1e-10)
-    assert torch.allclose(wigner_d(torch.eye(3, dtype=torch.float64), l), eye, atol=1e-10)
-
-
-def test_the_first_wigner_matrix_is_the_rotation_in_the_order_y_z_x():
-    from hp.models.rsgm import wigner_d
-
-    r = roma.random_rotmat(100, generator=torch.Generator().manual_seed(0), dtype=torch.float64)
-    order = [1, 2, 0]  # the real harmonics of degree 1 are y, z, x
-    assert torch.allclose(wigner_d(r, 1), r[:, order][:, :, order], atol=1e-10)
-
-
-def test_the_wigner_entries_are_orthogonal_over_the_haar_measure():
-    """Schur orthogonality: E[D^l_mn D^l'_m'n'] = delta / (2l + 1) for uniform rotations, so the entries of different
-    degrees are uncorrelated and none is a function of the others."""
-    from hp.models.rsgm import wigner_d
-
-    n = 200_000
-    r = roma.random_rotmat(n, generator=torch.Generator().manual_seed(1), dtype=torch.float64)
-    f = torch.cat([wigner_d(r, l).reshape(n, -1) * math.sqrt(2 * l + 1) for l in (1, 2, 3)], dim=1)  # [n, 83]
-    gram = f.T @ f / n
-    assert torch.allclose(gram, torch.eye(83, dtype=torch.float64), atol=0.03)
+# ---- the Wigner inputs of RSGM (the harmonics themselves: tests/test_so3_harmonics.py) ----
 
 
 def test_wigner_inputs_keep_the_divergence_exact():
@@ -826,30 +793,8 @@ def test_a_timeres_model_with_wigner_inputs_has_finite_losses_and_gradients():
     assert torch.isfinite(model.score(x, torch.full((64,), 0.1))).all()
 
 
-def test_the_pair_harmonics_are_the_contracted_products_of_the_two_joints():
-    """D^l(G_i^T G_k) = D^l(G_i)^T D^l(G_k) = sum_m D^l_mn(G_i) D^l_mn'(G_k): the two-body products of the joints'
-    harmonics, contracted; the joints are the named pairs and the root."""
-    from hp.models.rsgm import WIGNER_PAIRS, global_rotations, pair_wigner_features, wigner_d
-
-    x = poses19(4, dtype=torch.float64)
-    f = pair_wigner_features(x)
-    assert f.shape == (4, (J19 + len(WIGNER_PAIRS)) * (9 + 25 + 49))
-    g = global_rotations(x)
-    names = [j.name for j in AmassJoints4Learning]
-    a, b = names.index("LeftLeg"), names.index("RightLeg")
-    p = len(WIGNER_PAIRS)  # the layout: the joints' blocks of l = 1, 2, 3, then the pairs' blocks of l = 1, 2, 3
-    joints2 = f[:, J19 * 9:J19 * (9 + 25)].reshape(4, J19, 5, 5)
-    start = J19 * 83 + p * 9
-    pairs2 = f[:, start:start + p * 25].reshape(4, p, 5, 5)
-    knees = list(WIGNER_PAIRS).index(("LeftLeg", "RightLeg"))
-    assert torch.allclose(pairs2[:, knees], wigner_d(g[:, a], 2).transpose(-1, -2) @ wigner_d(g[:, b], 2), atol=1e-10)
-    assert torch.allclose(joints2[:, a], wigner_d(g[:, a], 2), atol=1e-10)  # a joint with the root: its own G
-    with pytest.raises(ValueError, match="inputs"):
-        build_model("rsgm", num_joints=3, inputs="local+wigner+pairs")
-
-
 def test_pair_inputs_keep_the_divergence_exact():
-    from hp.models.rsgm import WIGNER_PAIRS
+    from hp.models.so3_harmonics import WIGNER_PAIRS
 
     torch.manual_seed(0)
     model = build_model("rsgm", num_joints=J19, hidden=[16], inputs="local+wigner+pairs").double()
@@ -868,10 +813,11 @@ def test_pair_inputs_keep_the_divergence_exact():
 
 def test_the_pair_control_with_l1_is_the_rotations_of_the_joints_and_pairs():
     """inputs="local+pairs": D^1 of G_j and of G_i^T G_k, i.e. the matrices themselves in the order y, z, x."""
-    from hp.models.rsgm import WIGNER_PAIRS, global_rotations, pair_wigner_features
+    from hp.models.rsgm import global_rotations
+    from hp.models.so3_harmonics import WIGNER_PAIRS, pair_wigner_features
 
     x = poses19(3, dtype=torch.float64)
-    f = pair_wigner_features(x, (1,))
+    f = pair_wigner_features(global_rotations(x), (1,))
     p = len(WIGNER_PAIRS)
     assert f.shape == (3, (J19 + p) * 9)
     g = global_rotations(x)

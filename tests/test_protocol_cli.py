@@ -59,6 +59,39 @@ def test_the_folders_of_the_splits(tmp_path):
     assert cli.splits("all") == ["valid", "test"] and cli.splits("test") == ["test"]
 
 
+def test_like_takes_the_method_and_settings_of_a_row_or_point():
+    registry = {"R": {"run": "~/r", "method": "inpaint", "prior": {"steps": 200, "guidance": 0.06}},
+                "D": {"run": "~/d", "dflow": {"lr": 0.05}, "prior": {"ode_steps": 25}}}
+    known = {"P": {"posedflow": "~/p.ckpt", "dflow": {"steps": 300}}}
+    out = cli.models(parse("--run", "new=~/n", "--like", "R", "--set", "guidance=0.1"), registry, known=known)
+    assert out == {"new": {"run": "~/n", "method": "inpaint", "prior": {"steps": 200, "guidance": 0.1}}}
+    out = cli.models(parse("--run", "new=~/n", "--like", "D"), registry, known=known)
+    assert out["new"] == {"run": "~/n", "dflow": {"lr": 0.05}, "prior": {"ode_steps": 25}}
+    assert cli.models(parse("--run", "new=~/n", "--like", "P"), registry, known=known)["new"] == {
+        "run": "~/n", "dflow": {"steps": 300}}
+    for wrong in (parse("--like", "R"), parse("--run", "~/n", "--like", "X"),
+                  parse("--run", "~/n", "--like", "R", "--method", "dposer")):
+        with pytest.raises(cli.UsageError):
+            cli.models(wrong, registry, known=known)
+
+
+def test_quick_is_a_prefix_of_the_validation():
+    def resolved(*argv, quick=200):
+        parser = argparse.ArgumentParser()
+        cli.add_common_arguments(parser, out="/tmp/out", quick=quick)
+        args = parser.parse_args(list(argv))
+        cli.resolve_poses(args)
+        return args.split, args.poses
+
+    assert resolved() == ("test", None) and resolved("--split", "all") == ("all", None)
+    assert resolved("--quick") == ("valid", 200) and resolved("--quick", "--split", "valid") == ("valid", 200)
+    assert resolved("--quick", "--poses", "100") == ("valid", 100)
+    with pytest.raises(cli.UsageError):
+        resolved("--quick", "--split", "test")
+    with pytest.raises(SystemExit):  # a protocol without a quick check has no --quick
+        resolved("--quick", quick=None)
+
+
 def test_models_of_the_run_registry_and_points(tmp_path):
     registry = {"A": {"run": "~/a"}, "B": {"run": "~/b", "method": "dposer"}}
     points = tmp_path / "points.yaml"
@@ -71,6 +104,7 @@ def test_models_of_the_run_registry_and_points(tmp_path):
     assert list(cli.models(parse("--points", str(points)), registry)) == ["p1", "p2", "A"]
     assert list(cli.models(parse("--points", str(points), "--fronts", "F"), registry)) == ["p1", "p2"]
     assert list(cli.models(parse("--points", str(points), "--models", "p2"), registry)) == ["p2"]
+    assert list(cli.models(parse("--points", str(points), "--models", "all"), registry)) == ["A", "B", "p1", "p2"]
     assert cli.recorded(str(points)) == {"p1": {"mean": 1}}
     for wrong in (parse("--models", "C"), parse("--set", "lr=1"), parse(), parse("--fronts", "F"),
                   parse("--run", "A=~/other")):
@@ -134,6 +168,10 @@ def test_other_settings_are_kept_unless_recompute(fake, capsys):
     assert "legs other" in capsys.readouterr().out and len(calls) == 1
     evaluate.main(base + ["--set", "lr=0.05", "--recompute"])
     assert len(calls) == 2 and calls[1][2]["lr"] == 0.05
+    evaluate.main(base + ["--set", "lr=0.05"])  # finished: skipped
+    assert len(calls) == 2
+    evaluate.main(base + ["--set", "lr=0.05", "--force"])  # computed again all the same
+    assert len(calls) == 3
 
 
 def test_a_quick_check_goes_to_a_folder_of_its_own(fake):
@@ -141,6 +179,14 @@ def test_a_quick_check_goes_to_a_folder_of_its_own(fake):
     evaluate.main(["completion", "--run", f"mine={run}", "--poses", "2", "--out", str(out), "--occlusions", "arms",
                    "--k", "1", "--device", "cpu", "--no-metrics"])
     assert (out / "test_first2" / "mine" / "arms.pt").is_file() and not (out / "mine").exists()
+
+
+def test_quick_runs_the_first_validation_poses(fake, capsys):
+    evaluate, run, out, calls = fake
+    evaluate.main(["completion", "--run", f"mine={run}", "--quick", "--poses", "3", "--out", str(out),
+                   "--occlusions", "arms", "--k", "1", "--device", "cpu"])
+    assert calls[0][0] == 3 and (out / "valid_first3" / "mine" / "arms.pt").is_file()
+    assert "valid: 3 poses" in capsys.readouterr().out
 
 
 def test_the_old_command_runs_the_registry_on_the_test(fake, monkeypatch):

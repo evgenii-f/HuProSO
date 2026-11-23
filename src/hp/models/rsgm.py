@@ -71,7 +71,8 @@ WIGNER_DEGREES (2 and 3: 25 + 49 numbers per joint; the matrix itself is D^1 in 
 SO(3) of higher frequency, as Fourier features of the input, which a plain MLP finds hard to build from the 9 matrix
 numbers (its bias towards low frequencies), while the score at small noise changes fast. They are taken in the real
 basis of the orthonormal real spherical harmonics, D^l(R) = Y_l(R p) Y_l(p)^+ on fixed points p of the sphere
-(wigner_d): exact, polynomials of degree l in the entries of R, orthogonal, and D^l(R1 R2) = D^l(R1) D^l(R2).
+(hp.models.so3_harmonics.wigner_d): exact, polynomials of degree l in the entries of R, orthogonal, and
+D^l(R1 R2) = D^l(R1) D^l(R2).
 inputs = "local+wigner+pairs" adds to those the products of the harmonics of joints that are not neighbours in the
 tree, contracted as in the two-body terms of the atomic cluster expansion: D^l(G_i^T G_k) = D^l(G_i)^T D^l(G_k), the
 sum over m of the products of the harmonics of the two joints, for l = 1, 2, 3, with G the rotations relative to the
@@ -94,6 +95,7 @@ from torch.func import jacfwd, vmap
 from hp.data.amass_cfg import AmassJoints4Learning
 from hp.models import conditioning, igso3
 from hp.models.score_nets import TimeResNet
+from hp.models.so3_harmonics import WIGNER_PAIRS, pair_wigner_features, wigner_features
 from hp.models.base import PoseModel
 from hp.models.conditioning import move  # noqa: F401  (also imported from here by other models)
 from hp.models.registry import register_model
@@ -143,67 +145,10 @@ def global_rotations(x: torch.Tensor) -> torch.Tensor:
     return torch.stack(out, dim=-3)
 
 
-WIGNER_DEGREES = (2, 3)  # inputs="local+wigner": the degrees l of D^l(x_j) next to the matrices (D^1)
-
-
-def real_harmonics(v: torch.Tensor, l: int) -> torch.Tensor:
-    """The orthonormal real spherical harmonics Y_lm, m = -l..l, of unit vectors v [..., 3, K], as [..., 2l+1, K]
-    (l = 1, 2, 3)."""
-    x, y, z = v[..., 0, :], v[..., 1, :], v[..., 2, :]
-    pi = math.pi
-    if l == 1:
-        c = math.sqrt(3 / (4 * pi))
-        ys = [c * y, c * z, c * x]
-    elif l == 2:
-        a, b = 0.5 * math.sqrt(15 / pi), 0.25 * math.sqrt(5 / pi)
-        ys = [a * x * y, a * y * z, b * (3 * z * z - 1), a * x * z, 0.5 * a * (x * x - y * y)]
-    elif l == 3:
-        a, b = 0.25 * math.sqrt(35 / (2 * pi)), 0.5 * math.sqrt(105 / pi)
-        c, d = 0.25 * math.sqrt(21 / (2 * pi)), 0.25 * math.sqrt(7 / pi)
-        ys = [a * y * (3 * x * x - y * y), b * x * y * z, c * y * (5 * z * z - 1), d * z * (5 * z * z - 3),
-              c * x * (5 * z * z - 1), 0.5 * b * z * (x * x - y * y), a * x * (x * x - 3 * y * y)]
-    else:
-        raise ValueError(f"real_harmonics has the degrees 1, 2 and 3, got {l}.")
-    return torch.stack(ys, dim=-2)
-
-
-# fixed points on the sphere and the pseudo-inverses of their harmonics [K, 2l+1], for wigner_d
-_WIGNER_POINTS = torch.nn.functional.normalize(
-    torch.randn(3, 32, dtype=torch.float64, generator=torch.Generator().manual_seed(0)), dim=0)
-_WIGNER_PINV = {l: torch.linalg.pinv(real_harmonics(_WIGNER_POINTS, l)) for l in (1, 2, 3)}
-
-
-def wigner_d(r: torch.Tensor, l: int) -> torch.Tensor:
-    """The real Wigner D-matrix D^l(r) [..., 2l+1, 2l+1] of rotations r [..., 3, 3]: Y_l(r p) = D^l(r) Y_l(p) for
-    every point p of the sphere (the harmonics of degree l span a space that rotations map to itself), solved on fixed
-    points. Plain out-of-place ops, so that torch.func can vmap and differentiate it."""
-    p = _WIGNER_POINTS.to(device=r.device, dtype=r.dtype)
-    return real_harmonics(r @ p, l) @ _WIGNER_PINV[l].to(device=r.device, dtype=r.dtype)
-
-
-def wigner_features(x: torch.Tensor, degrees: Sequence[int] = WIGNER_DEGREES) -> torch.Tensor:
-    """The entries of D^l(x_j) for l in degrees, [B, J * sum (2l+1)^2], of poses x [B, J, 3, 3]."""
-    return torch.cat([wigner_d(x, l).reshape(x.shape[0], -1) for l in degrees], dim=1)
-
-
-# inputs="local+wigner+pairs": pairs of joints (AmassJoints4Learning names) that are not parent and child: left and
-# right, and the siblings that are not left and right (the children of the root and of Spine2)
-WIGNER_PAIRS = (("LeftUpLeg", "RightUpLeg"), ("LeftLeg", "RightLeg"), ("LeftFoot", "RightFoot"),
-                ("LeftShoulder", "RightShoulder"), ("LeftArm", "RightArm"), ("LeftElbow", "RightElbow"),
-                ("LeftHand", "RightHand"), ("LeftUpLeg", "Spine0"), ("RightUpLeg", "Spine0"),
-                ("Neck", "LeftShoulder"), ("Neck", "RightShoulder"))
-_NAMES = [joint.name for joint in AmassJoints4Learning]
-_PAIR_INDEX = tuple((_NAMES.index(a), _NAMES.index(b)) for a, b in WIGNER_PAIRS)
+# the harmonics of SO(3) (hp.models.so3_harmonics): the degrees of the inputs "local+wigner" (D^l(x_j) next to the
+# matrices, D^1) and of the pairs of "local+wigner+pairs"
+WIGNER_DEGREES = (2, 3)
 PAIR_DEGREES = (1, 2, 3)
-
-
-def pair_wigner_features(x: torch.Tensor, degrees: Sequence[int] = PAIR_DEGREES) -> torch.Tensor:
-    """The entries of D^l(G_j) for every joint and of D^l(G_i^T G_k) for the pairs of WIGNER_PAIRS, l in degrees,
-    [B, (19 + len(WIGNER_PAIRS)) * sum (2l+1)^2], of poses x [B, 19, 3, 3] (G = global_rotations(x))."""
-    g = global_rotations(x)
-    i, k = (list(v) for v in zip(*_PAIR_INDEX))
-    rel = g[:, i].transpose(-1, -2) @ g[:, k]
-    return torch.cat([wigner_features(g, degrees), wigner_features(rel, degrees)], dim=1)
 
 
 @torch.no_grad()
@@ -554,11 +499,11 @@ class RSGM(PoseModel):
             z = log_rotations(self.z_rot.to(x.dtype).transpose(-1, -2) @ x) / self.z_std.to(x.dtype)
             inputs.append(z.reshape(b, -1))
         elif self.inputs in ("local+wigner", "local+wigner+pairs"):
-            inputs.append(wigner_features(x))
+            inputs.append(wigner_features(x, WIGNER_DEGREES))
             if self.inputs == "local+wigner+pairs":
-                inputs.append(pair_wigner_features(x))
+                inputs.append(pair_wigner_features(global_rotations(x), PAIR_DEGREES))
         elif self.inputs == "local+pairs":
-            inputs.append(pair_wigner_features(x, (1,)))
+            inputs.append(pair_wigner_features(global_rotations(x), (1,)))
         if self.net_kind == "timeres":  # the time goes to every layer, as the noise level log(s) / 4
             features = torch.cat(inputs + ([] if f is None else [f]), dim=1)
             if self.net_level == "log_s":

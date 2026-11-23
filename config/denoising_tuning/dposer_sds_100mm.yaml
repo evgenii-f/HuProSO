@@ -1,0 +1,22 @@
+# DPoser (ours, retrained on their full data) in its own optimization, noise 100 mm, 100 validation sequences: tuned
+# like RSGM (rsgm_sds_100mm.yaml, 40 trials, TPE) so that the comparison does not set tuned RSGM against untuned
+# DPoser. DPoser's own settings: 3 x 80 steps, t 0.25 -> 0.1, lr 0.03, weight 1: 32.23 mm on these sequences (29.10
+# on the test). DPoser's t is its own (VP-SDE time), not RSGM's, so its range is its own; the steps are those of the
+# RSGM study (80 is DPoser's).
+# Rule for the test, fixed before it: the best trial's settings form the row "DPoser: their full, DPoser method,
+# tuned", run once on the test. The report keeps both DPoser rows and compares "ours" with the tuned one too; "ours"
+# is not chosen again.
+model: ~/data/experiments/full/dposer_posedflow_s10/run_0001
+method: dposer
+sigma: 0.1
+sequences: 100
+n_trials: 40
+params:
+  t_max: {low: 0.03, high: 0.8, log: true}
+  t_min_fraction: {low: 0.05, high: 0.9}
+  sds_weight: {low: 0.1, high: 30.0, log: true}
+  lr: {low: 0.01, high: 0.1, log: true}
+  steps_per_iter: [80, 133, 267]  # N = 3 x steps = 240 (DPoser's), ~400 (RSGM's) or ~800
+first:
+  - {t_max: 0.25, t_min_fraction: 0.4, sds_weight: 1.0, lr: 0.03, steps_per_iter: 80}   # DPoser's settings
+  - {t_max: 0.25, t_min_fraction: 0.4, sds_weight: 1.0, lr: 0.03, steps_per_iter: 133}  # the same, RSGM's budget
