@@ -44,6 +44,12 @@ DPOSER_TUNED = {0.04: dict(t_max=0.2244177443120188, t_min=0.2244177443120188 * 
                            sds_weight=0.7582837766246451, lr=0.0406711936379964, steps_per_iter=133),
                 0.1: dict(t_max=0.37543588378633885, t_min=0.37543588378633885 * 0.4846267739770443,
                           sds_weight=0.15444642587070062, lr=0.021884365766058848, steps_per_iter=267)}
+# RSGM at the budget of the tuned DPoser (config/denoising_tuning/rsgm_sds_budget_<mm>mm.yaml, RSGM 512x4 c10, steps
+# fixed at 3 x 133 / 3 x 267, 30 trials each, 2026-11-21): 40 mm trial 25, 18.62 mm; 100 mm trial 0, i.e. SDS at twice
+# the steps, 30.89 mm. The rule of those files: one row of RSGM 1536x6 at these settings, run once on the test.
+SDS_BUDGET = {0.04: dict(t_max=0.0768501009858013, t_min=0.0768501009858013 * 0.29767789851716797,
+                         sds_weight=3.4205697288594195, lr=0.03562882722479637, steps_per_iter=133),
+              0.1: dict(t_max=0.0515, t_min=0.0515 * 0.881, sds_weight=4.38, lr=0.0422, steps_per_iter=267)}
 RUNS = {
     "RSGM 512x4: their c10": "~/data/experiments/rsgm_posedflow_small_s10/run_0001",
     "RSGM 1536x6: their c10": "~/data/experiments/rsgm_posedflow_s10/run_0001",
@@ -71,6 +77,8 @@ MODELS = {
                                                    settings={sigma: dict(t_max=0.05, t_min=0.01, sds_weight=10.0)
                                                              for sigma in (0.04, 0.1)})
        for name, run in RUNS.items()},
+    "RSGM 1536x6: their c10, DPoser method, DPoser's tuned budget": dict(run=RUNS["RSGM 1536x6: their c10"],
+                                                                        method="dposer", settings=SDS_BUDGET),
     "RSGM 512x4: their c10, DPoser method, DPoser's steps": dict(run=RUNS["RSGM 512x4: their c10"], method="dposer",
                                                                 settings=SDS_DPOSER_STEPS),
     # DPoser retrained on their full data: its own optimization (the DPoser rows of their table) and D-Flow
