@@ -8,7 +8,7 @@ puts the three networks side by side and proposes the one to try.
 
 ## Summary
 
-Updated 2026-11-21 (sections 6-17). Validation numbers only; no test was run for this line of work.
+Updated 2026-11-23 (sections 6-18). Validation numbers only; no test was run for this line of work.
 
 - **Skip connections or LayerNorm in the score network remove the drift of SDS at the smallest noise** and improve the
   hybrid (DPoser's optimization with the RSGM denoiser) by 15-17 mm on the legs and 10-14 mm on the arms over a plain
@@ -81,6 +81,15 @@ Updated 2026-11-21 (sections 6-17). Validation numbers only; no test was run for
   data), 0.30 deg behind DPoser on c10 (10.94); at step 199 it is level with DPoser (11.48-11.58 against 11.52). In
   the hybrid the left leg comes within 1.0-1.9 mm of DPoser; the mean of four occlusions barely moves (80.9-81.5
   against 81.7 mm, DPoser 84.2), with narrower hypotheses than DPoser's (APD 4.2 against 5.3 cm).
+- **Harmonics of SO(3) at the input do not help, and their pair products hurt** (section 18, negative): the Wigner
+  D-matrices D^2, D^3 of every joint next to the matrices, and in addition the contracted products of the harmonics of
+  joint pairs (the two-body terms of the atomic cluster expansion), on `wide_RAD_x`. On c10 the one-body harmonics
+  gave 10.93 deg (one seed), on the full data 11.41 against 11.24 without them; the pairs 11.37. Every richer input
+  has a worse validation loss (1.639, 1.657, 1.698), narrower hypotheses (hybrid APD 4.21, 3.68, 3.36 cm) and a worse
+  best of 10 (53.9, 55.6, 59.1 mm): a more confident score, not a more accurate one. In the quick completion protocol
+  (RSGM's own SDS on SO(3) with DPoser's default settings) every RSGM is at 102-110 mm against DPoser's 84, and there
+  the per-joint and per-axis noise that helps the hybrid is worse than the isotropic noise (106.9 and 104.2 against
+  102.3 mm).
 
 ## 1. The three networks
 
@@ -998,6 +1007,99 @@ while the mean of four occlusions stays at about 81 mm, 3 mm below DPoser's at a
 best of 10: narrower hypotheses, as with every per-joint noise. Which part of the network does it (width, depth,
 residual or dropout) these runs do not separate.
 
+## 18. 2026-11-21: Harmonics of SO(3) at the input, and their pair products (negative)
+
+**Question.** The matrices at the input are the Wigner D-matrices D^1 of the joints in the real basis. Do the
+harmonics of higher degree (D^2, D^3), as Fourier features on SO(3), help the score at small noise, where the first
+phase of SDS still lags DPoser's by 0.3 deg? And the products of the harmonics of pairs of joints, the two-body terms
+of the atomic cluster expansion (ACE): a basis of the functions of two rotations, which a plain MLP has to build from
+its nonlinearities?
+
+**Method** (branch `experimental/wigner-inputs`, commits 98754db and 55b6ac8). `hp.models.rsgm.wigner_d`: the real
+D^l(R) = Y_l(R p) Y_l(p)^+ on 32 fixed points p of the sphere, with the orthonormal real spherical harmonics Y_l
+(exact polynomials of degree l in R; tests: D^l(R1 R2) = D^l(R1) D^l(R2), orthogonality, D^1 = R in the order y, z, x,
+Schur orthogonality over the Haar measure, the exact divergence). Two inputs, on `wide_RAD_x` (the network and noise
+of section 17), each pair of configs differing by the input only:
+
+- `inputs="local+wigner"` (`wide_RAD_x_wigner`): D^2(x_j), D^3(x_j) of every joint next to the matrices, 74 numbers
+  per joint, 1577 inputs instead of 171 (16.7M parameters).
+- `inputs="local+wigner+pairs"` (`wide_RAD_x_wigner_pairs`): and the contracted products D^l(G_i^T G_k) =
+  D^l(G_i)^T D^l(G_k), l = 1, 2, 3, with G the rotations relative to the root, for every joint with the root (19) and
+  for 11 pairs that are not parent and child (7 left-right: hips, knees, feet, collars, shoulders, elbows, hands; 4
+  siblings: both hips with Spine0, the neck with both collars); 4067 inputs (20.5M parameters). For a parent and a
+  child the relative rotation is x_j, already in the input.
+
+Trained on workstation2: `wide_RAD_x_wigner` on c10 (12.9 min) and on the full data (19 min), the pairs on the full
+data (37 min), seed 10.
+
+**Prediction and rules, written before the runs.** One-body harmonics (on c10, against `wide_RAD_x` c10, 11.24 deg):
+the left leg at step 100 <= 11.0 deg, they help; >= 11.15, they do not; in between, a second seed. Pairs (against the
+one-body harmonics on the full data): a gain of >= 0.2 deg at step 100 with a best of 10 in the hybrid not more than 1
+mm worse, they help; a gain < 0.1 deg or a best of 10 more than 1 mm worse, they do not. Predicted: 0 to 0.3 deg for
+the one-body harmonics, 0.1-0.3 deg for the pairs, both with a lower APD.
+
+**Phase diagnostics** (`trajectory.py`, 300 validation poses, K = 10, deg; Mac):
+
+| inputs | data | valid loss | left_leg 100 | spread 100 | left_leg 199 | arms 100 |
+|---|---|---|---|---|---|---|
+| local (`wide_RAD_x`) | c10 | 1.641 | 11.24 | 6.27 | 11.48 | 21.06 |
+| local+wigner | c10 | 1.661 | 10.93 | 5.56 | 11.06 | 20.37 |
+| local (`wide_RAD_x`) | full | 1.639 | 11.24 | 6.17 | 11.51 | 21.21 |
+| local+wigner | full | 1.657 | 11.41 | 5.74 | 11.47 | 20.93 |
+| local+wigner+pairs | full | 1.698 | 11.37 | 5.40 | 11.35 | 21.02 |
+
+**Hybrid** (`hybrid.py 500 rsgm`, 500 validation poses, K = 10; MPVPE mean (mm) / APD (cm) / best of 10 (mm)):
+
+| inputs | data | left_leg | legs | arms | trunk | mean of 4 |
+|---|---|---|---|---|---|---|
+| local | c10 | 80.4 | 98.7 | 99.6 | 44.7 | 80.9 / 4.21 / 53.6 |
+| local+wigner | c10 | 77.7 | 97.0 | 101.2 | 43.4 | 79.8 / 3.59 / 55.8 |
+| local | full | 81.3 | 100.2 | 101.5 | 43.1 | 81.5 / 4.21 / 53.9 |
+| local+wigner | full | 80.3 | 98.0 | 100.7 | 42.9 | 80.5 / 3.68 / 55.6 |
+| local+wigner+pairs | full | 79.4 | 99.4 | 104.2 | 43.9 | 81.7 / 3.36 / 59.1 |
+
+By the rules: the one-body harmonics on c10 met the first (10.93 deg), but the same input on the full data is 0.17 deg
+above the network without it, so the gain on c10 is not reproduced and rests on one run; it is not counted. The pairs
+fail both criteria: 0.04 deg against the one-body harmonics, and a best of 10 3.5 mm worse.
+
+**Quick completion protocol** (`scripts/evaluate.py completion --quick --like "DPoser: their full, DPoser method"`:
+200 validation poses, K = 10, DPoser's method with its default settings, no tuning; dev 6bd960c with this branch merged
+locally). For an RSGM the method is RSGM's own SDS on SO(3) (`rsgm_complete`), not the hybrid of the diagnostics,
+which optimizes in DPoser's z-scored variable with RSGM as the denoiser. MPVPE (mm), APD (cm):
+
+| model | left_leg | legs | arms | trunk | mean | best of 10 | APD |
+|---|---|---|---|---|---|---|---|
+| fact_N c10 (isotropic) | 106.6 | 123.3 | 132.1 | 47.2 | 102.3 | 62.8 | 6.17 |
+| fact_NA c10 (per joint) | 111.8 | 117.8 | 132.0 | 55.0 | 104.2 | 72.2 | 4.72 |
+| fact_NA_x c10 (per axis) | 116.7 | 121.0 | 133.4 | 56.8 | 106.9 | 71.7 | 5.29 |
+| wide_RAD_x c10 | 116.0 | 120.9 | 133.6 | 57.0 | 106.9 | 71.6 | 5.34 |
+| wide_RAD_x full | 116.4 | 121.0 | 133.4 | 57.0 | 107.0 | 71.0 | 5.37 |
+| local+wigner c10 | 117.4 | 121.9 | 134.1 | 57.5 | 107.7 | 72.3 | 5.35 |
+| local+wigner full | 117.6 | 121.8 | 133.6 | 57.5 | 107.6 | 72.0 | 5.36 |
+| local+wigner+pairs full | 120.2 | 124.2 | 135.7 | 58.9 | 109.8 | 73.2 | 5.69 |
+| DPoser full, its own method | 80.1 | 101.9 | 111.6 | 42.8 | 84.1 | 50.5 | 5.37 |
+| DPoser c10, its own method | 83.4 | 102.1 | 110.3 | 44.1 | 85.0 | 50.8 | 5.58 |
+
+With 200 poses the paired difference of two means is known to about 1.4 mm (one sd, the protocol's documentation):
+the one-body harmonics are within it (+0.6-0.8 mm), the pairs 2.8 mm worse. The output lines are in [the output
+file](2026-11-14_score_network_architectures_wigner.txt).
+
+**What it says.** The harmonics make the score more confident, not more accurate: each richer input has a worse
+validation loss (on the full data too, so it is not the small data alone), narrower hypotheses and a worse best of
+10, with the mean about unchanged. The prediction was wrong for the pairs: the explicit relation of the left and the
+right leg did not help the hidden left leg. Two things this does not rule out: a graph network with weights shared
+over the edges (MACE-like), a different model than features in one dense MLP; and the higher degrees D^l with l = 3
+have a scale of about 20 deg, coarser than the score at small noise, so they are nonlinear features of the matrices
+rather than finer resolution.
+
+The quick protocol shows a larger problem: in RSGM's own SDS with DPoser's settings every RSGM is about 20 mm behind
+DPoser, and the per-joint and per-axis noise of sections 10-17, which help the hybrid, are worse there than the
+isotropic noise (104.2 and 106.9 against 102.3 mm, the trunk 55-57 against 47 mm). A likely cause, not checked: those
+settings (t from 0.15 to 0.05, the step size in radians) are DPoser's, while with c_j up to 43 the Brownian time of
+the wide joints reaches about 1 at t = 0.15, nearly uniform noise, and the step does not follow the scale of a joint;
+in the hybrid the variable is z-scored and the scales match. So the gains of sections 15-17 exist in the hybrid only,
+and reaching the test with them needs the hybrid as a method of the protocol, or RSGM's SDS tuned for per-joint noise.
+
 ## Conclusions
 
 1. Residual connections or LayerNorm are what a score network on SO(3) needs for score distillation at small noise:
@@ -1017,7 +1119,9 @@ residual or dropout) these runs do not separate.
    a time. Most of it is the network (section 17): with the per-axis noise, a wide residual network (14.5M) takes
    half of the remaining 0.6 deg (11.57 to 11.21-11.24, two seeds and c10 agree) and is level with DPoser at the
    end of SDS; about 0.3 deg remain against DPoser on c10. The network did not matter with the isotropic noise
-   (section 7); with the noise right, it does.
+   (section 7); with the noise right, it does. Richer inputs do not take the rest (section 18): harmonics of SO(3)
+   and their pair products make the score more confident, not more accurate. All of it is in the hybrid; in RSGM's
+   own SDS with DPoser's settings the per-joint and per-axis noise are worse than the isotropic noise (section 18).
 3. In D-Flow the network does not matter either (512x4 MLP = dposer_like).
 4. Next: completion with the whole reverse process of RSGM (inpainting on SO(3)), where the hidden joints are pulled
    at large noise, which training covers, instead of extrapolating the score at small noise. Per-joint noise was
@@ -1030,6 +1134,11 @@ residual or dropout) these runs do not separate.
    (and its width 2048) and `fact_RADW`, to be compared with `fact_N` at equal APD by an inpainting study.
 
 ## What it does not show
+
+- The harmonics (section 18): one seed per input; the one-body harmonics on c10 and on the full data disagree, and
+  no second seed was trained. Only the network of section 17 and its budget; no graph network with shared weights.
+  The quick protocol has 200 poses (about 1.4 mm of paired noise) and DPoser's default settings, which are not tuned
+  for RSGM, so it compares the models under one untuned procedure, not their best.
 
 - The wide network (section 17): width, depth, residual and dropout changed together, so which of them does it is not
   known; one budget (30k x 4096), so whether the full data help with a longer training is not known either; one seed
@@ -1097,6 +1206,14 @@ residual or dropout) these runs do not separate.
   `~/data/experiments/factorial/{trajectory,hybrid}_wide_RAD_x_c10_s10.txt`, their lines in
   [2026-11-14_score_network_architectures_wide.txt](2026-11-14_score_network_architectures_wide.txt); training by
   `scripts/train_rsgm_posedflow.py --config wide_RAD_x`.
+
+- The harmonics (section 18): branch `experimental/wigner-inputs`; runs
+  `~/data/experiments/full/rsgm_posedflow_wide_RAD_x_wigner{,_pairs}_s10` and
+  `~/data/experiments/factorial/rsgm_posedflow_wide_RAD_x_wigner_s10` (trained on workstation2, copied to the Mac);
+  the diagnostic outputs `{trajectory,hybrid}_wide_RAD_x_wigner{,_pairs}_s10.txt` next to them; the quick protocol
+  rows in `~/data/experiments/completion/cache/valid_first200` (`results.jsonl`); all lines in
+  [2026-11-14_score_network_architectures_wigner.txt](2026-11-14_score_network_architectures_wigner.txt); training by
+  `scripts/train_rsgm_posedflow.py --config wide_RAD_x_wigner` / `wide_RAD_x_wigner_pairs`.
 
 - The factorial of section 13: runs in `~/data/experiments/factorial/rsgm_posedflow_fact_*_s1[01]` (on the Mac, on
   workstation1 and workstation2), the responses of the second evaluation in
