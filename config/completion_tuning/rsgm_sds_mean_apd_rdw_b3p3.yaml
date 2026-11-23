@@ -1,0 +1,27 @@
+# DPoser's optimization (score distillation, run(method="dposer")) on RSGM fact_RDW (c10, 30k x 4096; residual, dropout
+# 0.1, width 1024), rarity sampling weights, beta = 3.3: one of the six fronts of the data-weighting study (three
+# methods x beta 0 and 3.3; beta 3.3 chosen by the lowest D-Flow mean on 300 validation poses among the beta grid,
+# explore/evaluation/data_weighting). Two objectives: mean MPVPE (minimized) and APD (maximized). The search space,
+# first trials, poses and seeds of rsgm_sds_mean_apd_full_dposer_like, the same for both beta, so the two fronts differ
+# only by the sampling of the training poses.
+model: ~/data/experiments/data_weighting/rsgm_posedflow_rdw_b3.3_s10/run_0001
+method: dposer
+objective: mean_apd
+poses: 1000
+n_trials: 120
+params:
+  t_max: {low: 0.015, high: 0.15, log: true}
+  t_min_fraction: {low: 0.1, high: 0.9}
+  lr: {low: 0.02, high: 0.2, log: true}
+  prior_weight: {low: 0.005, high: 1.0, log: true}
+  steps_per_iter: [100, 200]
+fixed:
+  start: noise
+  scale: std
+first:
+  - {t_max: 0.0319, t_min_fraction: 0.592, lr: 0.0478, prior_weight: 0.0907, steps_per_iter: 100}
+  - {t_max: 0.0319, t_min_fraction: 0.592, lr: 0.0478, prior_weight: 0.0907, steps_per_iter: 200}
+  - {t_max: 0.0270, t_min_fraction: 0.867, lr: 0.0757, prior_weight: 0.0235, steps_per_iter: 100}
+  - {t_max: 0.0270, t_min_fraction: 0.867, lr: 0.0757, prior_weight: 0.0235, steps_per_iter: 200}
+  - {t_max: 0.08, t_min_fraction: 0.2, lr: 0.08, prior_weight: 0.05, steps_per_iter: 100}
+  - {t_max: 0.12, t_min_fraction: 0.2, lr: 0.08, prior_weight: 0.05, steps_per_iter: 200}
