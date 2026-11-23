@@ -2,7 +2,7 @@
 checkpoint, a row of a registry, a point of a front), which poses (--split, --poses), where the results go (--out),
 and the settings of a method (--set key=value, --settings JSON).
 
-A protocol (completion; later generation, runtime) adds its own options to these and gets {label: spec} from
+A protocol (completion, denoising; later generation, runtime) adds its own options to these and gets {label: spec} from
 models(), the specs of hp.evaluation.completion.build: {"run": <folder>} or {"posedflow": <.ckpt>}, with optional
 "weights", "method", "prior" and "dflow".
 """
@@ -140,7 +140,7 @@ def default_label(path: str, spec: dict) -> str:
     parts = [name]
     if spec.get("method"):
         parts.append(spec["method"])
-    settings = {key: spec[key] for key in ("weights", "prior", "dflow") if key in spec}
+    settings = {key: spec[key] for key in ("weights", "prior", "dflow", "settings") if key in spec}
     if settings:
         parts.append(hashlib.sha1(json.dumps(settings, sort_keys=True).encode()).hexdigest()[:8])
     return ", ".join(parts)
@@ -160,11 +160,15 @@ def point_specs(points: Optional[str], fronts: Optional[Iterable[str]] = None) -
 
 
 def models(args: argparse.Namespace, registry: Dict[str, dict], default_method: str = "dflow",
-           known: Optional[Dict[str, dict]] = None) -> Dict[str, dict]:
+           known: Optional[Dict[str, dict]] = None, spec_of=None, settings_of=None) -> Dict[str, dict]:
     """{label: spec} of --run, --models and --points, in that order; labels of points among --models restrict the
     points to them. --like takes the method and settings of a row of the registry or of `known` (the points of the
-    protocol). Raises UsageError on an unknown label, on --set / --settings / --method / --weights / --like without
-    --run, and on one label with two specs."""
+    protocol). A protocol whose specs are not those of completion gives spec_of(path, weights, method, settings,
+    default_method) for a --run (default run_spec) and settings_of(spec, default_method) -> (method, settings) for
+    --like (default method_of). Raises UsageError on an unknown label, on --set / --settings / --method / --weights /
+    --like without --run, and on one label with two specs."""
+    spec_of = spec_of or run_spec
+    settings_of = settings_of or method_of
     out: Dict[str, dict] = {}
 
     def add(label: str, spec: dict, where: str) -> None:
@@ -183,14 +187,14 @@ def models(args: argparse.Namespace, registry: Dict[str, dict], default_method: 
         lookup = {**(known or {}), **registry}
         if like not in lookup:
             raise UsageError(f"--like {like!r}: not a row of the registry nor a point")
-        like_method, like_settings = method_of(lookup[like], default_method)
+        like_method, like_settings = settings_of(lookup[like], default_method)
         if method and method != like_method:
             raise UsageError(f"--like {like!r} is {like_method}, not --method {method}")
         method, settings = like_method, {**like_settings, **settings}
     for item in args.run:
         label, sep, path = item.rpartition("=")
         path = path if sep else item
-        spec = run_spec(path, args.weights, method, settings, default_method)
+        spec = spec_of(path, args.weights, method, settings, default_method)
         add(label if sep else default_label(path, spec), spec, "--run")
     points = {}
     if args.points:

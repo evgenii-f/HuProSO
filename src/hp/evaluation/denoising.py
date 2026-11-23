@@ -254,24 +254,68 @@ def cache_path(cache, label: str, split: str, sigma: float) -> Path:
     return Path(cache).expanduser() / label.replace("/", "_").replace(" ", "_") / f"{split}_{round(sigma * 1000)}mm.pt"
 
 
+class OtherSettings(Exception):
+    """A cached result of a label was made with other settings (or other weights or sequences), and is to be kept."""
+
+
+def settings_of(spec: dict, sigma: float, **overrides) -> dict:
+    """The settings of a spec at a noise level: spec["settings"] is one dict for every noise level or {sigma: dict}."""
+    settings = spec.get("settings", {})
+    per_sigma = any(isinstance(k, float) for k in settings)
+    return {**(settings.get(sigma, {}) if per_sigma else settings), **overrides}
+
+
+def run_key(spec: dict, split: str, sigma: float, names: List[str], settings: dict) -> dict:
+    """What a cached result depends on (compared as JSON)."""
+    return json.loads(json.dumps({"model": identity(spec), "split": split, "sigma": sigma, "names": names,
+                                  "settings": settings, "version": METRICS_VERSION}))
+
+
+def split_sequences(split: str, sequences_file: str = "~/data/experiments/denoising/sequences.pt",
+                    first: Optional[int] = None, n_valid: int = 100) -> Tuple[torch.Tensor, List[str]]:
+    """The sequences of a split (`n_valid` of the validation draw), only the `first` n if given: the noise is seeded
+    by the index of a sequence, so the first n get the noise they get in the whole split."""
+    gt, names = sequences(split, sequences_file, n_valid=n_valid)
+    return (gt, names) if first is None else (gt[:first], names[:first])
+
+
+def cache_state(cache, label: str, spec: dict, split: str, sigma: float,
+                sequences_file: str = "~/data/experiments/denoising/sequences.pt", first: Optional[int] = None,
+                n_valid: int = 100, **overrides) -> str:
+    """"done" (cached with these settings), "other" (cached with others), "partial" (a stopped run of these settings
+    to continue) or "missing"."""
+    path = cache_path(cache, label, split, sigma)
+    _, names = split_sequences(split, sequences_file, first, n_valid)
+    key = run_key(spec, split, sigma, names, settings_of(spec, sigma, **overrides))
+    if path.is_file():
+        return "done" if json.loads(torch.load(path, weights_only=True)["key"]) == key else "other"
+    partial = path.with_suffix(".partial")
+    if partial.is_file() and torch.load(partial, weights_only=True).get("key") == json.dumps(key):
+        return "partial"
+    return "missing"
+
+
 def cached_run(cache, label: str, spec: dict, split: str, sigma: float, device: Optional[str], batch: int = 10,
                sequences_file: str = "~/data/experiments/denoising/sequences.pt",
-               stop: Optional[Callable[[], bool]] = None, **overrides) -> Optional[Dict[str, np.ndarray]]:
-    """The per-frame metrics of a spec (model, method "dflow"/"dposer", prior options, settings) on a split and a
-    noise level, from cache/<label>/<split>_<sigma>mm.pt if made with the same settings; otherwise computed (on
-    `device`; None: only read) and saved with the predictions. spec["settings"] is one dict for every noise level
-    or a dict {sigma: settings}. The predictions in progress are kept in <split>_<sigma>mm.partial after every batch,
-    so a run stopped by `stop()` (None returned) or killed continues from there."""
+               stop: Optional[Callable[[], bool]] = None, first: Optional[int] = None, n_valid: int = 100,
+               overwrite: bool = True, force: bool = False, **overrides) -> Optional[Dict[str, np.ndarray]]:
+    """The per-frame metrics of a spec (model, method "dflow"/"dposer", prior options, settings) on a split (its
+    `first` n sequences if given) and a noise level, from cache/<label>/<split>_<sigma>mm.pt if made with the same
+    settings; otherwise computed (on `device`; None: only read) and saved with the predictions. spec["settings"] is
+    one dict for every noise level or a dict {sigma: settings}. A result made with other settings is replaced, unless
+    `overwrite` is False (then OtherSettings is raised); `force` computes it again in any case. The predictions in
+    progress are kept in <split>_<sigma>mm.partial after every batch, so a run stopped by `stop()` (None returned) or
+    killed continues from there."""
     path = cache_path(cache, label, split, sigma)
-    gt, names = sequences(split, sequences_file)
-    settings = spec.get("settings", {})
-    settings = {**settings.get(sigma, {} if any(isinstance(k, float) for k in settings) else settings), **overrides}
-    key = json.loads(json.dumps({"model": identity(spec), "split": split, "sigma": sigma, "names": names,
-                                 "settings": settings, "version": METRICS_VERSION}))
-    if path.is_file():
+    gt, names = split_sequences(split, sequences_file, first, n_valid)
+    settings = settings_of(spec, sigma, **overrides)
+    key = run_key(spec, split, sigma, names, settings)
+    if path.is_file() and not force:
         saved = torch.load(path, weights_only=True)
         if json.loads(saved["key"]) == key:
             return {k: v.numpy() for k, v in saved["metrics"].items()}
+        if not overwrite:
+            raise OtherSettings(f"{label} / {split} / {sigma}")
         print(f"  {label} / {split} / {sigma}: cached with other settings")
     if device is None:
         return None

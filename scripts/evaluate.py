@@ -1,6 +1,7 @@
 """Run models through the test protocols: one command, the protocol first, the same flags for every protocol
-(hp.evaluation.protocol_cli). For now the protocol is pose completion (PoseD-Flow's Tab. 2, hp.evaluation.completion);
-generation and runtime are to follow.
+(hp.evaluation.protocol_cli). The protocols are pose completion (PoseD-Flow's Tab. 2, hp.evaluation.completion) and
+motion denoising (their Tab. 3, hp.evaluation.denoising; see the end of this text); generation and runtime are to
+follow.
 
     python scripts/evaluate.py completion --run ~/data/experiments/full/rsgm_posedflow_small_s10/run_0001 --split all
     python scripts/evaluate.py completion --run "my RSGM=~/data/experiments/x_s10/run_0001" --method inpaint \\
@@ -36,6 +37,28 @@ unless --recompute; a finished one is skipped unless --force (which computes eve
 The studies ran with --together and their batch (500 unless the study says otherwise), so the same settings give the
 same validation numbers only that way; without --together the hypotheses are drawn as theirs (other random draws,
 the same method).
+
+Motion denoising (sequences of 60 frames, noise of 40 and 100 mm on the joints, MPJPE and MPVPE in mm):
+
+    python scripts/evaluate.py denoising --points config/denoising_test_points.yaml --split test --device cuda:0
+    python scripts/evaluate.py denoising --points config/denoising_test_points.yaml --groups "RSGM sds" --dry-run
+    python scripts/evaluate.py denoising --models "DPoser: their full, DPoser method" --sigmas 0.1 --split valid
+    python scripts/evaluate.py denoising --run ~/data/experiments/x_s10/run_0001 --like ours --quick
+    python scripts/evaluate.py denoising --run ~/data/experiments/x_s10/run_0001 --set t_max=0.05 t_min=0.02 \\
+        sds_weight=8 lr=0.04 steps_per_iter=67 --quick
+
+--models are the rows of MODELS in evaluate_denoising.py, --points the rows of the test with their sources and
+validation numbers (scripts/denoising_test_points.py; --groups is --fronts there). For --run the method is dposer
+(DPoser's optimization, score distillation for RSGM) unless --method dflow, which a PoseD-Flow .ckpt gets by default;
+the settings apply at every noise level: for dposer iterations, steps_per_iter, t_max, t_min, lr, sds_weight; for
+dflow steps, lr, temp_weight, running_weight, guess_weight, optimizer, the rest (ode_steps, sampler, schedule) to the
+prior. --like LABEL starts from the method and the settings per noise level of a row of MODELS or a point, or of a
+ready name: ours (RSGM + SDS at the settings tuned on validation), "rsgm budget" (the same at the tuned DPoser's
+steps), dposer (DPoser's own settings), "dposer tuned", posedflow (D-Flow with PoseD-Flow's settings); --settings and
+--set apply on top at every noise level. Without --like a dposer run has DPoser's own settings, which are not tuned
+for RSGM (a new RSGM wants --like ours). Both splits are in --out itself (<label>/<split>_<mm>mm.pt, where motion_denoising.ipynb reads them); --poses
+n (the first n sequences) and --quick (the first 30 validation chunks) go to folders of their own. A stopped run
+(Ctrl+C) continues from its last batch when it is run again.
 """
 import argparse
 import json
@@ -166,10 +189,172 @@ def completion(args) -> int:
     return 0
 
 
+DENOISING_QUICK = 30  # validation chunks of --quick
+DFLOW_DENOISING_KEYS = ("steps", "lr", "temp_weight", "running_weight", "guess_weight", "optimizer")
+
+
+DENOISING_POINTS = ROOT / "config" / "denoising_test_points.yaml"  # the rows of the test, for --like
+# ready names for --like: the rows of the report's comparison (any label of MODELS or of the points works too)
+DENOISING_LIKE = {
+    "ours": "RSGM 1536x6: their c10, DPoser method",               # RSGM + SDS, settings tuned on validation
+    "rsgm budget": "RSGM 1536x6: their c10, DPoser method, DPoser's tuned budget",  # the same at the tuned DPoser's steps
+    "dposer": "DPoser: their full, DPoser method",                  # DPoser's own settings
+    "dposer tuned": "DPoser: their full, DPoser method, tuned",     # DPoser tuned like RSGM
+    "posedflow": "PoseD-Flow: their checkpoint",                    # D-Flow with PoseD-Flow's settings
+}
+
+
+def denoising_settings_of(spec: dict, default_method: str = "dposer"):
+    """(method, settings) of a row of evaluate_denoising.MODELS, for --like: its settings (per noise level if it has
+    them per noise level) and the options of its prior in one dict; the rows without a method are D-Flow."""
+    return spec.get("method", "dflow"), {**spec.get("prior", {}), **spec.get("settings", {})}
+
+
+def denoising_spec(path: str, weights=None, method=None, settings=None, default_method: str = "dposer") -> dict:
+    """The spec of evaluate_denoising.MODELS for a --run: the settings of the method under "settings", for D-Flow the
+    options of the prior (ode_steps, sampler, ...) under "prior". Settings per noise level ({0.04: {...}, 0.1: {...}},
+    from --like) keep their levels, and the other keys (--set, --settings) apply on top at every level."""
+    spec = {"posedflow": path} if str(path).endswith(".ckpt") else {"run": path}
+    if weights and "run" in spec:
+        spec["weights"] = weights
+    method = method or ("dflow" if "posedflow" in spec else default_method)
+    settings = dict(settings or {})
+    levels = {key: settings.pop(key) for key in list(settings) if isinstance(key, float)}
+    if method == "dposer":
+        spec["method"] = "dposer"
+    elif method != "dflow":
+        raise cli.UsageError(f"denoising has the methods dposer and dflow, not {method!r}")
+    else:
+        prior = {key: settings.pop(key) for key in list(settings) if key not in DFLOW_DENOISING_KEYS}
+        if prior:
+            spec["prior"] = prior
+    if levels:
+        spec["settings"] = {sigma: {**values, **settings} for sigma, values in levels.items()}
+    elif settings:
+        spec["settings"] = settings
+    return spec
+
+
+def denoising_parser(sub) -> None:
+    from evaluate_denoising import CACHE
+
+    from hp.evaluation.denoising import SIGMAS
+
+    p = sub.add_parser("denoising", help="motion denoising, PoseD-Flow's Tab. 3", description=__doc__,
+                       formatter_class=argparse.RawDescriptionHelpFormatter)
+    cli.add_model_arguments(p)
+    p.add_argument("--groups", nargs="+", default=None, dest="fronts",
+                   help='with --points: only these groups of rows, e.g. "RSGM sds" (as --fronts)')
+    cli.add_common_arguments(p, out=CACHE, quick=DENOISING_QUICK)
+    g = p.add_argument_group("denoising")
+    g.add_argument("--sigmas", nargs="+", type=float, default=list(SIGMAS), choices=list(SIGMAS),
+                   help="noise levels (m)")
+    g.add_argument("--valid-sequences", type=int, default=100, help="the size of the validation draw (the studies: 100)")
+    g.add_argument("--sequences-file", default="~/data/experiments/denoising/sequences.pt")
+    g.add_argument("--batch", type=int, default=10, help="sequences per batch; speed and memory only")
+    p.set_defaults(protocol=denoising)
+
+
+def denoising_table(rows: list, sigmas: list, recorded: dict) -> str:
+    """MPJPE / MPVPE per noise level (and those recorded on validation with a point, if any)."""
+    by_label = {}
+    for row in rows:
+        by_label.setdefault(row["label"], {})[row["sigma"]] = row
+    head = ["model"] + [f"{round(s * 1000)} mm" for s in sigmas]
+    lines = ["| " + " | ".join(head + (["recorded (val)"] if recorded else [])) + " |",
+             "|" + "---|" * (len(head) + bool(recorded))]
+    for label, per in by_label.items():
+        cells = [label] + [f"{per[s]['mpjpe']:.2f} / {per[s]['mpvpe']:.2f}" if s in per else "-" for s in sigmas]
+        if recorded:
+            r = recorded.get(label, {})
+            cells.append(" ; ".join(f"{r[s]['mpjpe']:.2f} / {r[s]['mpvpe']:.2f}" for s in sigmas if s in r))
+        lines.append("| " + " | ".join(cells) + " |")
+    return "\n".join(lines)
+
+
+def merge_rows(path: Path, rows: list, keys=("label", "occlusion")) -> None:
+    """results.jsonl with these rows, replacing earlier rows of the same keys."""
+    keep = {}
+    if path.is_file():
+        for line in path.read_text().splitlines():
+            if line.strip():
+                row = json.loads(line)
+                keep[tuple(row[k] for k in keys)] = row
+    for row in rows:
+        keep[tuple(row[k] for k in keys)] = row
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text("".join(json.dumps(row) + "\n" for row in keep.values()))
+    temporary.replace(path)
+
+
+def denoising(args) -> int:
+    import signal
+
+    from evaluate_denoising import MODELS
+
+    from hp.evaluation import denoising as D
+
+    args.like = DENOISING_LIKE.get(args.like, args.like)
+    specs = cli.models(args, MODELS, default_method="dposer", known=cli.point_specs(DENOISING_POINTS),
+                       spec_of=denoising_spec, settings_of=denoising_settings_of)
+    recorded = cli.recorded(args.points)
+    data = dict(sequences_file=args.sequences_file, first=args.poses, n_valid=args.valid_sequences)
+    requested = []  # Ctrl+C once: stop after the current batch (the run continues from there when run again)
+
+    def on_sigint(*_):
+        if requested:
+            raise KeyboardInterrupt
+        requested.append(True)
+        print("\n  stop requested: stops after the current batch (Ctrl+C again: at once)", flush=True)
+
+    if not args.dry_run:
+        signal.signal(signal.SIGINT, on_sigint)
+    for split in cli.splits(args.split):
+        # the file names carry the split (<label>/<split>_<mm>mm.pt), so both splits share --out, as the caches of
+        # evaluate_denoising.py; a check on the first n sequences goes to a folder of its own
+        cache = Path(args.out).expanduser() if args.poses is None else cli.split_dir(args.out, split, args.poses)
+        n = len(D.split_sequences(split, args.sequences_file, args.poses, args.valid_sequences)[1])
+        print(f"{split}: {n} sequences, {len(specs)} model(s) x {len(args.sigmas)} noise level(s) -> {cache}",
+              flush=True)
+        if args.dry_run:
+            for label, spec in specs.items():
+                states = {s: D.cache_state(cache, label, spec, split, s, **data) for s in args.sigmas}
+                print(f"  {label}: " + ", ".join(f"{round(s * 1000)} mm {v}" for s, v in states.items()))
+            continue
+        rows, kept = [], []
+        for label, spec in specs.items():
+            for sigma in args.sigmas:
+                if requested:
+                    break
+                start = time.perf_counter()
+                try:
+                    m = D.cached_run(cache, label, spec, split, sigma, args.device, args.batch,
+                                     stop=lambda: bool(requested), overwrite=args.recompute or args.force,
+                                     force=args.force, **data)
+                except D.OtherSettings:
+                    kept.append(f"{label} / {round(sigma * 1000)} mm")
+                    continue
+                if m is None:
+                    continue
+                print(f"{label} / {round(sigma * 1000)} mm: {(time.perf_counter() - start) / 60:.1f} min", flush=True)
+                rows.append(dict(label=label, split=split, sequences=n, sigma=sigma, **D.summary(m), spec=spec))
+        if rows:
+            merge_rows(cache / "results.jsonl", rows, keys=("label", "split", "sigma"))
+            print(f"\n{split} ({n} sequences; MPJPE / MPVPE in mm)\n"
+                  + denoising_table(rows, args.sigmas, recorded if split == "valid" else {}) + "\n")
+        if kept:
+            print(f"kept, made with other settings (--recompute replaces them): {kept}")
+        if requested:
+            print("stopped; run the same command again to continue")
+            return 1
+    return 0
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="name", required=True, metavar="protocol")
     completion_parser(sub)
+    denoising_parser(sub)
     args = parser.parse_args(argv)
     try:
         cli.resolve_poses(args)

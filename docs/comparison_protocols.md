@@ -40,11 +40,12 @@ Joints: ours are 19 (`AmassJoints4Learning`, no toes). PoseD-Flow has 21; the to
 | `explore/evaluation/conditional_flow_occlusion.ipynb` | Occlusion | our test, all frames | none |
 | `explore/evaluation/conditional_flow_occlusion-3models.ipynb` | Occlusion + D-Flow | our test, 100 poses | none |
 | `explore/evaluation/pose_completion.ipynb` | PoseD-Flow completion (their Tab. 2) | **their** test, 5000 poses, K = 10; valid: a fixed draw of 1000 | `~/data/experiments/completion/cache/` (test), `.../cache/valid/` |
+| `explore/evaluation/motion_denoising.ipynb` | PoseD-Flow motion denoising (their Tab. 3) | **their** test, 190 HumanEva chunks of 60 frames, noise 40 / 100 mm; valid: 100 chunks of HDM05, SFU, MoSh | `~/data/experiments/denoising/cache/` (both splits, `<split>_<mm>mm.pt`) |
 
 `scripts/evaluate_posedflow_comparison.py` computes Harness and PoseD-Flow on a server with the same settings and writes into the same cache. The constants of the script and the notebook must stay equal.
 
-`scripts/evaluate.py <protocol>` runs any model through a protocol with the same flags for every protocol (for now
-`completion`): the model as `--run [LABEL=]PATH` (a run folder or a PoseD-Flow `.ckpt`, with `--method`, `--set
+`scripts/evaluate.py <protocol>` runs any model through a protocol with the same flags for every protocol
+(`completion`, `denoising`): the model as `--run [LABEL=]PATH` (a run folder or a PoseD-Flow `.ckpt`, with `--method`, `--set
 key=value`, `--settings JSON` and `--like LABEL`, the method and settings of a row or a point;
 without them the method's own defaults, not tuned for inpaint and dposer), as rows of the registry (`--models`) or as points of the fronts (`--points`);
 `--split valid|test|all`, `--poses n` (a quick check, in a folder of its own), `--quick` (the first 200 poses of the
@@ -53,6 +54,17 @@ validation draw, in `<out>/valid_first200`; enough for changes of a few mm, not 
 row per model and occlusion in `results.jsonl` there, and a table at the end. A result made with other settings is
 kept and reported unless `--recompute` (weights copied between machines get a new modification time and read as
 other settings); `--force` computes everything again, even results made with the same settings. `scripts/evaluate_completion.py` keeps its flags and runs it on the test.
+
+`scripts/evaluate.py denoising` takes the same flags, with `--sigmas` (40 and 100 mm) for the occlusions, `--groups` for
+`--fronts`, and `--quick` the first 30 validation chunks. Its points are the 13 rows of the test with the sources of
+their settings, `config/denoising_test_points.yaml` (`scripts/denoising_test_points.py`). `--like` also takes the ready
+names `ours`, `"rsgm budget"`, `dposer`, `"dposer tuned"` and `posedflow`; their settings are per noise level, and
+`--set` applies on top at both. Both splits share `--out` (the file names carry the split); a result per (label,
+split, noise level) in `results.jsonl` there.
+
+**Quick check of a new model:** `scripts/evaluate.py completion --run <run> --quick [--like LABEL]`, 200 validation
+poses in minutes; how to read it and the reference numbers of all our rows and points are in
+[completion_quick_check.md](completion_quick_check.md).
 
 ### What to watch for
 

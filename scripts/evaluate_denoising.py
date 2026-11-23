@@ -8,7 +8,9 @@ or the test sequences with every model and noise level and caches the prediction
     python scripts/evaluate_denoising.py --split valid --summary            # the table of what is cached
     python scripts/evaluate_denoising.py --split test --models "PoseD-Flow: their checkpoint" --device cuda:0
 
-The test is run once per row, with settings chosen before on validation (--split test must be given explicitly).
+The test is run once per row, with settings chosen before on validation (--split test must be given explicitly). The
+rows of the test with their sources: config/denoising_test_points.yaml, run by
+scripts/evaluate.py denoising --points config/denoising_test_points.yaml (the same caches).
 D-Flow keeps the gradients of all ODE steps of all frames of --batch sequences: the memory grows with --batch.
 
 Stopping and continuing: every finished cell (model, noise level) is in the cache, and the cell in progress is saved
