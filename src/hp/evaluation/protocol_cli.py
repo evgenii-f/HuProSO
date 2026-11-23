@@ -41,19 +41,38 @@ def add_model_arguments(parser: argparse.ArgumentParser) -> None:
                        help="with --run: settings of the method as a JSON object; --set overrides its keys")
 
 
-def add_common_arguments(parser: argparse.ArgumentParser, out: str) -> None:
+def add_common_arguments(parser: argparse.ArgumentParser, out: str, quick: Optional[int] = None) -> None:
+    """quick: the number of validation poses of --quick for this protocol (no --quick without it)."""
     group = parser.add_argument_group("common")
-    group.add_argument("--split", choices=SPLITS + ("all",), default="test",
-                       help="the poses: valid (the fixed validation draw), test, or all (valid, then test)")
+    group.add_argument("--split", choices=SPLITS + ("all",), default=None,
+                       help="the poses: valid (the fixed validation draw), test (default), or all (valid, then test)")
     group.add_argument("--poses", type=int, default=None, help="the first n poses of the split (a quick check, "
                                                                "kept in a folder of its own)")
+    if quick is not None:
+        group.add_argument("--quick", action="store_const", const=quick, default=None,
+                           help=f"a quick check on the validation: --split valid --poses {quick} (--poses overrides "
+                                f"the number); the first poses of the validation draw, so a subset of the full one")
     group.add_argument("--out", default=out, help=f"the results root (default {out}); see split_dir")
     group.add_argument("--device", default="cuda:0", help="cuda:N | mps | cpu")
     group.add_argument("--rotations", default=None, help="the data folder (default: that of the protocol)")
     group.add_argument("--recompute", action="store_true",
                        help="replace results made with other settings (otherwise they are reported and kept)")
+    group.add_argument("--force", action="store_true",
+                       help="compute every result again, even one made with these settings (implies --recompute)")
     group.add_argument("--dry-run", action="store_true",
                        help="print what would run and what is already there, run nothing")
+
+
+def resolve_poses(args: argparse.Namespace) -> None:
+    """--split and --poses after --quick: --quick means the validation and its number of poses (unless --poses);
+    without it the split defaults to the test. Raises UsageError on --quick with another split."""
+    if getattr(args, "quick", None) is None:
+        args.split = args.split or "test"
+        return
+    if args.split not in (None, "valid"):
+        raise UsageError(f"--quick is a check on the validation, not on --split {args.split}")
+    args.split = "valid"
+    args.poses = args.poses if args.poses is not None else args.quick
 
 
 def splits(split: str) -> List[str]:
@@ -159,7 +178,7 @@ def models(args: argparse.Namespace, registry: Dict[str, dict], default_method: 
     unknown = [name for name in names if name not in registry and name not in points]
     if unknown:
         raise UsageError(f"not in the registry{' nor in ' + args.points if args.points else ''}: {unknown}")
-    named_points = [name for name in names if name in points]
+    named_points = [] if args.models == ["all"] else [name for name in names if name in points]
     for name in names:
         if name in registry:
             add(name, registry[name], "--models")

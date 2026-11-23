@@ -46,11 +46,12 @@ Joints: ours are 19 (`AmassJoints4Learning`, no toes). PoseD-Flow has 21; the to
 `scripts/evaluate.py <protocol>` runs any model through a protocol with the same flags for every protocol (for now
 `completion`): the model as `--run [LABEL=]PATH` (a run folder or a PoseD-Flow `.ckpt`, with `--method`, `--set
 key=value` and `--settings JSON`), as rows of the registry (`--models`) or as points of the fronts (`--points`);
-`--split valid|test|all`, `--poses n` (a quick check, in a folder of its own), `--out`, `--device`, `--recompute`,
+`--split valid|test|all`, `--poses n` (a quick check, in a folder of its own), `--quick` (the first 200 poses of the
+validation draw, in `<out>/valid_first200`; enough for changes of a few mm, not for close settings), `--out`, `--device`, `--recompute`,
 `--dry-run`. Results go to the folder of the split (the test in `--out` itself, the validation in `<out>/valid`), one
 row per model and occlusion in `results.jsonl` there, and a table at the end. A result made with other settings is
 kept and reported unless `--recompute` (weights copied between machines get a new modification time and read as
-other settings). `scripts/evaluate_completion.py` keeps its flags and runs it on the test.
+other settings); `--force` computes everything again, even results made with the same settings. `scripts/evaluate_completion.py` keeps its flags and runs it on the test.
 
 ### What to watch for
 
