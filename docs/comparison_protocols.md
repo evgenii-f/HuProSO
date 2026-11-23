@@ -54,6 +54,10 @@ row per model and occlusion in `results.jsonl` there, and a table at the end. A 
 kept and reported unless `--recompute` (weights copied between machines get a new modification time and read as
 other settings); `--force` computes everything again, even results made with the same settings. `scripts/evaluate_completion.py` keeps its flags and runs it on the test.
 
+**Quick check of a new model:** `scripts/evaluate.py completion --run <run> --quick [--like LABEL]`, 200 validation
+poses in minutes; how to read it and the reference numbers of all our rows and points are in
+[completion_quick_check.md](completion_quick_check.md).
+
 ### What to watch for
 
 - **FID** of our poses against their statistics is shifted: real poses of our AMASS score 0.022, their train poses 0.011. Models trained on another AMASS cannot be compared by FID alone.
