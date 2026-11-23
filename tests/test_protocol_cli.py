@@ -59,6 +59,22 @@ def test_the_folders_of_the_splits(tmp_path):
     assert cli.splits("all") == ["valid", "test"] and cli.splits("test") == ["test"]
 
 
+def test_like_takes_the_method_and_settings_of_a_row_or_point():
+    registry = {"R": {"run": "~/r", "method": "inpaint", "prior": {"steps": 200, "guidance": 0.06}},
+                "D": {"run": "~/d", "dflow": {"lr": 0.05}, "prior": {"ode_steps": 25}}}
+    known = {"P": {"posedflow": "~/p.ckpt", "dflow": {"steps": 300}}}
+    out = cli.models(parse("--run", "new=~/n", "--like", "R", "--set", "guidance=0.1"), registry, known=known)
+    assert out == {"new": {"run": "~/n", "method": "inpaint", "prior": {"steps": 200, "guidance": 0.1}}}
+    out = cli.models(parse("--run", "new=~/n", "--like", "D"), registry, known=known)
+    assert out["new"] == {"run": "~/n", "dflow": {"lr": 0.05}, "prior": {"ode_steps": 25}}
+    assert cli.models(parse("--run", "new=~/n", "--like", "P"), registry, known=known)["new"] == {
+        "run": "~/n", "dflow": {"steps": 300}}
+    for wrong in (parse("--like", "R"), parse("--run", "~/n", "--like", "X"),
+                  parse("--run", "~/n", "--like", "R", "--method", "dposer")):
+        with pytest.raises(cli.UsageError):
+            cli.models(wrong, registry, known=known)
+
+
 def test_quick_is_a_prefix_of_the_validation():
     def resolved(*argv, quick=200):
         parser = argparse.ArgumentParser()

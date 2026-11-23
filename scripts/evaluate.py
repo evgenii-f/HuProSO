@@ -9,13 +9,19 @@ generation and runtime are to follow.
         --settings '{"lr": 0.05, "steps": 200}' --split test --occlusions left_leg
     python scripts/evaluate.py completion --models "PoseD-Flow: their checkpoint" --split test --dry-run
     python scripts/evaluate.py completion --run ~/data/experiments/x_s10/run_0001 --quick --together
+    python scripts/evaluate.py completion --run ~/data/experiments/x_s10/run_0001 --quick \\
+        --like "RSGM 512x4: their c10, inpaint t52"     # the method and settings of a row (or a point), on x
     python scripts/evaluate.py completion --points config/completion_test_points.yaml --fronts "RSGM dflow" \\
         --split valid --together     # the validation numbers again, next to the ones recorded with the points
 
 Models: --run (a folder or a .ckpt, LABEL=PATH to name it), --models (rows of MODELS in evaluate_completion.py; all:
 every row), --points (points of the fronts, scripts/select_test_points.py). --method and the settings (--settings
 JSON, then --set key=value) apply to --run: for D-Flow lr, running_weight and steps go to D-Flow and the rest (e.g.
-ode_steps, sampler, schedule, guess_weight) to its prior; for inpaint and dposer all go to the method.
+ode_steps, sampler, schedule, guess_weight) to its prior; for inpaint and dposer all go to the method. --like LABEL
+starts from the method and settings of a row of MODELS or of a point of config/completion_test_points.yaml (the
+settings chosen on the validation for that model; a new model gets them as they are), --settings and --set on top.
+Without --like the settings are the defaults of the method: D-Flow those of their protocol, inpaint and dposer those
+of the functions (not tuned).
 
 Poses: --split valid is the fixed draw of 1000 validation poses on which the settings are chosen (the Optuna studies of
 scripts/tune_completion.py), test their 5000 test poses, all both; --poses n takes the first n of them, as a quick
@@ -45,6 +51,7 @@ from hp.evaluation import protocol_cli as cli  # noqa: E402
 from hp.evaluation.completion import BATCH, OCCLUSIONS  # noqa: E402
 
 QUICK = 200  # poses of --quick
+POINTS = ROOT / "config" / "completion_test_points.yaml"  # the points of the fronts, for --like
 
 
 def completion_parser(sub) -> None:
@@ -115,7 +122,7 @@ def completion(args) -> int:
     from hp.evaluation.completion import OtherSettings, cache_state, cached_metrics, cached_run, summary
 
     args.rotations = args.rotations or ROTATIONS
-    specs = cli.models(args, MODELS)
+    specs = cli.models(args, MODELS, known=cli.point_specs(POINTS))
     speed = {"batch": args.batch, "together": True} if args.together else (
         {"batch": args.batch} if args.batch != BATCH else {})
     recorded = cli.recorded(args.points)

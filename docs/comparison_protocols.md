@@ -45,7 +45,8 @@ Joints: ours are 19 (`AmassJoints4Learning`, no toes). PoseD-Flow has 21; the to
 
 `scripts/evaluate.py <protocol>` runs any model through a protocol with the same flags for every protocol (for now
 `completion`): the model as `--run [LABEL=]PATH` (a run folder or a PoseD-Flow `.ckpt`, with `--method`, `--set
-key=value` and `--settings JSON`), as rows of the registry (`--models`) or as points of the fronts (`--points`);
+key=value`, `--settings JSON` and `--like LABEL`, the method and settings of a row or a point;
+without them the method's own defaults, not tuned for inpaint and dposer), as rows of the registry (`--models`) or as points of the fronts (`--points`);
 `--split valid|test|all`, `--poses n` (a quick check, in a folder of its own), `--quick` (the first 200 poses of the
 validation draw, in `<out>/valid_first200`; enough for changes of a few mm, not for close settings), `--out`, `--device`, `--recompute`,
 `--dry-run`. Results go to the folder of the split (the test in `--out` itself, the validation in `<out>/valid`), one
