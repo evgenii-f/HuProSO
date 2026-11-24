@@ -14,7 +14,8 @@ for p in (ROOT / "src", HERE):
         sys.path.insert(0, str(p))
 
 from embedding import Embedded, owners  # noqa: E402
-from fit import REFERENCE, ROTATIONS, SPLIT, Bins, WithHarmonics, draw, jacobian  # noqa: E402
+from fit import (JOINT_PAIRS, OTHER_PAIRS, REFERENCE, ROTATIONS, SPLIT, Bins, draw, harmonic_basis,  # noqa: E402
+                 jacobian)
 from hp.evaluation.data import load_reference  # noqa: E402
 from hp.models.ace_features import AceFeatures  # noqa: E402
 from hp.models.io import load_model  # noqa: E402
@@ -38,7 +39,7 @@ def load_energy(path, device: str = "cpu"):
         args = saved["settings"]
         init = torch.load(_local(args["init"]), map_location="cpu", weights_only=True)
         s = init["settings"]
-        basis = WithHarmonics(AceFeatures(smooth=not s.get("plain", False)), s.get("wigner", []), s.get("pairs", []))
+        basis = harmonic_basis(s)
         bins = Bins(ref, ref.loss_t_min, s["bins"])
         energy = Embedded(basis, bins, owners(basis), k=args.get("k", 2), embedding=args.get("embedding", "fs"),
                           hidden=args.get("hidden", 64))
@@ -52,7 +53,7 @@ def load_energy(path, device: str = "cpu"):
         s = saved["settings"]
         if s.get("one_body"):
             raise ValueError("fits with --one-body are not supported; use the --wigner fits")
-        basis = WithHarmonics(AceFeatures(smooth=not s.get("plain", False)), s.get("wigner", []), s.get("pairs", []))
+        basis = harmonic_basis(s)
         bins = Bins(ref, ref.loss_t_min, s["bins"])
         energy = Embedded(basis, bins, owners(basis))
         energy.init_linear(saved["w"], scale2=0.0)
@@ -104,6 +105,10 @@ def feature_groups(basis) -> list:
         out += [f"D^{l}(G_j)"] * (19 * (2 * l + 1) ** 2)
     for l in basis.pairs:
         out += [f"D^{l}(G_i^T G_k)"] * (len(WIGNER_PAIRS) * (2 * l + 1) ** 2)
+    for l in basis.all_pairs:
+        out += [f"D^{l}(G_i^T G_k), other pairs"] * (len(OTHER_PAIRS) * (2 * l + 1) ** 2)
+    if basis.products:
+        out += ["x_i x_k"] * (81 * len(JOINT_PAIRS))
     assert len(out) == basis.dim
     return out
 

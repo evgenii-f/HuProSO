@@ -4,6 +4,7 @@ line, docs/experiments: the ACE report). On the CPU, from the root of the reposi
     python explore/ace_energy/fit.py --check                        # the self-checks, a few seconds
     python explore/ace_energy/fit.py --out ~/data/experiments/ace/energy_b.pt
     python explore/ace_energy/fit.py --wigner 1 2 3 --pairs 1 2 3 --device cuda:0 --out ...   # on a GPU server
+    python explore/ace_energy/fit.py ... --all-pairs 1 --products                           # an enriched basis
 
 Model. E_t(x) = sum_p c_p(t) B_p(x), with B the descriptors of hp.models.ace_features (distances, angles, twists of
 the pose; smooth=True, polynomials with bounded gradients, unless --plain) and the score s(x, t) = -grad E_t(x), the derivative along the tangent directions x_j @ exp(eps e_a) (the
@@ -39,8 +40,9 @@ from hp.evaluation.data import load_reference  # noqa: E402
 from hp.models import igso3  # noqa: E402
 from hp.models.ace_features import AceFeatures  # noqa: E402
 from hp.models.io import load_model  # noqa: E402
-from hp.models.rsgm import exp_frame, global_rotations  # noqa: E402
-from hp.models.so3_harmonics import WIGNER_PAIRS, pair_wigner_features, wigner_features  # noqa: E402
+from hp.models.rsgm import PARENTS19, exp_frame, global_rotations  # noqa: E402
+from hp.models.so3_harmonics import (PAIR_INDEX, WIGNER_PAIRS, pair_wigner_features, wigner_d,  # noqa: E402
+                                     wigner_features)
 
 ROTATIONS, SPLIT = "~/data/AMASS_rotations_posedflow_c10", "posedflow"
 REFERENCE = "~/data/experiments/factorial/rsgm_posedflow_fact_RDW_s10/run_0001"
@@ -71,16 +73,27 @@ class WithOneBody(torch.nn.Module):
         return torch.cat(out, dim=-1)
 
 
+JOINT_PAIRS = tuple((i, k) for i in range(19) for k in range(i + 1, 19))  # all 171
+# the pairs that `pairs` does not have: not those of WIGNER_PAIRS, not parent and child (there G_i^T G_k = x_k)
+OTHER_PAIRS = tuple((i, k) for i, k in JOINT_PAIRS
+                    if (i, k) not in PAIR_INDEX and (k, i) not in PAIR_INDEX and PARENTS19[k] != i)
+
+
 class WithHarmonics(torch.nn.Module):
     """The descriptors and harmonics of SO(3) (hp.models.so3_harmonics): D^l(x_j) of every joint's own rotation for l
     in `wigner` (one-body), and D^l(G_j), D^l(G_i^T G_k) of the joints with the root and the pairs of WIGNER_PAIRS for
-    l in `pairs` (two-body orientations; G relative to the root)."""
+    l in `pairs` (two-body orientations; G relative to the root). More two-body terms: D^l(G_i^T G_k) of OTHER_PAIRS
+    for l in `all_pairs`, and with `products` the 81 products (x_i)_a (x_k)_b of the entries of the two joints' own
+    rotations, of all 171 pairs."""
 
-    def __init__(self, ace, wigner: Sequence[int], pairs: Sequence[int]):
+    def __init__(self, ace, wigner: Sequence[int], pairs: Sequence[int], all_pairs: Sequence[int] = (),
+                 products: bool = False):
         super().__init__()
         self.ace, self.wigner, self.pairs = ace, tuple(wigner), tuple(pairs)
+        self.all_pairs, self.products = tuple(all_pairs), bool(products)
         size = lambda degrees: sum((2 * l + 1) ** 2 for l in degrees)  # noqa: E731
-        self.dim = ace.dim + 19 * size(self.wigner) + (19 + len(WIGNER_PAIRS)) * size(self.pairs)
+        self.dim = (ace.dim + 19 * size(self.wigner) + (19 + len(WIGNER_PAIRS)) * size(self.pairs)
+                    + len(OTHER_PAIRS) * size(self.all_pairs) + 81 * len(JOINT_PAIRS) * self.products)
 
     def forward(self, x):
         out = [self.ace(x)]
@@ -88,7 +101,22 @@ class WithHarmonics(torch.nn.Module):
             out.append(wigner_features(x, self.wigner))
         if self.pairs:
             out.append(pair_wigner_features(global_rotations(x), self.pairs))
+        if self.all_pairs:
+            i, k = (list(v) for v in zip(*OTHER_PAIRS))
+            g = global_rotations(x)
+            rel = g[:, i].transpose(-1, -2) @ g[:, k]
+            out += [wigner_d(rel, l).flatten(1) for l in self.all_pairs]
+        if self.products:
+            i, k = (list(v) for v in zip(*JOINT_PAIRS))
+            m = x.flatten(-2)  # [B, J, 9]
+            out.append((m[:, i][..., :, None] * m[:, k][..., None, :]).flatten(1))
         return torch.cat(out, dim=-1)
+
+
+def harmonic_basis(settings: dict) -> WithHarmonics:
+    """The basis of a fit from its settings (the arguments of this script)."""
+    return WithHarmonics(AceFeatures(smooth=not settings.get("plain", False)), settings.get("wigner", []),
+                         settings.get("pairs", []), settings.get("all_pairs", []), settings.get("products", False))
 
 
 def draw(ref, x0: torch.Tensor, t: torch.Tensor, generator=None):
@@ -250,6 +278,10 @@ def main() -> None:
                         help="one-body harmonics D^l(x_j) of these degrees (instead of --one-body)")
     parser.add_argument("--pairs", type=int, nargs="*", default=[], choices=(1, 2, 3),
                         help="two-body harmonics D^l(G_j), D^l(G_i^T G_k) of WIGNER_PAIRS of these degrees")
+    parser.add_argument("--all-pairs", type=int, nargs="*", default=[], choices=(1, 2, 3),
+                        help="with --wigner or --pairs: D^l(G_i^T G_k) of the other pairs of joints, of these degrees")
+    parser.add_argument("--products", action="store_true",
+                        help="with --wigner or --pairs: the products of the entries of x_i and x_k, all pairs")
     parser.add_argument("--load", default=None, help="a .pt file of an earlier fit: evaluate it, fit nothing")
     parser.add_argument("--interp", choices=("linear", "nearest"), default="linear", help="w between bins")
     args = parser.parse_args()
@@ -263,7 +295,9 @@ def main() -> None:
     if args.one_body:
         ace = WithOneBody(ace, args.one_body)
     if args.wigner or args.pairs:
-        ace = WithHarmonics(ace, args.wigner, args.pairs)
+        ace = harmonic_basis(vars(args))
+    elif args.all_pairs or args.products:
+        parser.error("--all-pairs and --products need --wigner or --pairs.")
     ace = ace.to(DEVICE)
     valid = load_reference("valid", ROTATIONS, SPLIT)
     valid = valid[torch.randperm(len(valid), generator=torch.Generator().manual_seed(0))[:args.valid]]

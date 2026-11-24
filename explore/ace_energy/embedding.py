@@ -32,9 +32,10 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from fit import COMPARE, REFERENCE, ROTATIONS, SPLIT, Bins, WithHarmonics, draw  # noqa: E402
+from fit import (COMPARE, JOINT_PAIRS, OTHER_PAIRS, REFERENCE, ROTATIONS, SPLIT, Bins, WithHarmonics,  # noqa: E402
+                 draw, harmonic_basis)
 from hp.evaluation.data import load_reference  # noqa: E402
-from hp.models.ace_features import LEARNED, AceFeatures  # noqa: E402
+from hp.models.ace_features import LEARNED  # noqa: E402
 from hp.models.io import load_model  # noqa: E402
 from hp.models.rsgm import exp_frame  # noqa: E402
 from hp.models.so3_harmonics import PAIR_INDEX  # noqa: E402
@@ -65,6 +66,10 @@ def owners(basis: WithHarmonics) -> list:
         out += [[j] for j in range(19) for _ in range((2 * l + 1) ** 2)]
     for l in basis.pairs:  # D^l(G_i^T G_k) of the pairs
         out += [[i, k] for i, k in PAIR_INDEX for _ in range((2 * l + 1) ** 2)]
+    for l in basis.all_pairs:
+        out += [[i, k] for i, k in OTHER_PAIRS for _ in range((2 * l + 1) ** 2)]
+    if basis.products:
+        out += [[i, k] for i, k in JOINT_PAIRS for _ in range(81)]
     assert len(out) == basis.dim, (len(out), basis.dim)
     return out
 
@@ -173,7 +178,7 @@ def main() -> None:
     saved = torch.load(Path(args.init).expanduser(), map_location="cpu", weights_only=True)
     s = saved["settings"]
     ref = load_model(Path(args.reference).expanduser(), device="cpu", weights="weights_ema").eval()
-    basis = WithHarmonics(AceFeatures(smooth=not s.get("plain", False)), s.get("wigner", []), s.get("pairs", []))
+    basis = harmonic_basis(s)
     bins = Bins(ref, ref.loss_t_min, s["bins"])
     assert torch.equal(saved["edges"], bins.edges)
     model = Embedded(basis, bins, owners(basis), k=args.k, embedding=args.embedding, hidden=args.hidden).to(device)
