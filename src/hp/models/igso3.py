@@ -116,11 +116,23 @@ class AngleSampler:
         """One angle for every entry of s, on the device of s (the CPU for a number or a list), as `dtype` (float32
         on mps, which has no float64)."""
         s = torch.as_tensor(s).to(dtype)
+        lo, a = self.locate(s)
+        return self._draw(lo, a, s.shape, s.device, dtype, generator)
+
+    def locate(self, s: torch.Tensor):
+        """The levels of the table around every entry of s: (lo, a), lo the lower level (long) and a the weight of the
+        upper one, on the device of s. To draw many times at the same s without a synchronization on a GPU, locate
+        them once on the CPU, move them to the device and call draw()."""
         if (s < self.s_min * (1 - 1e-9)).any() or (s > self.s_max * (1 + 1e-9)).any():
             raise ValueError(f"s must be in [{self.s_min}, {self.s_max}].")
         position = (s.log() - self.log_s[0].item()) / (self.log_s[1] - self.log_s[0]).item()
         lo = position.floor().long().clamp(0, len(self.log_s) - 2)
-        return self._draw(lo, (position - lo).clamp(0, 1), s.shape, s.device, dtype, generator)
+        return lo, (position - lo).clamp(0, 1)
+
+    def draw(self, lo: torch.Tensor, a: torch.Tensor, shape, device, dtype=torch.float64,
+             generator: torch.Generator = None) -> torch.Tensor:
+        """Angles [*shape] at the levels (lo, a) of locate(), broadcast to shape (e.g. lo [J] for shape [B, J])."""
+        return self._draw(lo, a, tuple(shape), device, dtype, generator)
 
     def sample_at(self, s: float, shape, device="cpu", dtype=torch.float64,
                   generator: torch.Generator = None) -> torch.Tensor:

@@ -97,16 +97,24 @@ def rsgm_complete(model: RSGM, observed: torch.Tensor, visible: torch.Tensor, in
     optimizer = torch.optim.Adam([delta], lr=lr, betas=(0.9, 0.99))
     total = iterations * steps_per_iter
     vis = visible.to(device)
+    times = [t_min + (total - step - 1) / total * (t_max - t_min) for step in range(total)]
+    if not model.noise_on_cpu:  # the levels of all steps at once on the CPU: no synchronization in the loop
+        lo, a = model.angles.locate(model.joint_s(torch.tensor(times, dtype=torch.float64)))  # [total, J]
+        lo, a = lo.to(device), a.to(dtype).to(device)  # dtype first: mps has no float64
     with torch.enable_grad():
         for it in range(iterations):
             for i in range(steps_per_iter):
                 step = it * steps_per_iter + i
-                t = torch.full((n,), t_min + (total - step - 1) / total * (t_max - t_min), dtype=torch.float64)
                 x = exp_frame(start, scale * delta)
-                s = model.joint_s(t)
-                noise = model.angles.sample(s)[..., None] * igso3.random_axes((n, joints))
-                t = t.to(device, dtype)
-                x0_hat = rsgm_denoise(model, exp_frame(x.detach(), noise.to(device, dtype)), t)
+                if model.noise_on_cpu:  # the old way: float64 on the CPU, copied every step
+                    s = model.joint_s(torch.full((n,), times[step], dtype=torch.float64))
+                    noise = model.angles.sample(s)[..., None] * igso3.random_axes((n, joints))
+                    noise = noise.to(device, dtype)
+                else:
+                    noise = (model.angles.draw(lo[step], a[step], (n, joints), device, dtype)[..., None]
+                             * igso3.random_axes((n, joints), device=device, dtype=dtype))
+                t = torch.full((n,), times[step], device=device, dtype=dtype)
+                x0_hat = rsgm_denoise(model, exp_frame(x.detach(), noise), t)
                 weight = 0.5 * torch.sqrt(1 + 1 / model.joint_std(t))
                 prior = (weight * _angle2(x, x0_hat)).mean()
                 data = (_angle2(x[:, vis], y[:, vis])).sum() / (n * joints)

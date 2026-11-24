@@ -1,4 +1,5 @@
 """Pose completion (hp/evaluation/completion.py) and D-Flow (hp/models/dflow.py)."""
+import pytest
 import roma
 import torch
 
@@ -304,3 +305,50 @@ def test_the_validation_poses_are_a_fixed_draw_of_rotations(tmp_path):
     a, b = valid_poses(str(tmp_path), n=10), valid_poses(str(tmp_path), n=10)
     assert a.shape == (10, 21, 3, 3) and torch.equal(a, b)
     assert (a.transpose(-1, -2) @ a - torch.eye(3)).abs().max() < 1e-5
+
+
+def test_locate_and_draw_give_what_sample_gives():
+    """draw(locate(s)) is sample(s): the same angles for the same generator."""
+    from hp.models import igso3
+    sampler = igso3.AngleSampler(1e-6, 6.5, levels=64, angles=256, quantiles=257)
+    s = torch.tensor([[1e-5, 0.01, 0.3, 3.0]], dtype=torch.float64).expand(500, -1)
+    first = sampler.sample(s, torch.Generator().manual_seed(3))
+    lo, a = sampler.locate(s[0])
+    second = sampler.draw(lo, a, s.shape, "cpu", torch.float64, torch.Generator().manual_seed(3))
+    assert torch.equal(first, second)
+
+
+@pytest.mark.parametrize("on_cpu", [True, False])
+@pytest.mark.parametrize("device", ["cpu", pytest.param("mps", marks=pytest.mark.skipif(
+    not torch.backends.mps.is_available(), reason="no mps")), pytest.param("cuda", marks=pytest.mark.skipif(
+    not torch.cuda.is_available(), reason="no cuda"))])
+def test_the_noise_of_rsgm_sds_is_igso3_of_the_joint_times(monkeypatch, device, on_cpu):
+    """The noise of rsgm_complete, drawn on the device or on the CPU (noise_on_cpu): the angle of every joint is
+    IGSO(3) of its Brownian time s_j(t) = c_j s(t) (per-joint noise, so a wrong level per joint would show)."""
+    import math
+
+    import hp.models.score_completion as sc
+    from hp.models import igso3
+    torch.manual_seed(0)
+    c = torch.linspace(1.0, 30.0, 19).tolist()
+    model = RSGM(19, hidden=(32, 32), joint_scale=c).eval().to(device)
+    monkeypatch.setattr(model, "noise_on_cpu", on_cpu)
+    seen = []
+
+    def record(model, x_t, t):
+        seen.append(x_t.detach())
+        return x_t
+
+    monkeypatch.setattr(sc, "rsgm_denoise", record)
+    n = 20_000
+    rest = torch.eye(3).expand(n, 19, 3, 3)
+    visible = torch.zeros(19, dtype=torch.bool)
+    sc.rsgm_complete(model, rest, visible, rest, iterations=1, steps_per_iter=1, t_min=0.02, t_max=0.15)
+    assert seen[0].device.type == device
+    angles = roma.rotmat_to_rotvec(seen[0].cpu().double()).norm(dim=-1)  # the start is the identity
+    s = model.joint_s(torch.tensor([0.02], dtype=torch.float64))[0].cpu()
+    for j in (0, 9, 18):
+        sorted_ = angles[:, j].sort().values
+        empirical = torch.arange(1, n + 1, dtype=torch.float64) / n
+        ks = float((igso3.angle_cdf(sorted_[::40], float(s[j])) - empirical[::40]).abs().max())
+        assert ks < 1.63 / math.sqrt(n), (j, ks)

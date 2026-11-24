@@ -2,8 +2,9 @@
 
     python scripts/benchmark_igso_noise.py --device cuda:0
 
-For both ways (RSGM.noise_on_cpu False and True) it times a training step (loss, backward, Adam) and a network call of
-inpainting (hp.models.inpainting.rsgm_inpaint, with and without guidance), with the same untrained network and
+For both ways (RSGM.noise_on_cpu False and True) it times a training step (loss, backward, Adam), a network call of
+inpainting (hp.models.inpainting.rsgm_inpaint, with and without guidance) and a step of SDS, DPoser's optimization
+(hp.models.score_completion.rsgm_complete), with the same untrained network and
 uniform random poses: the timings do not depend on the data, and no dataset is needed. On mps the loss always draws
 on the CPU (no float64 there), so only inpainting differs.
 """
@@ -15,6 +16,7 @@ import torch
 
 from hp.models import build_model
 from hp.models.inpainting import rsgm_inpaint
+from hp.models.score_completion import rsgm_complete
 
 
 def sync(device: str) -> None:
@@ -45,6 +47,7 @@ def main():
     parser.add_argument("--train-repeats", type=int, default=100)
     parser.add_argument("--inpaint-poses", nargs="+", type=int, default=[5000, 20000], help="K x poses of a call")
     parser.add_argument("--inpaint-steps", type=int, default=20)
+    parser.add_argument("--sds-steps", type=int, default=20, help="steps of a timed SDS call")
     args = parser.parse_args()
     device, joints = args.device, args.joints
     torch.manual_seed(0)
@@ -84,6 +87,12 @@ def main():
                 lambda s, calls=calls: f"{1000 * s / calls:.2f} ms/call",
                 lambda: rsgm_inpaint(model, observed, visible, steps=args.inpaint_steps, resample=resample,
                                      guidance=guidance, replace=True, schedule="edm"), 3, warmup=1)
+    for n in args.inpaint_poses:
+        observed = roma.random_rotmat(n * joints).reshape(n, joints, 3, 3)
+        init = roma.random_rotmat(n * joints).reshape(n, joints, 3, 3)
+        row(f"SDS (DPoser's method), {n} poses", lambda s: f"{1000 * s / args.sds_steps:.2f} ms/step",
+            lambda: rsgm_complete(model, observed, visible, init, iterations=1, steps_per_iter=args.sds_steps), 3,
+            warmup=1)
 
 
 if __name__ == "__main__":
