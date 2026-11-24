@@ -144,6 +144,16 @@ Still to check on a trained phase-1 model: that the ELBO stays below the exact l
 - **Also reported:** d per joint and axis against the data rule (d = 1), and the ELBO and exact likelihood of phase 2
   against the control.
 
+## 6a. Outcome (2026-11-24)
+
+Run and closed as a negative result; the numbers are in section 20 of
+[the score report](experiments/2026-11-14_score_network_architectures.md). Phase 1: with logit scale 10 d collapses
+onto one coordinate (an optimization artifact, the ELBO 3 nats worse than d = 1); with scale 1 rule 1 passes
+(correlation of log d 0.98-1.00) and the ELBO is 0.6-1.0 nats better than d = 1. Phase 2: by rule 2 negative (left leg
+at step 100 +0.40 deg, hybrid +5.5 mm); on the test with the PoseD-Flow protocol not better than the published DPoser
+(FID 0.0126 ± 0.0010 against 0.0114 ± 0.0006). The learned d is kept as data
+(`~/data/experiments/learned_noise_elbo_slow_rule1.txt`).
+
 ## 7. What it does not answer
 
 - Pose-dependent noise d(x_0): the score is then no longer -eps_hat / (std d) of a Gaussian convolution, and SDS would

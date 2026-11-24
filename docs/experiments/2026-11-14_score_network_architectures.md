@@ -8,7 +8,8 @@ puts the three networks side by side and proposes the one to try.
 
 ## Summary
 
-Updated 2026-11-21 (sections 6-17). Validation numbers only; no test was run for this line of work.
+Updated 2026-11-24 (sections 6-17 and 20). Validation numbers only, except the PoseD-Flow protocol of the
+learned noise in section 20 (test, a report only).
 
 - **Skip connections or LayerNorm in the score network remove the drift of SDS at the smallest noise** and improve the
   hybrid (DPoser's optimization with the RSGM denoiser) by 15-17 mm on the legs and 10-14 mm on the arms over a plain
@@ -81,6 +82,16 @@ Updated 2026-11-21 (sections 6-17). Validation numbers only; no test was run for
   data), 0.30 deg behind DPoser on c10 (10.94); at step 199 it is level with DPoser (11.48-11.58 against 11.52). In
   the hybrid the left leg comes within 1.0-1.9 mm of DPoser; the mean of four occlusions barely moves (80.9-81.5
   against 81.7 mm, DPoser 84.2), with narrower hypotheses than DPoser's (APD 4.2 against 5.3 cm).
+- **The noise learned by the ELBO is negative** (section 20, 2026-11-23): DPoser's per-coordinate noise d learned by
+  the continuous-time ELBO is reproducible (correlation of log d 0.98-1.00 between seeds; with fast logits it
+  collapses onto one coordinate) and improves the likelihood (-ELBO 51.4-51.8 against 52.3 nats with d = 1), but
+  DPoser trained with it is worse in completion (left leg at step 100 +0.40 deg, hybrid +5.5 mm; rule 2: negative)
+  and not better in generation on the test (FID 0.0126 ± 0.0010 against 0.0114 ± 0.0006). The learned d moves
+  DPoser's profile a quarter of the way toward isotropic noise.
+- **At equal APD per-joint noise does not help RSGM's completion** (section 20): the Optuna fronts put it 0.15-2.9 mm
+  above isotropic noise in inpainting and 0.8-1.9 mm below in D-Flow at APD < 7.5 cm (one seed, near the noise);
+  DPoser's front stays 3-4 mm below all of them. The gains of sections 10 and 15-16 in the first phase and the
+  hybrid come partly with narrower hypotheses.
 
 ## 1. The three networks
 
@@ -998,6 +1009,117 @@ while the mean of four occlusions stays at about 81 mm, 3 mm below DPoser's at a
 best of 10: narrower hypotheses, as with every per-joint noise. Which part of the network does it (width, depth,
 residual or dropout) these runs do not separate.
 
+## 20. 2026-11-21: The noise of DPoser learned by the ELBO (negative), and section 16 at equal APD
+
+(Sections 18-19 are on `experimental/wigner-inputs`.)
+
+**Question.** Sections 15-16 found that the shape of the noise moves the first phase of SDS the same way in RSGM and
+in DPoser. If the shape matters, can it be learned instead of set by a rule? The plan
+([elbo_noise_plan.md](../elbo_noise_plan.md)) learns DPoser's noise covariance std(t)^2 diag(d^2) per coordinate by
+the continuous-time ELBO, then trains DPoser as published with that d frozen.
+
+**Method** (`hp.models.dposer_elbo`, a subclass that leaves `hp.models.dposer` unchanged, which the golden tests of
+`tests/test_dposer_golden.py` check in float64 and float32).
+- d^2 = 57 softmax(scale x logits), so that mean d^2 = 1; logits = 0 is the published DPoser.
+- The loss is -ELBO per coordinate (VDM, Kingma et al. 2021, Eq. 11 and 17): the prior KL, a Gaussian
+  reconstruction, and the diffusion term with the time drawn uniformly in gamma = -log SNR.
+- With a Bayes-optimal denoiser the ELBO does not depend on d (the plan, section 4, with Gaussian tests). So d is
+  learned only through the limited network and the boundaries; a fixed-d run is the reference.
+- Phase 1: `scripts/train_dposer_posedflow.py --config elbo | elbo_t0 | elbo_fixed | elbo_slow | elbo_slow_t0`, c10,
+  30k x 4096, lr 2e-4, workstation2, about 17 minutes each. Phase 2: `--config learned --noise-from <the two
+  elbo_slow runs>` (the geometric mean of their d), full data, the paper's budget (200k x 5120), seed 10, 107 minutes.
+
+**Rules, written before the runs.** Rule 1 (phase 1): the correlation of log d between seeds > 0.8. Rule 2 (phase 2,
+against the published DPoser, section 16): an effect if the left leg at step 100 is lower by more than 0.2 deg and the
+hybrid's mean of four occlusions is lower by more than 2 mm; negative if worse by as much; in between, a second seed.
+Final test (PoseD-Flow protocol on the test split, only as a report): "superior" if the 95% interval of FID lies
+wholly below the control's and Wasserstein, recall and precision are not worse by more than 3 std; only then return
+to validation.
+
+**Phase 1** (`explore/evaluation/learned_noise.py <runs> --poses 2000 --loglik 200`; 2000 validation poses, nats per
+pose of the z-scored vectors; exact -log p by the probability-flow ODE on 200 of them):
+
+| config | logit scale | d (min-max) | corr log d between runs | -ELBO | exact -log p |
+|---|---|---|---|---|---|
+| elbo, s10 / s11 (and a duplicate s10) | 10 | 7.53 on RightFoot x, 0.04-0.14 elsewhere | 0.996-1.000 | 55.24-55.30 | 49.41-49.51 |
+| elbo_t0 (t0 = 1e-3) | 10 | the same collapse | 1.000 | 53.58 | 49.14 |
+| elbo_fixed (d = 1) | - | 1 | - | 52.34 | 50.33 |
+| elbo_slow, s10 / s11 | 1 | 0.44-2.16 | 0.985 | 51.73 / 51.38 | 50.13 / 49.95 |
+| elbo_slow_t0 | 1 | 0.44-2.16 | 0.998 / 0.980 | 51.81 | 49.89 |
+
+With the fast logits d collapses onto one coordinate in every run, seed and t0; its ELBO is 3 nats worse than d = 1,
+an optimization artifact, although its exact likelihood is better (the bound is loose there by about 6 nats). With
+the slow logits rule 1 passes and the ELBO is 0.6-1.0 nats better than d = 1. The learned d (the geometric mean of
+three runs): less noise on the hips x (0.46-0.47), knees x (0.52), shoulders y/z (about 0.5) and arms (0.50-0.66);
+more on the neck x (2.04), Spine0 z (1.68), head x (1.71), the spine x, feet and hands (1.1-1.5).
+
+**Phase 2: the phase diagnostics and the hybrid** (as section 16: `trajectory.py -`, 300 validation poses, K = 10,
+deg; `hybrid.py 500 dposer`, 500 validation poses, mean (mm) / APD (cm) / best of 10 (mm) over four occlusions):
+
+| DPoser | left_leg 100 / 199 | arms 100 / 199 | hybrid left_leg | legs | arms | trunk | mean of 4 |
+|---|---|---|---|---|---|---|---|
+| control (d = 1) | **10.78** / **11.52** | **21.73** / **22.13** | **79.4** | **103.3** | 110.6 | 43.5 | **84.2** / 5.26 / **51.0** |
+| learned (ELBO d) | 11.18 / 11.82 | 22.77 / 23.26 | 85.7 | 108.8 | 118.7 | 45.4 | 89.7 / 6.06 / 52.8 |
+| joint (section 16) | 11.31 / 11.63 | 22.08 / 22.28 | 81.8 | 104.7 | **110.3** | 45.1 | 85.5 / 5.54 / 50.6 |
+| iso (section 16) | 12.40 / 12.30 | 23.20 / 23.38 | 87.2 | 114.4 | 118.1 | **43.3** | 90.8 / 5.91 / 54.2 |
+
+By rule 2 the learned d is negative: +0.40 deg at step 100 and +5.5 mm in the hybrid. The error starts equal (28.02
+deg at step 0) and falls more slowly all along (17.07 against 15.80 at step 20), with more spread.
+
+**Final test, PoseD-Flow protocol** (`scripts/evaluate_posedflow_comparison.py`; their test split; FID, FID own, APD
+and dNN over 20 sets of 500 samples with 95% intervals; the harness against 54,200 test poses: Wasserstein, recall
+and precision in deg, mean ± std of 3 repeats):
+
+| DPoser | FID | FID own | APD (cm) | dNN | Wasserstein | recall | precision |
+|---|---|---|---|---|---|---|---|
+| control (d = 1) | **0.0114 ± 0.0006** | **0.0072 ± 0.0006** | 15.11 ± 0.17 | 0.0682 | 16.21 ± 0.03 | 11.42 ± 0.04 | 12.42 ± 0.02 |
+| learned (ELBO d) | 0.0126 ± 0.0010 | 0.0082 ± 0.0008 | 15.03 ± 0.21 | 0.0671 | 16.20 ± 0.10 | 11.40 ± 0.05 | 12.41 ± 0.08 |
+| joint | 0.0129 ± 0.0012 | 0.0086 ± 0.0012 | 14.97 ± 0.22 | 0.0679 | 16.28 ± 0.13 | 11.42 ± 0.04 | 12.51 ± 0.09 |
+| iso | 0.0125 ± 0.0010 | 0.0081 ± 0.0011 | 14.98 ± 0.21 | 0.0680 | 16.29 ± 0.14 | 11.46 ± 0.04 | 12.55 ± 0.08 |
+
+Not superior: the learned FID is above the control's. In generation the four noise profiles are close (FID within
+1-1.5 intervals, the harness level); the noise profile shows in completion, not here. The control was evaluated on a
+4090 earlier, the other three on the Mac (mps).
+
+**What the learned d is** (`explore/evaluation/dposer_noise_profiles.py`;
+[on the body](figures/dposer_noise_profiles_body.png), [per coordinate](figures/dposer_noise_profiles_coords.png)).
+DPoser's d = 1 is itself a profile: in axis-angle its noise is proportional to the std of each coordinate. The
+learned d compresses that profile: it halves the noise where the data spread most (knees, hips x, shoulders, arms)
+and raises it where they spread least (spine, neck, head). That is part of the way toward `iso`: log d of the learned
+d against that of `iso` has correlation 0.42 and slope 0.27 (against `joint` 0.19 and 0.16), and the learned d lies
+between `joint` and `iso` in the diagnostics. A guess, not tested: the ELBO denoises least the coordinates that the
+others predict well, but in completion those are the hidden ones, and less noise there means less exploration. The
+profile best for the likelihood is not the one best for completion.
+
+**Section 16 at equal APD.** Sections 10 and 16 read the noise's effect from the first phase and the hybrid's mean,
+and a lower mean can come from narrower hypotheses. The Optuna studies of completion (1000 validation poses, K = 10;
+mean of four occlusions; the front averaged over bands of APD by `plot_study_fronts.py --bands`; figures
+[inpainting](figures/fronts_noise_inpaint.png) and [D-Flow](figures/fronts_noise_dflow.png)) compare the noise at
+equal diversity:
+
+| study (validation) | mean, APD 5.5-6.4 | 6.4-7.5 | 7.0-8.5 | best of 10, APD 6.4-7.5 |
+|---|---|---|---|---|
+| inpainting, RSGM abl norm (isotropic), c10 | 89.55 | 93.35 | 99.21 | 50.70 |
+| inpainting, RSGM abl norm aniso (per joint), c10 | 90.28 | 95.92 | 102.11 | 52.78 |
+| inpainting, RSGM dposer-like (isotropic), full | 90.24 | 93.41 | 98.79 | 49.97 |
+| inpainting, RSGM dposer-like aniso (per joint), full | 90.39 | 93.76 | 99.88 | 50.80 |
+| inpainting, DPoser full | **86.34** | **90.35** | **97.39** | **48.39** |
+| D-Flow, RSGM dposer-like (isotropic), full | 93.48 | 96.33 | 99.65 | 51.30 |
+| D-Flow, RSGM dposer-like aniso (per joint), full | 91.60 | 95.50 | 99.62 | 51.12 |
+
+In inpainting, per-joint noise moves the front up at every APD (0.15-2.9 mm in the mean, 0.8-2.1 mm in best of 10); in
+D-Flow it moves it down by 0.8-1.9 mm below APD 7.5 cm and not above, with best of 10 equal (60 trials, one seed,
+about 0.7 mm between seeds: at the edge of the noise). The front of DPoser is 3-4 mm below every RSGM front whatever
+the noise. In the reverse test, only `iso` is a loss that diversity cannot explain (a higher APD and a 3.2 mm worse
+best of 10); `joint` moves along the trade-off.
+
+**What it says.** Learning d by the ELBO gives a reproducible profile with a better likelihood, and a worse DPoser in
+completion and no better one in generation: negative, and the line is closed. The claim of sections 10 and 16 that
+the noise is a part of the gap to DPoser holds for the first phase and the hybrid, but not at equal APD in the
+completion protocols: there per-joint noise does not help RSGM's inpainting and helps D-Flow at most a little. A
+noise profile, if pursued, has to be chosen on completion at equal APD, not on the likelihood or the hybrid's mean.
+The output lines are in [the output file](2026-11-14_score_network_architectures_elbo.txt).
+
 ## Conclusions
 
 1. Residual connections or LayerNorm are what a score network on SO(3) needs for score distillation at small noise:
@@ -1028,8 +1150,16 @@ residual or dropout) these runs do not separate.
    No network is the best for inpainting, the hybrid and generation together. No combination beats `abl_norm` by
    the rule fixed before, but the rule does not separate the five best cells; the open candidates are `fact_RDW`
    (and its width 2048) and `fact_RADW`, to be compared with `fact_N` at equal APD by an inpainting study.
+6. The noise profile cannot be learned by the likelihood for completion (section 20): the ELBO's d is better for the
+   density and worse for completion, and per-joint noise does not help RSGM's completion at equal APD. Item 2's
+   "it is the noise" holds for the first phase of SDS and the hybrid, not for the completion protocols.
 
 ## What it does not show
+
+- The learned noise (section 20): one seed of phase 2; phase 1 on c10 with 30k steps, phase 2 on the full data; d is
+  one vector for all times and poses; the final test's control ran on a 4090 and the others on mps. The fronts of
+  section 20 are one seed per model and 60 trials for D-Flow; no front of DPoser with the noise of `joint`, `iso` or
+  the learned d. The reason the learned d hurts completion (less noise on the hidden coordinates) is a guess.
 
 - The wide network (section 17): width, depth, residual and dropout changed together, so which of them does it is not
   known; one budget (30k x 4096), so whether the full data help with a longer training is not known either; one seed
@@ -1075,6 +1205,17 @@ residual or dropout) these runs do not separate.
   model's, so the hybrid of an aniso model also uses DPoser-like noise per joint.
 
 ## Where things are
+
+- The learned noise (section 20): phase-1 runs `~/data/experiments/dposer_posedflow_elbo{,_t0,_fixed,_slow,_slow_t0}_s10`
+  and `dposer_posedflow_elbo{,_slow}_s11` (`elbo_s10/run_0002` is the reported one; `run_0001` abandoned, `run_0003`
+  a duplicate trained on the CPU); their outputs `~/data/experiments/learned_noise_elbo_*.txt`. Phase 2
+  `~/data/experiments/full/dposer_posedflow_learned_s10` with `{trajectory,hybrid}_dposer_learned_s10.txt` next to
+  it; the final test in `~/data/experiments/posedflow_comparison/cache/DPoser_their_full_data{,_ELBO_noise,_joint_noise,_iso_noise}/`
+  (all on the Mac; trained on workstation2). Lines in
+  [2026-11-14_score_network_architectures_elbo.txt](2026-11-14_score_network_architectures_elbo.txt). Code:
+  `src/hp/models/dposer_elbo.py`, `tests/test_dposer_elbo.py`, `tests/test_dposer_golden.py`,
+  `explore/evaluation/learned_noise.py`, `explore/evaluation/dposer_noise_profiles.py`; the plan
+  [elbo_noise_plan.md](../elbo_noise_plan.md); the Optuna studies of the fronts in `~/data/experiments/completion/optuna/`.
 
 - Per-axis noise and the alpha family (section 15): runs `~/data/experiments/factorial/rsgm_posedflow_fact_NA_x{,_a05,_a15}_s10`,
   `rsgm_posedflow_fact_NA_x_s11`, `rsgm_posedflow_fact_NA_s11` (on the Mac; seed 10 also on workstation2, the alpha

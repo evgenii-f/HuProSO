@@ -39,6 +39,8 @@ STUDIES = {  # name: (label, colour, marker)
     "rsgm_inpaint_mean_apd_full_small":("RSGM small full, inpainting", "tab:brown", "D"),
     "dposer_full_method_mean_apd": ("DPoser full, DPoser's method", "tab:pink", "v"),
     "dposer_full_inpaint_mean_apd": ("DPoser full, inpainting", "black", "s"),
+    "rsgm_dflow_mean_apd_full_dposer_like": ("RSGM dposer-like full, D-Flow", "tab:olive", "D"),
+    "rsgm_dflow_mean_apd_full_dposer_like_aniso": ("RSGM dposer-like aniso full, D-Flow", "darkgreen", "P"),
 }
 RULE_APD = 6.40  # D-Flow Heun EDM 50 of small std c10 on the same poses
 PANELS = (("mean", "mean MPVPE (mm) ↓"), ("best_of_k", "best of 10 MPVPE (mm) ↓"))

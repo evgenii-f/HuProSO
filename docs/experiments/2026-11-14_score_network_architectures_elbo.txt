@@ -1,0 +1,204 @@
+# Section 20: the noise of DPoser learned by the ELBO. Raw outputs, Mac (mps), 2026-11-21 to 2026-11-24.
+
+## Phase 1, logit scale 10 (configs elbo, elbo_t0): PYTHONPATH=src python explore/evaluation/learned_noise.py <runs> --poses 2000 --loglik 200
+== /Users/evgeniifedorov/data/experiments/dposer_posedflow_elbo_s10/run_0002
+  checkpoint   corr(log d, final)   max |log d - final|
+  checkpoint_020000              1.000                0.132
+  checkpoint_025000              1.000                0.039
+  checkpoint_030000              1.000                0.000
+== /Users/evgeniifedorov/data/experiments/dposer_posedflow_elbo_s11/run_0001
+  checkpoint   corr(log d, final)   max |log d - final|
+  checkpoint_020000              1.000                0.128
+  checkpoint_025000              1.000                0.040
+  checkpoint_030000              1.000                0.000
+== /Users/evgeniifedorov/data/experiments/dposer_posedflow_elbo_s10/run_0003
+  checkpoint   corr(log d, final)   max |log d - final|
+  checkpoint_005000              0.559                2.952
+  checkpoint_020000              1.000                0.131
+  checkpoint_025000              1.000                0.039
+  checkpoint_030000              1.000                0.000
+== /Users/evgeniifedorov/data/experiments/dposer_posedflow_elbo_t0_s10/run_0001
+  checkpoint   corr(log d, final)   max |log d - final|
+  checkpoint_020000              1.000                0.129
+  checkpoint_025000              1.000                0.039
+  checkpoint_030000              1.000                0.000
+
+d per joint, axis-angle coordinates x / y / z, the runs and their geometric mean
+  LeftUpLeg      0.05/0.07/0.07   0.05/0.08/0.08   0.05/0.07/0.07   0.04/0.06/0.06   0.04/0.07/0.07
+  RightUpLeg     0.04/0.08/0.07   0.05/0.08/0.08   0.04/0.08/0.07   0.04/0.07/0.06   0.04/0.07/0.07
+  Spine0         0.06/0.06/0.10   0.06/0.07/0.10   0.06/0.06/0.10   0.05/0.06/0.09   0.06/0.06/0.10
+  LeftLeg        0.05/0.08/0.06   0.05/0.09/0.07   0.05/0.08/0.07   0.04/0.07/0.06   0.05/0.08/0.06
+  RightLeg       0.05/0.08/0.08   0.06/0.08/0.08   0.05/0.08/0.08   0.04/0.07/0.07   0.05/0.08/0.08
+  Spine1         0.08/0.08/0.08   0.09/0.08/0.09   0.08/0.08/0.08   0.07/0.07/0.07   0.08/0.08/0.08
+  LeftFoot       0.09/0.09/0.08   0.14/0.09/0.09   0.09/0.09/0.08   0.08/0.08/0.07   0.10/0.09/0.08
+  RightFoot      7.53/0.08/0.09   7.53/0.08/0.10   7.53/0.08/0.10   7.53/0.07/0.08   7.53/0.08/0.09
+  Spine2         0.09/0.08/0.09   0.10/0.08/0.09   0.10/0.08/0.09   0.08/0.07/0.08   0.09/0.08/0.09
+  Neck           0.10/0.08/0.09   0.10/0.08/0.10   0.10/0.08/0.09   0.08/0.07/0.08   0.10/0.07/0.09
+  LeftShoulder   0.07/0.05/0.05   0.07/0.05/0.05   0.07/0.05/0.05   0.06/0.04/0.04   0.07/0.04/0.05
+  RightShoulder  0.07/0.05/0.05   0.08/0.05/0.05   0.07/0.05/0.05   0.06/0.04/0.04   0.07/0.04/0.05
+  Head           0.09/0.08/0.08   0.09/0.08/0.09   0.09/0.08/0.08   0.08/0.07/0.07   0.09/0.08/0.08
+  LeftArm        0.06/0.06/0.05   0.06/0.06/0.05   0.06/0.06/0.05   0.05/0.05/0.04   0.06/0.06/0.05
+  RightArm       0.05/0.06/0.05   0.05/0.07/0.05   0.05/0.06/0.05   0.04/0.05/0.04   0.05/0.06/0.05
+  LeftElbow      0.07/0.06/0.08   0.07/0.06/0.08   0.07/0.06/0.08   0.06/0.05/0.07   0.07/0.06/0.08
+  RightElbow     0.07/0.06/0.07   0.07/0.06/0.08   0.07/0.05/0.07   0.06/0.05/0.06   0.07/0.05/0.07
+  LeftHand       0.08/0.08/0.07   0.08/0.08/0.08   0.08/0.08/0.08   0.07/0.07/0.06   0.08/0.08/0.07
+  RightHand      0.08/0.09/0.07   0.08/0.08/0.08   0.08/0.08/0.07   0.07/0.07/0.06   0.08/0.08/0.07
+
+correlation of log d between the runs (rule 1: > 0.8)
+  dposer_posedflow_elbo_s10/run_0002 - dposer_posedflow_elbo_s11/run_0001: 0.997
+  dposer_posedflow_elbo_s10/run_0002 - dposer_posedflow_elbo_s10/run_0003: 1.000
+  dposer_posedflow_elbo_s10/run_0002 - dposer_posedflow_elbo_t0_s10/run_0001: 1.000
+  dposer_posedflow_elbo_s11/run_0001 - dposer_posedflow_elbo_s10/run_0003: 0.997
+  dposer_posedflow_elbo_s11/run_0001 - dposer_posedflow_elbo_t0_s10/run_0001: 0.996
+  dposer_posedflow_elbo_s10/run_0003 - dposer_posedflow_elbo_t0_s10/run_0001: 1.000
+
+-ELBO on 2000 validation poses (nats per pose): prior / reconstruction / diffusion = total
+  dposer_posedflow_elbo_s10/run_0002: 0.319 / -853.70 / 908.66 = 55.28; exact -log p on 200: 49.41
+  dposer_posedflow_elbo_s11/run_0001: 0.293 / -850.98 / 905.99 = 55.30; exact -log p on 200: 49.47
+  dposer_posedflow_elbo_s10/run_0003: 0.316 / -853.40 / 908.32 = 55.24; exact -log p on 200: 49.51
+  dposer_posedflow_elbo_t0_s10/run_0001: 0.424 / -593.68 / 646.84 = 53.58; exact -log p on 200: 49.14
+
+## Phase 1, d = 1 fixed (config elbo_fixed): the same command with the fixed run (last line)
+  dposer_posedflow_elbo_fixed_s10/run_0001: 0.001 / -706.55 / 758.88 = 52.34; exact -log p on 200: 50.33
+
+## Phase 1, logit scale 1 (configs elbo_slow, elbo_slow_t0): rule 1
+== /Users/evgeniifedorov/data/experiments/dposer_posedflow_elbo_slow_s10/run_0001
+  checkpoint   corr(log d, final)   max |log d - final|
+  checkpoint_020000              0.999                0.089
+  checkpoint_025000              1.000                0.023
+  checkpoint_030000              1.000                0.000
+== /Users/evgeniifedorov/data/experiments/dposer_posedflow_elbo_slow_s11/run_0001
+  checkpoint   corr(log d, final)   max |log d - final|
+  checkpoint_020000              0.999                0.066
+  checkpoint_025000              1.000                0.017
+  checkpoint_030000              1.000                0.000
+== /Users/evgeniifedorov/data/experiments/dposer_posedflow_elbo_slow_t0_s10/run_0001
+  checkpoint   corr(log d, final)   max |log d - final|
+  checkpoint_020000              0.999                0.094
+  checkpoint_025000              1.000                0.025
+  checkpoint_030000              1.000                0.000
+== /Users/evgeniifedorov/data/experiments/dposer_posedflow_elbo_fixed_s10/run_0001: fixed d (no learned noise), only its ELBO below
+
+d per joint, axis-angle coordinates x / y / z, the runs and their geometric mean
+  LeftUpLeg      0.48/0.86/0.71   0.48/0.84/0.74   0.46/0.82/0.67   0.47/0.84/0.71
+  RightUpLeg     0.47/0.91/0.84   0.47/0.96/0.80   0.44/0.87/0.78   0.46/0.91/0.81
+  Spine0         0.56/0.70/1.58   0.55/0.71/1.88   0.54/0.67/1.61   0.55/0.69/1.68
+  LeftLeg        0.53/1.08/0.60   0.53/1.09/0.60   0.50/1.06/0.56   0.52/1.08/0.59
+  RightLeg       0.53/0.95/0.69   0.54/0.98/0.71   0.50/0.93/0.66   0.52/0.95/0.69
+  Spine1         1.24/0.96/0.96   1.41/0.89/0.96   1.23/0.91/0.95   1.29/0.92/0.96
+  LeftFoot       1.43/1.15/1.08   1.49/1.07/0.99   1.40/1.13/1.09   1.44/1.11/1.05
+  RightFoot      1.51/0.95/1.11   1.43/0.91/1.18   1.69/0.92/1.09   1.54/0.93/1.13
+  Spine2         1.48/0.92/1.10   1.63/0.91/1.06   1.48/0.91/1.07   1.53/0.91/1.08
+  Neck           2.09/0.97/1.60   1.89/0.89/1.59   2.16/0.96/1.68   2.04/0.94/1.62
+  LeftShoulder   0.69/0.51/0.53   0.68/0.50/0.52   0.65/0.48/0.51   0.67/0.49/0.52
+  RightShoulder  0.80/0.51/0.51   0.76/0.52/0.49   0.75/0.49/0.48   0.77/0.50/0.49
+  Head           1.61/1.16/1.04   1.93/1.03/1.06   1.61/1.17/1.04   1.71/1.12/1.05
+  LeftArm        0.59/0.65/0.52   0.60/0.65/0.50   0.57/0.62/0.49   0.59/0.64/0.50
+  RightArm       0.51/0.68/0.51   0.50/0.67/0.52   0.48/0.64/0.48   0.50/0.66/0.50
+  LeftElbow      0.94/0.69/1.07   0.84/0.65/1.02   0.91/0.65/1.07   0.90/0.66/1.05
+  RightElbow     0.90/0.66/0.83   0.88/0.65/0.82   0.86/0.62/0.80   0.88/0.64/0.82
+  LeftHand       1.28/1.26/1.08   1.09/1.18/1.13   1.35/1.28/1.04   1.23/1.24/1.08
+  RightHand      1.31/1.23/1.12   1.12/1.34/1.04   1.40/1.28/1.15   1.27/1.28/1.10
+
+correlation of log d between the runs (rule 1: > 0.8)
+  dposer_posedflow_elbo_slow_s10/run_0001 - dposer_posedflow_elbo_slow_s11/run_0001: 0.985
+  dposer_posedflow_elbo_slow_s10/run_0001 - dposer_posedflow_elbo_slow_t0_s10/run_0001: 0.998
+  dposer_posedflow_elbo_slow_s11/run_0001 - dposer_posedflow_elbo_slow_t0_s10/run_0001: 0.980
+
+-ELBO on 2000 validation poses (nats per pose): prior / reconstruction / diffusion = total
+  dposer_posedflow_elbo_slow_s10/run_0001: 0.002 / -714.52 / 766.25 = 51.73; exact -log p on 200: 50.13
+  dposer_posedflow_elbo_slow_s11/run_0001: 0.002 / -715.16 / 766.54 = 51.38; exact -log p on 200: 49.95
+  dposer_posedflow_elbo_slow_t0_s10/run_0001: 0.003 / -448.06 / 499.87 = 51.81; exact -log p on 200: 49.89
+  dposer_posedflow_elbo_fixed_s10/run_0001: 0.001 / -706.55 / 758.88 = 52.34; exact -log p on 200: 50.33
+
+## Phase 2 (config learned, full data, paper budget): DP_RUN=~/data/experiments/full/dposer_posedflow_learned_s10/run_0001 trajectory.py -
+left_leg step t | DPoser err spread |x-x0h|
+     0 0.149 |   28.02   0.00  0.225
+    10 0.145 |   20.83   5.57  0.152
+    20 0.140 |   17.07   6.47  0.131
+    30 0.134 |   14.93   6.97  0.116
+    40 0.130 |   13.59   7.01  0.106
+    50 0.124 |   12.74   6.94  0.098
+    60 0.119 |   12.15   6.92  0.092
+    70 0.115 |   11.80   6.95  0.084
+    80 0.109 |   11.55   6.96  0.080
+    90 0.105 |   11.33   7.05  0.074
+   100 0.100 |   11.18   7.10  0.068
+   110 0.094 |   11.20   7.55  0.063
+   120 0.090 |   11.40   8.61  0.058
+   130 0.084 |   11.48   9.13  0.053
+   140 0.079 |   11.53   9.25  0.047
+   150 0.075 |   11.59   9.42  0.042
+   160 0.069 |   11.62   9.53  0.038
+   170 0.064 |   11.64   9.69  0.033
+   180 0.060 |   11.67   9.86  0.029
+   190 0.054 |   11.73  10.03  0.024
+   199 0.050 |   11.82  10.23  0.021
+arms step t | DPoser err spread |x-x0h|
+     0 0.149 |   33.09   0.00  0.185
+    10 0.145 |   28.90   7.50  0.140
+    20 0.140 |   26.68   9.24  0.122
+    30 0.134 |   25.28  10.18  0.107
+    40 0.130 |   24.40  10.66  0.097
+    50 0.124 |   23.81  10.94  0.088
+    60 0.119 |   23.44  11.19  0.082
+    70 0.115 |   23.23  11.43  0.076
+    80 0.109 |   23.05  11.65  0.071
+    90 0.105 |   22.89  11.86  0.065
+   100 0.100 |   22.77  12.00  0.060
+   110 0.094 |   22.78  12.46  0.056
+   120 0.090 |   22.93  13.42  0.052
+   130 0.084 |   23.05  14.16  0.047
+   140 0.079 |   23.14  14.69  0.043
+   150 0.075 |   23.18  15.09  0.038
+   160 0.069 |   23.18  15.40  0.034
+   170 0.064 |   23.17  15.71  0.030
+   180 0.060 |   23.19  15.97  0.026
+   190 0.054 |   23.21  16.14  0.022
+   199 0.050 |   23.26  16.30  0.019
+
+## Phase 2: hybrid.py 500 dposer (control line from hybrid_dposer_s10.txt)
+learned: dposer  (21s): left_leg 85.7/7.25/41.6 | legs 108.8/8.34/67.5 | arms 118.7/6.48/78.0 | trunk 45.4/2.16/23.9
+control: dposer  (31s): left_leg 79.4/6.31/39.7 | legs 103.3/7.16/66.2 | arms 110.6/5.61/74.1 | trunk 43.5/1.96/24.0
+
+## Final test, PoseD-Flow protocol: scripts/evaluate_posedflow_comparison.py --device mps (control: cuda, earlier)
+control  FID 0.01140+-0.00062 FID_own 0.00724+-0.00064 APD 15.11+-0.17 dNN 0.0682+-0.0006 | W 16.21+-0.027 recall 11.42+-0.043 precision 12.42+-0.016
+learned  FID 0.01263+-0.00100 FID_own 0.00823+-0.00084 APD 15.03+-0.21 dNN 0.0671+-0.0005 | W 16.20+-0.102 recall 11.40+-0.051 precision 12.41+-0.079
+joint    FID 0.01291+-0.00115 FID_own 0.00864+-0.00115 APD 14.97+-0.22 dNN 0.0679+-0.0005 | W 16.28+-0.125 recall 11.42+-0.040 precision 12.51+-0.086
+iso      FID 0.01247+-0.00104 FID_own 0.00810+-0.00106 APD 14.98+-0.21 dNN 0.0680+-0.0006 | W 16.29+-0.137 recall 11.46+-0.044 precision 12.55+-0.077
+
+## Noise profiles: PYTHONPATH=src python explore/evaluation/dposer_noise_profiles.py docs/experiments/figures
+log d learned vs iso (degraded): corr 0.424, slope 0.267
+log d learned vs joint (RSGM-like): corr 0.185, slope 0.163
+
+## Fronts over APD bands, inpainting: plot_study_fronts.py <studies> --bands
+mean: the front averaged over bands of APD (mm)
+| study | trials | APD 5.5-6.4 | APD 6.0-7.0 | APD 6.4-7.5 | APD 6.4-8.5 | APD 7.0-8.5 |
+|---|---|---|---|---|---|---|
+| RSGM abl norm, inpainting | 120 | 89.55 | 90.92 | 93.35 | 97.10 | 99.21 |
+| RSGM abl norm aniso, inpainting | 120 | 90.28 | 92.98 | 95.92 | 99.84 | 102.11 |
+| RSGM dposer-like full, inpainting | 120 | 90.24 | 91.37 | 93.41 | 96.88 | 98.79 |
+| RSGM dposer-like aniso full, inpainting | 120 | 90.39 | 91.47 | 93.76 | 97.68 | 99.88 |
+| DPoser full, inpainting | 120 | 86.34 | 87.56 | 90.35 | 94.80 | 97.39 |
+
+best_of_k: the front averaged over bands of APD (mm)
+| study | trials | APD 5.5-6.4 | APD 6.0-7.0 | APD 6.4-7.5 | APD 6.4-8.5 | APD 7.0-8.5 |
+|---|---|---|---|---|---|---|
+| RSGM abl norm, inpainting | 120 | 49.66 | 50.06 | 50.70 | 51.76 | 52.34 |
+| RSGM abl norm aniso, inpainting | 120 | 51.62 | 52.05 | 52.78 | 53.79 | 54.41 |
+| RSGM dposer-like full, inpainting | 120 | 49.28 | 49.57 | 49.97 | 51.06 | 51.58 |
+| RSGM dposer-like aniso full, inpainting | 120 | 50.21 | 50.35 | 50.80 | 51.97 | 52.58 |
+| DPoser full, inpainting | 120 | 47.35 | 47.55 | 48.39 | 50.19 | 51.19 |
+
+## Fronts over APD bands, D-Flow
+mean: the front averaged over bands of APD (mm)
+| study | trials | APD 5.5-6.4 | APD 6.0-7.0 | APD 6.4-7.5 | APD 6.4-8.5 | APD 7.0-8.5 |
+|---|---|---|---|---|---|---|
+| RSGM dposer-like full, D-Flow | 60 | 93.48 | 95.29 | 96.33 | 98.54 | 99.65 |
+| RSGM dposer-like aniso full, D-Flow | 60 | 91.60 | 93.66 | 95.50 | 98.15 | 99.62 |
+
+best_of_k: the front averaged over bands of APD (mm)
+| study | trials | APD 5.5-6.4 | APD 6.0-7.0 | APD 6.4-7.5 | APD 6.4-8.5 | APD 7.0-8.5 |
+|---|---|---|---|---|---|---|
+| RSGM dposer-like full, D-Flow | 60 | 51.22 | 51.22 | 51.30 | 51.60 | 51.76 |
+| RSGM dposer-like aniso full, D-Flow | 60 | 51.12 | 51.12 | 51.12 | 51.59 | 51.78 |
