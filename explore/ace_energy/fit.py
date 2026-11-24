@@ -337,7 +337,20 @@ def main() -> None:
 
 
 def report(ace, ref, bins, ridge, result, valid, compare, args, several: bool) -> None:
-    """Evaluate one fit on the validation draws, print its table (and the networks' with the first), save it."""
+    """Evaluate one fit on the validation draws, print its table (and the networks' with the first), save it: the
+    weights before the evaluation, so that an error there does not lose the fit."""
+    out = Path(args.out).expanduser() if args.out and not args.load else None
+    if out is not None:
+        out = out.with_name(f"{out.stem}_r{ridge:g}{out.suffix}") if several else out
+        out.parent.mkdir(parents=True, exist_ok=True)
+    settings = dict(vars(args), ridge=ridge)
+
+    def save(table):
+        torch.save(dict(w=result["w"], edges=bins.edges, fit_loss=result["fit_loss"], table=table,
+                        settings=settings, descriptors=ace.dim), out)
+
+    if out is not None:
+        save({})
     losses = evaluate(ace, ref, bins, result["w"], valid, compare, args.batch, ref.loss_t_min, args.interp)
     losses[f"ACE energy, ridge {ridge:g}"] = losses.pop("ACE energy")
     k = bins.index(losses["t"])
@@ -359,14 +372,8 @@ def report(ace, ref, bins, ridge, result, valid, compare, args, several: bool) -
     print(f"tails of the energy's loss (ridge {ridge:g}): 99th percentile {float(e.quantile(0.99)):.1f}, "
           f"max {float(e.max()):.1f}, poses above 100: {int((e > 100).sum())}")
     table["ACE energy"] = table[f"ACE energy, ridge {ridge:g}"]  # the name the loaders read
-    if args.out and not args.load:
-        out = Path(args.out).expanduser()
-        if several:
-            out = out.with_name(f"{out.stem}_r{ridge:g}{out.suffix}")
-        out.parent.mkdir(parents=True, exist_ok=True)
-        settings = dict(vars(args), ridge=ridge)
-        torch.save(dict(w=result["w"], edges=bins.edges, fit_loss=result["fit_loss"], table=table,
-                        settings=settings, descriptors=ace.dim), out)
+    if out is not None:
+        save(table)
         out.with_suffix(".json").write_text(json.dumps(dict(table=table, fit_loss=result["fit_loss"],
                                                             settings=settings), indent=1))
         print(f"saved to {out}")
