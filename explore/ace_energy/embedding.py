@@ -112,8 +112,13 @@ class Embedded(torch.nn.Module):
         return (1 - a) * self.c[:, lo] + a * self.c[:, lo + 1]
 
     def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-        f = self.basis(x)[:, self.feat]  # [B, entries]
+        return self.energy_of_features(self.basis(x), t)
+
+    def energy_of_features(self, features: torch.Tensor, t: torch.Tensor, per_joint: bool = False) -> torch.Tensor:
+        """E~_t [B] (or [B, 19] per joint) from the features B(x) [B, P] of the basis."""
+        f = features[:, self.feat]  # [B, entries]
         c = self.coefficients(t)  # [K, B, entries]
+        x = features
         phi = torch.zeros(c.shape[0], x.shape[0], 19, device=x.device, dtype=x.dtype)
         phi = phi.index_add(2, self.joint, c * f[None])  # [K, B, 19]
         if self.embedding == "fs":
@@ -123,7 +128,7 @@ class Embedded(torch.nn.Module):
             inp = torch.cat([phi[1:].permute(1, 2, 0), u[:, None, None].expand(-1, 19, 1),
                              self.joint_emb[None].expand(x.shape[0], -1, -1).to(phi)], dim=-1)  # [B, 19, K - 1 + 1 + E]
             energy = phi[0] + self.mlp(inp)[..., 0]
-        return energy.sum(-1)
+        return energy if per_joint else energy.sum(-1)
 
     def scaled_score(self, x: torch.Tensor, t: torch.Tensor, create_graph: bool = False) -> torch.Tensor:
         """-grad E~_t [B, J, 3] along the tangent directions (the scaled score of RSGM's loss)."""
