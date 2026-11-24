@@ -70,11 +70,23 @@ def owners(basis: WithHarmonics) -> list:
 
 
 class Embedded(torch.nn.Module):
-    """E~_t(x) [B] (module doc): per-joint densities of the features and a Finnis-Sinclair-like embedding."""
+    """E~_t(x) [B] (module doc): per-joint densities of the features and an embedding: "fs", the Finnis-Sinclair-like
+    phi^(1) + sqrt(1 + phi^(2)^2) - 1 (+ the same for further densities), or "mlp", phi^(1) + MLP(phi^(2..K), u, e_j)
+    with u = log s(t) / 4 and e_j a learned embedding of the joint, one MLP shared by the joints, its last layer zero
+    at init (so the energy starts as phi^(1), the linear fit)."""
 
-    def __init__(self, basis, bins: Bins, own: list, k: int = 2):
+    def __init__(self, basis, bins: Bins, own: list, k: int = 2, embedding: str = "fs", hidden: int = 64,
+                 joint_dim: int = 8):
         super().__init__()
-        self.basis, self.bins = basis, bins
+        if embedding not in ("fs", "mlp"):
+            raise ValueError(f"Unknown embedding '{embedding}'. Use 'fs' or 'mlp'.")
+        self.basis, self.bins, self.embedding = basis, bins, embedding
+        if embedding == "mlp":
+            self.joint_emb = torch.nn.Parameter(0.1 * torch.randn(19, joint_dim))
+            self.mlp = torch.nn.Sequential(torch.nn.Linear(k - 1 + 1 + joint_dim, hidden), torch.nn.SiLU(),
+                                           torch.nn.Linear(hidden, hidden), torch.nn.SiLU(), torch.nn.Linear(hidden, 1))
+            torch.nn.init.zeros_(self.mlp[-1].weight)
+            torch.nn.init.zeros_(self.mlp[-1].bias)
         feat = [f for f, js in enumerate(own) for _ in js]
         joint = [j for js in own for j in js]
         self.register_buffer("feat", torch.tensor(feat))
@@ -104,7 +116,13 @@ class Embedded(torch.nn.Module):
         c = self.coefficients(t)  # [K, B, entries]
         phi = torch.zeros(c.shape[0], x.shape[0], 19, device=x.device, dtype=x.dtype)
         phi = phi.index_add(2, self.joint, c * f[None])  # [K, B, 19]
-        energy = phi[0] + (torch.sqrt(1 + phi[1:] ** 2) - 1).sum(0)
+        if self.embedding == "fs":
+            energy = phi[0] + (torch.sqrt(1 + phi[1:] ** 2) - 1).sum(0)
+        else:
+            u = (self.bins.ref.s(t.detach().cpu().double()).log() / 4).to(phi)  # the noise level, as RSGM's net_level
+            inp = torch.cat([phi[1:].permute(1, 2, 0), u[:, None, None].expand(-1, 19, 1),
+                             self.joint_emb[None].expand(x.shape[0], -1, -1).to(phi)], dim=-1)  # [B, 19, K - 1 + 1 + E]
+            energy = phi[0] + self.mlp(inp)[..., 0]
         return energy.sum(-1)
 
     def scaled_score(self, x: torch.Tensor, t: torch.Tensor, create_graph: bool = False) -> torch.Tensor:
@@ -134,6 +152,9 @@ def main() -> None:
     parser.add_argument("--steps", type=int, default=4000)
     parser.add_argument("--batch", type=int, default=1024)
     parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--embedding", choices=("fs", "mlp"), default="fs")
+    parser.add_argument("--k", type=int, default=2, help="densities per joint")
+    parser.add_argument("--hidden", type=int, default=64, help="width of the MLP embedding")
     parser.add_argument("--valid", type=int, default=5000)
     parser.add_argument("--eval-every", type=int, default=1000)
     parser.add_argument("--device", default="cpu")
@@ -150,7 +171,7 @@ def main() -> None:
     basis = WithHarmonics(AceFeatures(smooth=not s.get("plain", False)), s.get("wigner", []), s.get("pairs", []))
     bins = Bins(ref, ref.loss_t_min, s["bins"])
     assert torch.equal(saved["edges"], bins.edges)
-    model = Embedded(basis, bins, owners(basis)).to(device)
+    model = Embedded(basis, bins, owners(basis), k=args.k, embedding=args.embedding, hidden=args.hidden).to(device)
     model.init_linear(saved["w"])
     print(f"{basis.dim} features, {model.c.numel():,} coefficients ({model.c.shape[2]} joint-feature entries x "
           f"{model.c.shape[1]} bins x K = {model.c.shape[0]})", flush=True)
@@ -208,7 +229,7 @@ def main() -> None:
             running = []
     edges = [f"{bins.edges[i].exp():.0e}" for i in range(len(bins.centres))]
     print("| model | mean | " + " | ".join(f"s {e}" for e in edges) + " |")
-    print(f"| FS energy | {mean:.3f} | " + " | ".join(f"{v:.2f}" for v in per) + " |")
+    print(f"| {args.embedding.upper()} energy, K = {args.k} | {mean:.3f} | " + " | ".join(f"{v:.2f}" for v in per) + " |")
     lin = saved["table"]["ACE energy"]
     print(f"| linear energy (--init) | {lin['mean']:.3f} | " + " | ".join(f"{v:.2f}" for v in lin["per_bin"]) + " |")
     for name in saved["table"]:
@@ -217,7 +238,8 @@ def main() -> None:
             print(f"| {name} | {r['mean']:.3f} | " + " | ".join(f"{v:.2f}" for v in r["per_bin"]) + " |")
     if args.out:
         out = Path(args.out).expanduser()
-        torch.save(dict(c=model.c.detach().cpu(), edges=bins.edges, history=history, settings=vars(args),
+        torch.save(dict(c=model.c.detach().cpu(), state=model.state_dict(), edges=bins.edges, history=history,
+                        settings=vars(args),
                         basis=dict(wigner=basis.wigner, pairs=basis.pairs)), out)
         out.with_suffix(".json").write_text(json.dumps(dict(history=history, settings=vars(args), compare=compare),
                                                        indent=1))
