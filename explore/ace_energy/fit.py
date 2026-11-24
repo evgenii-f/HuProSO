@@ -4,7 +4,7 @@ line, docs/experiments: the ACE report). On the CPU, from the root of the reposi
     python explore/ace_energy/fit.py --check                        # the self-checks, a few seconds
     python explore/ace_energy/fit.py --out ~/data/experiments/ace/energy_b.pt
     python explore/ace_energy/fit.py --wigner 1 2 3 --pairs 1 2 3 --device cuda:0 --out ...   # on a GPU server
-    python explore/ace_energy/fit.py ... --all-pairs 1 --products                           # an enriched basis
+    python explore/ace_energy/fit.py ... --all-pairs 1 --products --single --batch 100        # an enriched basis
 
 Model. E_t(x) = sum_p c_p(t) B_p(x), with B the descriptors of hp.models.ace_features (distances, angles, twists of
 the pose; smooth=True, polynomials with bounded gradients, unless --plain) and the score s(x, t) = -grad E_t(x), the derivative along the tangent directions x_j @ exp(eps e_a) (the
@@ -169,10 +169,13 @@ class Bins:
         return torch.bucketize(u, self.edges[1:-1])
 
 
-def fit(ace, ref, bins: Bins, train: torch.Tensor, per_bin: int, batch: int, ridges, seed: int) -> dict:
-    """{ridge: dict(w [bins, P], fit_loss)}: one accumulation of G^T G per bin, one solution per ridge."""
+def fit(ace, ref, bins: Bins, train: torch.Tensor, per_bin: int, batch: int, ridges, seed: int,
+        single: bool = False) -> dict:
+    """{ridge: dict(w [bins, P], fit_loss)}: one accumulation of G^T G per bin, one solution per ridge. With `single`
+    the products of a batch in float32 (their sum and the solution stay in float64)."""
     g = torch.Generator().manual_seed(seed)  # the draws on the CPU: the same samples on every device
-    p, device = ace.dim, DEVICE
+    p = ace.dim
+    device = torch.device("cpu") if DEVICE.type == "mps" else DEVICE  # the sums in float64: not on mps
     w = {r: [] for r in ridges}
     fit_loss = {r: [] for r in ridges}
     for k in range(len(bins.centres)):
@@ -185,15 +188,19 @@ def fit(ace, ref, bins: Bins, train: torch.Tensor, per_bin: int, batch: int, rid
             x0 = train[torch.randint(len(train), (batch,), generator=g)]
             t = lo + (hi - lo) * torch.rand(batch, dtype=torch.float64, generator=g)
             xt, target, _ = draw(ref, x0, t, g)
-            gm = jacobian(ace, xt).double().reshape(-1, p)  # [B 3J, P]
-            y = target.reshape(-1).to(device)
-            a += gm.T @ gm
-            b += gm.T @ y
+            gm = jacobian(ace, xt).reshape(-1, p)  # [B 3J, P]
+            gm = gm if single else gm.double()
+            y = target.reshape(-1)
+            a += (gm.T @ gm).to(device)
+            b += (gm.T @ y.to(gm)).to(device)
             yy += float(y @ y)
             rows += batch
+        del gm  # room for the solution
         for r in ridges:
-            lam = r * float(a.diagonal().mean())
-            wk = -torch.linalg.solve(a + lam * torch.eye(p, dtype=torch.float64, device=device), b)
+            m = a.clone()
+            m.diagonal().add_(r * float(a.diagonal().mean()))
+            wk = -torch.linalg.solve(m, b)
+            del m
             w[r].append(wk.cpu())
             fit_loss[r].append(float((wk @ a @ wk + 2 * wk @ b + yy) / rows))
         losses = ", ".join(f"{fit_loss[r][-1]:.3f}" for r in ridges)
@@ -212,7 +219,8 @@ def evaluate(ace, ref, bins: Bins, w: torch.Tensor, valid: torch.Tensor, compare
     out = {"t": t, "zero": (target ** 2).sum((1, 2))}
     energy = []
     for i in range(0, len(valid), batch):
-        gm = jacobian(ace, xt[i:i + batch]).double()  # [b, 3J, P]
+        gm = jacobian(ace, xt[i:i + batch])  # [b, 3J, P]
+        gm = (gm.cpu() if gm.device.type == "mps" else gm).double()
         pred = -torch.einsum("bkp,bp->bk", gm, bins.weights(w, t[i:i + batch], interp).to(gm.device)).cpu()
         energy.append(((pred - target[i:i + batch].reshape(len(pred), -1)) ** 2).sum(1))
     out["ACE energy"] = torch.cat(energy)
@@ -221,7 +229,8 @@ def evaluate(ace, ref, bins: Bins, w: torch.Tensor, valid: torch.Tensor, compare
         with torch.no_grad():
             for i in range(0, len(valid), batch):
                 sl = slice(i, i + batch)
-                scaled = model.score(xt[sl].float().to(DEVICE), t[sl].float().to(DEVICE)).double().cpu() * std[sl][..., None]
+                scaled = model.score(xt[sl].float().to(DEVICE), t[sl].float().to(DEVICE)).cpu().double()
+                scaled = scaled * std[sl][..., None]
                 losses.append(((scaled - target[sl]) ** 2).sum((1, 2)))
         out[name] = torch.cat(losses)
     return out
@@ -267,7 +276,8 @@ def main() -> None:
     parser.add_argument("--valid", type=int, default=5000, help="validation poses of the evaluation")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--threads", type=int, default=None)
-    parser.add_argument("--device", default="cpu", help="cpu or cuda:N (float64 sums; mps has no float64)")
+    parser.add_argument("--device", default="cpu",
+                        help="cpu, cuda:N or mps (mps needs --single; its sums are on the CPU in float64)")
     parser.add_argument("--out", default=None, help="a .pt file for w, the bins and the losses")
     parser.add_argument("--check", action="store_true", help="only the self-checks")
     parser.add_argument("--plain", action="store_true",
@@ -282,11 +292,15 @@ def main() -> None:
                         help="with --wigner or --pairs: D^l(G_i^T G_k) of the other pairs of joints, of these degrees")
     parser.add_argument("--products", action="store_true",
                         help="with --wigner or --pairs: the products of the entries of x_i and x_k, all pairs")
+    parser.add_argument("--single", action="store_true",
+                        help="the products of every batch in float32 (a large basis on a GPU with slow float64)")
     parser.add_argument("--load", default=None, help="a .pt file of an earlier fit: evaluate it, fit nothing")
     parser.add_argument("--interp", choices=("linear", "nearest"), default="linear", help="w between bins")
     args = parser.parse_args()
     if args.threads:
         torch.set_num_threads(args.threads)
+    if args.device.startswith("mps") and not args.single:
+        parser.error("--device mps needs --single (no float64 there).")
     global DEVICE
     DEVICE = torch.device(args.device)
 
@@ -315,7 +329,7 @@ def main() -> None:
     print(f"{ace.dim} descriptors, {args.bins} bins x {args.per_bin} samples ({args.per_bin * 57:,} rows per bin), "
           f"{len(train) if train is not None else 0:,} training poses, {len(valid)} validation poses", flush=True)
     if results is None:
-        results = fit(ace, ref, bins, train, args.per_bin, args.batch, args.ridge, args.seed)
+        results = fit(ace, ref, bins, train, args.per_bin, args.batch, args.ridge, args.seed, args.single)
     compare = {Path(r).expanduser().parent.name: load_model(Path(r).expanduser(), device=args.device,
                                                              weights="weights_ema").eval() for r in args.compare}
     for n_ridge, (ridge, result) in enumerate(results.items()):
