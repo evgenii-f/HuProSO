@@ -32,11 +32,11 @@ def _local(path) -> Path:
 def load_energy(path, device: str = "cpu"):
     """(energy, ref, bins, info): the energy as an Embedded model (a linear fit has its second density zero), the
     reference RSGM run of the noising, the bins of log s, and a short description."""
-    saved = torch.load(_local(path), map_location="cpu", weights_only=False)
+    saved = torch.load(_local(path), map_location="cpu", weights_only=True)
     ref = load_model(Path(REFERENCE).expanduser(), device="cpu", weights="weights_ema").eval()
     if "c" in saved:  # embedding.py (its first runs saved the coefficients c only, the FS embedding)
         args = saved["settings"]
-        init = torch.load(_local(args["init"]), map_location="cpu", weights_only=False)
+        init = torch.load(_local(args["init"]), map_location="cpu", weights_only=True)
         s = init["settings"]
         basis = WithHarmonics(AceFeatures(smooth=not s.get("plain", False)), s.get("wigner", []), s.get("pairs", []))
         bins = Bins(ref, ref.loss_t_min, s["bins"])

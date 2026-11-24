@@ -272,7 +272,7 @@ def main() -> None:
         return
     bins = Bins(ref, ref.loss_t_min, args.bins)
     if args.load:
-        saved = torch.load(Path(args.load).expanduser(), map_location="cpu", weights_only=False)
+        saved = torch.load(Path(args.load).expanduser(), map_location="cpu", weights_only=True)
         assert torch.equal(saved["edges"], bins.edges), "the bins of the loaded fit differ (--bins)"
         results = {saved["settings"].get("ridge", args.ridge[0]): dict(w=saved["w"], fit_loss=saved["fit_loss"])}
     else:
