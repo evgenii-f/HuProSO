@@ -1,7 +1,11 @@
 """Helpers of bins.ipynb: load an ACE energy (a linear fit of fit.py or a trained embedding of embedding.py), draw the
 validation noise as fit.py does, compute the loss of every pose for the energy and a network, and split the energy's
-predicted score into its feature groups.
+predicted score into its feature groups. As a script, the losses of several energies in the bins of low noise, where
+the draws of fit.py have only about a hundred poses per bin:
+
+    python explore/ace_energy/inspect_energy.py ~/data/experiments/ace/energy_b_ridge_r0.001.pt ...
 """
+import argparse
 import sys
 from pathlib import Path
 
@@ -93,6 +97,56 @@ def network_predictions(net, d: dict, batch: int = 500) -> torch.Tensor:
     return torch.cat(out)
 
 
+def stratified_draws(ref, bins, k: int, pool: torch.Tensor, n: int, seed: int) -> dict:
+    """One draw for each of n random poses of the pool at noise levels of bin k (t uniform within it, as fit.py)."""
+    g = torch.Generator().manual_seed(1000 * seed + k)
+    x0 = pool[torch.randperm(len(pool), generator=g)[:n]]
+    lo, hi = bins.t_range(k)
+    t = lo + (hi - lo) * torch.rand(len(x0), dtype=torch.float64, generator=g)
+    xt, target, std = draw(ref, x0, t, g)
+    return dict(x0=x0, t=t, xt=xt, target=target, std=std, s=ref.s(t))
+
+
+def low_noise_table(paths, device: str, s_max: float, n: int, batch: int) -> None:
+    """Losses in the bins below s_max, of fresh train poses and of validation poses, the same draws for every model;
+    the last column is the mean over the bins, with the standard error of its paired difference to the network (the
+    poses of the bins as independent). "in-sample" is the fit's own loss on the poses it was fitted to."""
+    _, ref, bins, _ = load_energy(paths[0])
+    ks = [k for k in range(len(bins.centres)) if float(bins.edges[k + 1].exp()) <= s_max]
+    net = load_model(Path(REFERENCE).expanduser(), device=device, weights="weights_ema").eval()
+    draws = {}
+    for seed, split in enumerate(("train", "valid")):
+        pool = load_reference(split, ROTATIONS, SPLIT)
+        draws[split] = [stratified_draws(ref, bins, k, pool, n, seed) for k in ks]
+    loss = lambda pred, d: ((pred - d["target"]) ** 2).sum((1, 2))  # noqa: E731
+    base = {split: [loss(network_predictions(net, d, batch), d) for d in ds] for split, ds in draws.items()}
+    print("| model | poses | " + " | ".join(f"s {bins.centres[k].exp():.1e}" for k in ks)
+          + " | mean | - network | s.e. |")
+    print("|---|---|" + "---|" * (len(ks) + 3), flush=True)
+
+    def row(name, split, per):
+        means = [float(v.mean()) for v in per]
+        diff = [v - b for v, b in zip(per, base[split])]
+        gap = sum(float(v.mean()) for v in diff) / len(ks)
+        se = sum(float(v.var()) / len(v) for v in diff) ** 0.5 / len(ks)
+        print(f"| {name} | {split} | " + " | ".join(f"{m:.2f}" for m in means)
+              + f" | {sum(means) / len(ks):.3f} | {gap:.3f} | {se:.3f} |", flush=True)
+
+    for split in draws:
+        row("network", split, base[split])
+    for path in paths:
+        energy, _, b, info = load_energy(path, device)
+        assert torch.equal(b.edges, bins.edges), f"the bins of {path} differ"
+        name = f"{Path(path).stem} ({info})"
+        saved = torch.load(_local(path), map_location="cpu", weights_only=True)
+        if "fit_loss" in saved:
+            own = [float(saved["fit_loss"][k]) for k in ks]
+            print(f"| {name} | in-sample | " + " | ".join(f"{v:.2f}" for v in own)
+                  + f" | {sum(own) / len(ks):.3f} | – | – |")
+        for split, ds in draws.items():
+            row(name, split, [loss(energy_predictions(energy, d, batch), d) for d in ds])
+
+
 def feature_groups(basis) -> list:
     """The group of every feature of the basis, in its layout (as owners)."""
     ace = basis.ace
@@ -145,3 +199,15 @@ def points(x: torch.Tensor) -> torch.Tensor:
 
 
 PARENTS = AceFeatures().parents
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=low_noise_table.__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("fits", nargs="+", help="energy_*.pt of fit.py or embedding.py")
+    parser.add_argument("--s-max", type=float, default=0.04)
+    parser.add_argument("--poses", type=int, default=5000, help="per bin and split")
+    parser.add_argument("--batch", type=int, default=250)
+    parser.add_argument("--device", default="cpu")
+    args = parser.parse_args()
+    low_noise_table(args.fits, args.device, args.s_max, args.poses, args.batch)
