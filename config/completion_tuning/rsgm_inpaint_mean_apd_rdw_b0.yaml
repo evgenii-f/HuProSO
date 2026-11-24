@@ -1,0 +1,25 @@
+# Inpainting with the reverse process (run(method="inpaint")) on RSGM fact_RDW (c10, 30k x 4096; residual, dropout 0.1,
+# width 1024), uniform sampling (beta = 0): one of the six fronts of the data-weighting study (three methods x beta 0
+# and 3.3; beta 3.3 chosen by the lowest D-Flow mean on 300 validation poses among the beta grid,
+# explore/evaluation/data_weighting). Two objectives: mean MPVPE (minimized) and APD (maximized). The search space,
+# first trials, poses and seeds of rsgm_inpaint_mean_apd_full_dposer_like, the same for both beta, so the two fronts
+# differ only by the sampling of the training poses.
+model: ~/data/experiments/factorial/rsgm_posedflow_fact_RDW_s10/run_0001
+method: inpaint
+objective: mean_apd
+poses: 1000
+n_trials: 120
+params:
+  steps: [100, 200, 400]
+  guidance: {low: 0.01, high: 0.5, log: true}
+  resample: [1, 2, 3, 5]
+  replace: [true, false]
+fixed:
+  schedule: edm
+first:
+  - {steps: 200, guidance: 0.09515197497012039, resample: 5, replace: false}  # the fixed point of the factorial
+  - {steps: 200, guidance: 0.1, resample: 1, replace: false}
+  - {steps: 200, guidance: 0.2, resample: 1, replace: false}
+  - {steps: 200, guidance: 0.2, resample: 5, replace: false}
+  - {steps: 200, guidance: 0.2, resample: 5, replace: true}
+  - {steps: 200, guidance: 0.05, resample: 1, replace: true}

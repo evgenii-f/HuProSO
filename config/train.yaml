@@ -32,4 +32,5 @@ train:                           # the fields of hp.training.TrainConfig
   num_workers: 0
   data_on_device: false          # the poses on the device, batches sliced there instead of a DataLoader (hp.training.trainer)
   tf32: false                    # TF32 matrix products on cuda
+  sample_weights: null           # with data_on_device: a file of weights [N] of the training poses (hp.training.trainer)
   progress: true

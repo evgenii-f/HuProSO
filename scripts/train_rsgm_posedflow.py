@@ -226,6 +226,18 @@ ANISO.add("mace_g_x")
 ANISO_X.add("mace_g_x")
 # fact_RDW one step further along width, the strongest factor of the factorial for inpainting
 CONFIGS["fact_RDW_w2048"] = CONFIGS["fact_RDW"] + ["model.args.net_width=2048"]
+# The data-weighting study (explore/evaluation/data_weighting/rarity.py): the network of fact_RDW of the factorial
+# (abl_base with residual, dropout 0.1 and width 1024, data on the device), the poses drawn in proportion to their
+# rarity, softly (ESS 0.7 N) or strongly (ESS 0.4 N); the uniform baseline is fact_RDW_s10 of the factorial.
+# --run-root ~/data/experiments/data_weighting
+RDW = ABL_BASE + ["model.args.net_residual=true", "model.args.dropout=0.1", "model.args.net_width=1024",
+                  "train.data_on_device=true"]
+CONFIGS["rdw"] = list(RDW)
+CONFIGS["rdw_soft"] = RDW + ["train.sample_weights=~/data/experiments/data_weighting/weights_soft.pt"]
+CONFIGS["rdw_strong"] = RDW + ["train.sample_weights=~/data/experiments/data_weighting/weights_strong.pt"]
+# the beta grid (rarity.py BETAS; soft and strong are beta 1.16 and 2.52)
+for _beta in (0.6, 1.8, 3.3, 4.2):
+    CONFIGS[f"rdw_b{_beta}"] = RDW + [f"train.sample_weights=~/data/experiments/data_weighting/weights_b{_beta}.pt"]
 # ----------------------------------------------------------------------------------------
 
 
