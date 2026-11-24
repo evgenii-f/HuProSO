@@ -141,10 +141,12 @@ class Bins:
         return torch.bucketize(u, self.edges[1:-1])
 
 
-def fit(ace, ref, bins: Bins, train: torch.Tensor, per_bin: int, batch: int, ridge: float, seed: int) -> dict:
+def fit(ace, ref, bins: Bins, train: torch.Tensor, per_bin: int, batch: int, ridges, seed: int) -> dict:
+    """{ridge: dict(w [bins, P], fit_loss)}: one accumulation of G^T G per bin, one solution per ridge."""
     g = torch.Generator().manual_seed(seed)  # the draws on the CPU: the same samples on every device
     p, device = ace.dim, DEVICE
-    w, fit_loss = [], []
+    w = {r: [] for r in ridges}
+    fit_loss = {r: [] for r in ridges}
     for k in range(len(bins.centres)):
         t0 = time.perf_counter()
         a = torch.zeros(p, p, dtype=torch.float64, device=device)
@@ -161,15 +163,16 @@ def fit(ace, ref, bins: Bins, train: torch.Tensor, per_bin: int, batch: int, rid
             b += gm.T @ y
             yy += float(y @ y)
             rows += batch
-        lam = ridge * float(a.diagonal().mean())
-        wk = -torch.linalg.solve(a + lam * torch.eye(p, dtype=torch.float64, device=device), b)
-        loss = (wk @ a @ wk + 2 * wk @ b + yy) / rows
-        w.append(wk.cpu())
-        fit_loss.append(float(loss))
+        for r in ridges:
+            lam = r * float(a.diagonal().mean())
+            wk = -torch.linalg.solve(a + lam * torch.eye(p, dtype=torch.float64, device=device), b)
+            w[r].append(wk.cpu())
+            fit_loss[r].append(float((wk @ a @ wk + 2 * wk @ b + yy) / rows))
+        losses = ", ".join(f"{fit_loss[r][-1]:.3f}" for r in ridges)
         print(f"bin {k + 1:2d}/{len(bins.centres)}: t in [{lo:.4f}, {hi:.4f}], s in [{bins.edges[k].exp():.2e}, "
-              f"{bins.edges[k + 1].exp():.2e}]: fit loss {loss:.3f} (zero score {yy / rows:.3f}), "
-              f"{time.perf_counter() - t0:.0f} s", flush=True)
-    return dict(w=torch.stack(w), fit_loss=fit_loss)
+              f"{bins.edges[k + 1].exp():.2e}]: fit loss {losses} (ridge {', '.join(f'{r:g}' for r in ridges)}; "
+              f"zero score {yy / rows:.3f}), {time.perf_counter() - t0:.0f} s", flush=True)
+    return {r: dict(w=torch.stack(w[r]), fit_loss=fit_loss[r]) for r in ridges}
 
 
 def evaluate(ace, ref, bins: Bins, w: torch.Tensor, valid: torch.Tensor, compare, batch: int, t_min: float,
@@ -230,7 +233,9 @@ def main() -> None:
     parser.add_argument("--bins", type=int, default=16)
     parser.add_argument("--per-bin", type=int, default=8000, help="training samples per bin")
     parser.add_argument("--batch", type=int, default=500)
-    parser.add_argument("--ridge", type=float, default=1e-6, help="relative to the mean diagonal of G^T G")
+    parser.add_argument("--ridge", type=float, nargs="+", default=[1e-6],
+                        help="relative to the mean diagonal of G^T G; several: one fit each from the same sums, "
+                             "saved as <out>_r<ridge>")
     parser.add_argument("--valid", type=int, default=5000, help="validation poses of the evaluation")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--threads", type=int, default=None)
@@ -267,19 +272,26 @@ def main() -> None:
         return
     bins = Bins(ref, ref.loss_t_min, args.bins)
     if args.load:
-        saved = torch.load(Path(args.load).expanduser(), weights_only=False)
+        saved = torch.load(Path(args.load).expanduser(), map_location="cpu", weights_only=False)
         assert torch.equal(saved["edges"], bins.edges), "the bins of the loaded fit differ (--bins)"
-        result = dict(w=saved["w"], fit_loss=saved["fit_loss"])
+        results = {saved["settings"].get("ridge", args.ridge[0]): dict(w=saved["w"], fit_loss=saved["fit_loss"])}
     else:
-        result = None
-    train = None if result else load_reference("train", ROTATIONS, SPLIT)
+        results = None
+    train = None if results else load_reference("train", ROTATIONS, SPLIT)
     print(f"{ace.dim} descriptors, {args.bins} bins x {args.per_bin} samples ({args.per_bin * 57:,} rows per bin), "
           f"{len(train) if train is not None else 0:,} training poses, {len(valid)} validation poses", flush=True)
-    if result is None:
-        result = fit(ace, ref, bins, train, args.per_bin, args.batch, args.ridge, args.seed)
+    if results is None:
+        results = fit(ace, ref, bins, train, args.per_bin, args.batch, args.ridge, args.seed)
     compare = {Path(r).expanduser().parent.name: load_model(Path(r).expanduser(), device=args.device,
                                                              weights="weights_ema").eval() for r in args.compare}
+    for n_ridge, (ridge, result) in enumerate(results.items()):
+        report(ace, ref, bins, ridge, result, valid, compare if n_ridge == 0 else {}, args, len(results) > 1)
+
+
+def report(ace, ref, bins, ridge, result, valid, compare, args, several: bool) -> None:
+    """Evaluate one fit on the validation draws, print its table (and the networks' with the first), save it."""
     losses = evaluate(ace, ref, bins, result["w"], valid, compare, args.batch, ref.loss_t_min, args.interp)
+    losses[f"ACE energy, ridge {ridge:g}"] = losses.pop("ACE energy")
     k = bins.index(losses["t"])
     names = [n for n in losses if n != "t"]
     print("\nvalidation loss (std weighting, one draw per pose, the same draws for every model)")
@@ -295,13 +307,20 @@ def main() -> None:
         med = [float(losses[n][k == i].median()) for i in range(len(bins.centres))]
         table[n]["median_per_bin"] = med
         print(f"| {n} | {losses[n].median():.3f} | " + " | ".join(f"{v:.2f}" for v in med) + " |")
+    e = losses[f"ACE energy, ridge {ridge:g}"]
+    print(f"tails of the energy's loss (ridge {ridge:g}): 99th percentile {float(e.quantile(0.99)):.1f}, "
+          f"max {float(e.max()):.1f}, poses above 100: {int((e > 100).sum())}")
+    table["ACE energy"] = table[f"ACE energy, ridge {ridge:g}"]  # the name the loaders read
     if args.out and not args.load:
         out = Path(args.out).expanduser()
+        if several:
+            out = out.with_name(f"{out.stem}_r{ridge:g}{out.suffix}")
         out.parent.mkdir(parents=True, exist_ok=True)
+        settings = dict(vars(args), ridge=ridge)
         torch.save(dict(w=result["w"], edges=bins.edges, fit_loss=result["fit_loss"], table=table,
-                        settings=vars(args), descriptors=ace.dim), out)
+                        settings=settings, descriptors=ace.dim), out)
         out.with_suffix(".json").write_text(json.dumps(dict(table=table, fit_loss=result["fit_loss"],
-                                                            settings=vars(args)), indent=1))
+                                                            settings=settings), indent=1))
         print(f"saved to {out}")
 
 

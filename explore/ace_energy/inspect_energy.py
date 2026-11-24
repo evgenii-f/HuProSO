@@ -34,7 +34,7 @@ def load_energy(path, device: str = "cpu"):
     reference RSGM run of the noising, the bins of log s, and a short description."""
     saved = torch.load(_local(path), map_location="cpu", weights_only=False)
     ref = load_model(Path(REFERENCE).expanduser(), device="cpu", weights="weights_ema").eval()
-    if "state" in saved:  # embedding.py
+    if "c" in saved:  # embedding.py (its first runs saved the coefficients c only, the FS embedding)
         args = saved["settings"]
         init = torch.load(_local(args["init"]), map_location="cpu", weights_only=False)
         s = init["settings"]
@@ -42,7 +42,11 @@ def load_energy(path, device: str = "cpu"):
         bins = Bins(ref, ref.loss_t_min, s["bins"])
         energy = Embedded(basis, bins, owners(basis), k=args.get("k", 2), embedding=args.get("embedding", "fs"),
                           hidden=args.get("hidden", 64))
-        energy.load_state_dict(saved["state"])
+        if "state" in saved:
+            energy.load_state_dict(saved["state"])
+        else:
+            with torch.no_grad():
+                energy.c.copy_(saved["c"])
         info = f"{args.get('embedding', 'fs')} embedding, K = {args.get('k', 2)}, basis {basis.dim}"
     else:  # fit.py
         s = saved["settings"]
