@@ -32,11 +32,11 @@ def _local(path) -> Path:
 def load_energy(path, device: str = "cpu"):
     """(energy, ref, bins, info): the energy as an Embedded model (a linear fit has its second density zero), the
     reference RSGM run of the noising, the bins of log s, and a short description."""
-    saved = torch.load(_local(path), weights_only=False)
+    saved = torch.load(_local(path), map_location="cpu", weights_only=False)
     ref = load_model(Path(REFERENCE).expanduser(), device="cpu", weights="weights_ema").eval()
     if "state" in saved:  # embedding.py
         args = saved["settings"]
-        init = torch.load(_local(args["init"]), weights_only=False)
+        init = torch.load(_local(args["init"]), map_location="cpu", weights_only=False)
         s = init["settings"]
         basis = WithHarmonics(AceFeatures(smooth=not s.get("plain", False)), s.get("wigner", []), s.get("pairs", []))
         bins = Bins(ref, ref.loss_t_min, s["bins"])
@@ -73,7 +73,7 @@ def energy_predictions(energy, d: dict, batch: int = 500) -> torch.Tensor:
     out = []
     for i in range(0, len(d["t"]), batch):
         out.append(energy.scaled_score(d["xt"][i:i + batch].float().to(dev),
-                                       d["t"][i:i + batch].float().to(dev)).double().cpu())
+                                       d["t"][i:i + batch].float().to(dev)).cpu().double())
     return torch.cat(out)
 
 
@@ -83,7 +83,7 @@ def network_predictions(net, d: dict, batch: int = 500) -> torch.Tensor:
     out = []
     for i in range(0, len(d["t"]), batch):
         sl = slice(i, i + batch)
-        out.append(net.score(d["xt"][sl].float().to(net.device), d["t"][sl].float().to(net.device)).double().cpu()
+        out.append(net.score(d["xt"][sl].float().to(net.device), d["t"][sl].float().to(net.device)).cpu().double()
                    * d["std"][sl][..., None])
     return torch.cat(out)
 
@@ -118,7 +118,7 @@ def decompose(energy, xt: torch.Tensor, t: torch.Tensor) -> dict:
     out = {}
     for name in dict.fromkeys(groups):
         idx = torch.tensor([i for i, g in enumerate(groups) if g == name], device=dev)
-        out[name] = (-(gm[:, idx] @ de[0, idx])).reshape(19, 3).double().cpu()
+        out[name] = (-(gm[:, idx] @ de[0, idx])).reshape(19, 3).cpu().double()
     return out
 
 
@@ -127,7 +127,7 @@ def energy_per_joint(energy, xt: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
     dev = next(energy.parameters()).device
     with torch.no_grad():
         f = energy.basis(xt[None].float().to(dev))
-        return energy.energy_of_features(f, t.reshape(1).float().to(dev), per_joint=True)[0].double().cpu()
+        return energy.energy_of_features(f, t.reshape(1).float().to(dev), per_joint=True)[0].cpu().double()
 
 
 def points(x: torch.Tensor) -> torch.Tensor:

@@ -170,7 +170,7 @@ def main() -> None:
     device = torch.device(args.device)
     torch.manual_seed(args.seed)
 
-    saved = torch.load(Path(args.init).expanduser(), weights_only=False)
+    saved = torch.load(Path(args.init).expanduser(), map_location="cpu", weights_only=False)
     s = saved["settings"]
     ref = load_model(Path(args.reference).expanduser(), device="cpu", weights="weights_ema").eval()
     basis = WithHarmonics(AceFeatures(smooth=not s.get("plain", False)), s.get("wigner", []), s.get("pairs", []))
