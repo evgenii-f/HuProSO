@@ -26,7 +26,8 @@ Branch `experimental/data-weighting`. One network throughout: `fact_RDW` (512 x 
 - **Other choices of the poses are not better than rarity on these data:** leverage and the MaxVol grade γ
   (D-optimality) predict the error worse than rarity; D-optimal weights collapse to 1% of the poses; the loss of the
   model and −log p carry a little beyond rarity; the disagreement of seeds almost nothing.
-- **Decision.** One model for everything: β = 0 (uniform sampling). Weighting is closed for inpainting and SDS.
+- **Decision.** One model for everything: β = 0 (uniform sampling). Weighting is closed for inpainting and SDS. The
+  option stays in the trainer ([data_weighting.md](../data_weighting.md)), off by default.
   **D-Flow may profit from it; that question is left open** (a separate model, at the price of generation) and not
   pursued now. Section 17 of the completion report is corrected (below).
 
@@ -246,6 +247,12 @@ poses are free and the network is not linear.
   and 500 poses. A gain of 0.4 mm in best of 10 is at the limit of its noise; it was not confirmed on new seeds.
 - The study searches inpainting at six fixed settings; weaker weights with tuned settings were not tested.
 - The D-Flow gain on the test is one model pair and one β (3.3, chosen on validation D-Flow).
+- **The draws of the study were in float32** (`DeviceLoader`, fixed on 2026-11-25). From the weights and the spacing of
+  float32: at c10 the mass per decile of rarity is right within 0.1% and the total variation to the intended
+  distribution is 1.9% at β 0.6 and 2.0% at β 3.3, but at β 3.3 14.4% of the poses (0.67% of the mass, the lightest
+  ones) are never drawn. The weighted runs are thus slightly different from the named weights; the decile shares that
+  carry the effect are right, so the conclusions stand, but the runs were not repeated. For the full split (18.6M
+  poses) float32 would lose 10% of the poses even with equal weights; the study is on c10 only.
 - The difficulty of poses, the training poses and the signals are descriptive, on validation and training poses; a
   gain of the weights is that of rarity weights by construction, so it cannot rank other signals.
 - The D-optimality check uses linear features of the rotations of the whole pose, not the ACE descriptors and not the
@@ -254,6 +261,7 @@ poses are free and the network is not linear.
 
 ## Where things are
 
+- How to use the option: [data_weighting.md](../data_weighting.md).
 - Weights: `~/data/experiments/data_weighting/{rarity.pt,weights_*.pt,weights.json}`,
   `explore/evaluation/data_weighting/rarity.py`; β grid: `evaluate.py` there, results in
   `~/data/experiments/data_weighting/eval/`, `beta_eval2.log`.
