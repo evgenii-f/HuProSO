@@ -621,3 +621,75 @@ def test_lognormal_weighting_draws_log_s_from_the_truncated_normal():
     assert abs(float(log_s.median()) + 4.0) < 0.05  # the median of N(-4, 1.5^2) lies well inside the range
     with pytest.raises(ValueError, match="loss_log_s_std"):
         build_model("rsgm", num_joints=1, hidden=[8], weighting="lognormal", loss_log_s_std=0.0)
+
+
+def test_the_cluster_block_starts_at_zero_and_leaves_the_network_as_without_it():
+    import roma
+    x = roma.random_rotmat(3 * 19, generator=torch.Generator().manual_seed(0)).view(3, 19, 3, 3)
+    t = torch.tensor([0.003, 0.1, 0.9])
+    torch.manual_seed(10)
+    plain = RSGM(19, net="timeres", net_width=64, net_blocks=2, net_embed=32, net_zero_init=False).eval()
+    torch.manual_seed(10)
+    with_block = RSGM(19, net="timeres", net_width=64, net_blocks=2, net_embed=32, net_zero_init=False,
+                      net_clusters=True).eval()
+    assert with_block.clusters is not None and plain.clusters is None
+    assert all(torch.equal(a, b) for a, b in zip(plain.net.state_dict().values(), with_block.net.state_dict().values()))
+    assert torch.equal(with_block.score(x, t), plain.score(x, t))
+    assert torch.equal(with_block.clusters.out.weight, torch.zeros(3, 256))
+
+
+def test_the_cluster_block_covers_every_joint_once_and_is_refused_elsewhere():
+    from hp.models.score_nets import CLUSTERS, ClusterBlock
+    from hp.data.amass_cfg import AmassJoints4Learning
+    names = [joint.name for joint in AmassJoints4Learning]
+    assert sorted(n for c in CLUSTERS for n in c) == sorted(names)
+    block = ClusterBlock(names)
+    assert torch.allclose(block.member.sum(1), torch.ones(len(CLUSTERS)))
+    with pytest.raises(ValueError):
+        ClusterBlock(names, clusters=CLUSTERS[:-1])
+    with pytest.raises(ValueError):
+        RSGM(19, net="mlp", net_clusters=True)
+    with pytest.raises(ValueError):
+        RSGM(3, net="timeres", net_clusters=True)
+
+
+def test_the_cluster_block_mixes_the_joints_of_other_clusters():
+    from hp.models.score_nets import ClusterBlock
+    from hp.data.amass_cfg import AmassJoints4Learning
+    import roma
+    names = [joint.name for joint in AmassJoints4Learning]
+    torch.manual_seed(0)
+    block = ClusterBlock(names, width=16).eval()
+    torch.nn.init.normal_(block.out.weight)
+    x = roma.random_rotmat(19, generator=torch.Generator().manual_seed(1)).view(1, 19, 3, 3)
+    y = x.clone()
+    y[0, names.index("LeftHand")] = roma.random_rotmat(1, generator=torch.Generator().manual_seed(2))[0]
+    level = torch.tensor([0.1])
+    d = (block(x, level) - block(y, level)).reshape(19, 3).norm(dim=1)
+    assert d[names.index("RightFoot")] > 0  # a joint of another cluster feels the change
+
+
+def test_the_cluster_block_keeps_the_divergence_exact_and_trains_and_is_saved(tmp_path):
+    from hp.models.io import load_model, save_model
+    torch.manual_seed(0)
+    model = build_model("rsgm", num_joints=J19, net="timeres", net_width=32, net_blocks=1, net_embed=16,
+                        net_clusters=True).double()
+    torch.nn.init.normal_(model.clusters.out.weight, std=0.1)
+    x, t = poses19(2, dtype=torch.float64), torch.tensor([0.05, 0.5], dtype=torch.float64)
+    with torch.no_grad():
+        _, divergence = model.velocity_and_divergence(x, t)
+        numeric = torch.zeros(2, dtype=torch.float64)
+        for joint in range(J19):
+            for i in range(3):
+                e = torch.zeros(2, J19, 3, dtype=torch.float64)
+                e[:, joint, i] = 1e-5
+                numeric += (model.velocity(exp_frame(x, e), t) - model.velocity(exp_frame(x, -e), t))[:, joint, i] / 2e-5
+    assert torch.allclose(divergence, numeric, atol=1e-6)
+    model.float().train()
+    loss = model.loss(poses19(16))
+    loss.backward()
+    assert torch.isfinite(loss) and model.clusters.out.weight.grad.abs().sum() > 0
+    save_model(model.eval(), tmp_path)
+    loaded = load_model(tmp_path)
+    xf, tf = poses19(2), torch.tensor([0.05, 0.5])
+    assert loaded.clusters is not None and torch.allclose(loaded.score(xf, tf), model.score(xf, tf))

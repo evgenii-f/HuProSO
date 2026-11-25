@@ -154,6 +154,9 @@ ANISO.add("dposer_like_aniso")
 RDW = ABL_BASE + ["model.args.net_residual=true", "model.args.dropout=0.1", "model.args.net_width=1024",
                   "train.data_on_device=true"]
 CONFIGS["rdw"] = list(RDW)
+# and with a block of clusters of joints next to the network (score_nets.ClusterBlock, its last layer at zero):
+# --run-root ~/data/experiments/clusters
+CONFIGS["rdw_clusters"] = RDW + ["model.args.net_clusters=true"]
 CONFIGS["rdw_soft"] = RDW + ["train.sample_weights=~/data/experiments/data_weighting/weights_soft.pt"]
 CONFIGS["rdw_strong"] = RDW + ["train.sample_weights=~/data/experiments/data_weighting/weights_strong.pt"]
 # the beta grid (rarity.py BETAS; soft and strong are beta 1.16 and 2.52)

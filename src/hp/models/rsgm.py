@@ -63,7 +63,7 @@ from torch.func import jacfwd, vmap
 
 from hp.data.amass_cfg import AmassJoints4Learning
 from hp.models import conditioning, igso3
-from hp.models.score_nets import TimeResNet
+from hp.models.score_nets import ClusterBlock, TimeResNet
 from hp.models.base import PoseModel
 from hp.models.conditioning import move  # noqa: F401  (also imported from here by other models)
 from hp.models.registry import register_model
@@ -194,6 +194,7 @@ class RSGM(PoseModel):
         net_residual: bool = True,  # residual,
         net_norm: bool = True,  # norm,
         net_zero_init: bool = True,  # zero_init
+        net_clusters: bool = False,  # of net="timeres": a score_nets.ClusterBlock added to its output (19 joints)
         joint_scale: Optional[Sequence[float]] = None,  # c [J]: the Brownian time c_j s(t) per joint (module doc)
     ):
         if representation != "matrix":
@@ -202,6 +203,8 @@ class RSGM(PoseModel):
             raise ValueError(f"Unknown net '{net}'. Use 'mlp' or 'timeres'.")
         if net_level not in ("log_s", "t"):
             raise ValueError(f"Unknown net_level '{net_level}'. Use 'log_s' or 't'.")
+        if net_clusters and (net != "timeres" or num_joints != len(_LEARNED)):
+            raise ValueError(f"net_clusters needs net='timeres' and the {len(_LEARNED)} joints of AmassJoints4Learning.")
         if net == "timeres" and time_features:
             raise ValueError("net='timeres' embeds the noise level itself; use time_features=0.")
         if inputs not in ("local", "local+global", "local+z"):
@@ -247,6 +250,9 @@ class RSGM(PoseModel):
                 width = h
             layers.append(nn.Linear(width, 3 * num_joints))
             self.net = nn.Sequential(*layers)
+        # built after the network, so that a seed gives the network the same start as without the block
+        self.clusters = (ClusterBlock([joint.name for joint in AmassJoints4Learning], dropout=dropout)
+                         if net_clusters else None)
         c = None  # a buffer when given (saved with the weights, never trained), else no buffer, as before
         if joint_scale is not None:
             c = torch.as_tensor(joint_scale, dtype=torch.float64).reshape(-1)
@@ -351,7 +357,10 @@ class RSGM(PoseModel):
                 level = torch.log(self.s(t.to(x.dtype))) / 4  # s(t) >= beta_0 eps ~ 2e-7: fine in float32
             else:
                 level = t.to(x.dtype)
-            return self._unscale(self.net(features, level), t, x.dtype)
+            out = self.net(features, level)
+            if self.clusters is not None:
+                out = out + self.clusters(x, level)
+            return self._unscale(out, t, x.dtype)
         inputs.append(t_col)
         if self.time_features:  # frequencies pi, 2 pi, 4 pi, ...: periods from 2 down to 2^(2 - K) in t
             angles = t_col * (math.pi * 2.0 ** torch.arange(self.time_features, device=x.device, dtype=x.dtype))

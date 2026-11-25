@@ -92,3 +92,58 @@ class TimeResNet(nn.Module):
                 h1 = layer(h1, temb)
             h = h + h1 if self.residual else h1
         return self.last(h)
+
+
+# ---- a block of clusters of joints next to the score network ----
+
+# The 19 joints of AmassJoints4Learning by body part: the legs, the spine, the neck and head, the arms.
+CLUSTERS = (("LeftUpLeg", "LeftLeg", "LeftFoot"), ("RightUpLeg", "RightLeg", "RightFoot"),
+            ("Spine0", "Spine1", "Spine2"), ("Neck", "Head"),
+            ("LeftShoulder", "LeftArm", "LeftElbow", "LeftHand"),
+            ("RightShoulder", "RightArm", "RightElbow", "RightHand"))
+
+
+class ClusterBlock(nn.Module):
+    """A score term from clusters of joints, added to the output of the score network (RSGM's net_clusters):
+
+        e_j  = MLP([x_j, emb_j, level])          one network for every joint, emb_j a learned embedding of the joint
+        c_k  = mean of e_j over the joints of cluster k
+        c'   = MLP([c_1 ... c_K, level])           the exchange between the clusters, K tokens out
+        out_j = Linear([e_j, c'_k(j)])             3 numbers per joint, initialized to zero
+
+    With the last layer at zero the block adds nothing at the start, so a network with it starts as the one without.
+    The output [B, 3J] is in the layout of the score network's (joint-major, 3 per joint)."""
+
+    def __init__(self, names, clusters=CLUSTERS, width: int = 128, embed: int = 16, dropout: float = 0.0):
+        super().__init__()
+        names = list(names)
+        index = [[names.index(n) for n in cluster] for cluster in clusters]
+        owner = torch.full((len(names),), -1, dtype=torch.long)
+        for k, joints in enumerate(index):
+            owner[joints] = k
+        if (owner < 0).any() or sum(len(c) for c in index) != len(names):
+            raise ValueError("every joint must be in exactly one cluster")
+        member = torch.zeros(len(clusters), len(names))
+        for k, joints in enumerate(index):
+            member[k, joints] = 1.0 / len(joints)
+        self.register_buffer("owner", owner, persistent=False)
+        self.register_buffer("member", member, persistent=False)  # [K, J]: the mean over a cluster
+        self.joints, self.k, self.width = len(names), len(clusters), width
+        self.embedding = nn.Parameter(0.1 * torch.randn(len(names), embed))
+        self.joint = nn.Sequential(nn.Linear(9 + embed + 1, width), nn.SiLU(), nn.Dropout(dropout),
+                                   nn.Linear(width, width), nn.SiLU())
+        self.exchange = nn.Sequential(nn.Linear(self.k * width + 1, 2 * width), nn.SiLU(), nn.Dropout(dropout),
+                                      nn.Linear(2 * width, self.k * width), nn.SiLU())
+        self.out = nn.Linear(2 * width, 3)
+        nn.init.zeros_(self.out.weight)
+        nn.init.zeros_(self.out.bias)
+
+    def forward(self, x: torch.Tensor, level: torch.Tensor) -> torch.Tensor:
+        """x [B, J, 3, 3] the local rotations, level [B] the noise level -> [B, 3J]."""
+        b = x.shape[0]
+        lv = level.to(x.dtype)[:, None]
+        e = self.joint(torch.cat([x.reshape(b, self.joints, 9), self.embedding.to(x.dtype).expand(b, -1, -1),
+                                  lv[:, None].expand(-1, self.joints, 1)], -1))  # [B, J, W]
+        c = torch.einsum("kj,bjw->bkw", self.member.to(x.dtype), e)  # [B, K, W]
+        c = self.exchange(torch.cat([c.reshape(b, -1), lv], -1)).reshape(b, self.k, self.width)
+        return self.out(torch.cat([e, c[:, self.owner]], -1)).reshape(b, 3 * self.joints)
