@@ -321,15 +321,36 @@ class Bins:
         return torch.bucketize(u, self.edges[1:-1])
 
 
+LEAVE_OUT = ("distances", "angles", "twist", "descriptors")  # parts of AceFeatures; descriptors: all three
+
+
+def kept_columns(ace: WithHarmonics, variant: str) -> torch.Tensor:
+    """The columns of the basis without one of LEAVE_OUT (all of them for ""), in its layout: the distances of point
+    pairs, the angles of point triples, the twist of the bones, then the harmonics and the rest."""
+    d = ace.ace
+    sizes = [len(d.pairs) * d.radial, len(d.triples) * d.angular * d.triple_radial ** 2,
+             len(d.twist_joints) * 2 * d.twist]
+    edges = [0, sizes[0], sizes[0] + sizes[1], sum(sizes)]
+    assert edges[-1] == d.dim
+    ranges = dict(distances=edges[0:2], angles=edges[1:3], twist=edges[2:4], descriptors=[0, d.dim])
+    columns = torch.arange(ace.dim)
+    if not variant:
+        return columns
+    lo, hi = ranges[variant]
+    return columns[(columns < lo) | (columns >= hi)]
+
+
 def fit(ace, ref, bins: Bins, train: torch.Tensor, per_bin: int, batch: int, ridges, seed: int,
-        single: bool = False, prior: JointDensity = None) -> dict:
-    """{ridge: dict(w [bins, P], fit_loss)}: one accumulation of G^T G per bin, one solution per ridge. With `single`
-    the products of a batch in float32 (their sum and the solution stay in float64). With `prior` (a reference energy)
-    the target is what it leaves."""
+        single: bool = False, prior: JointDensity = None, variants: Sequence[str] = ("",)) -> dict:
+    """{(variant, ridge): dict(w [bins, P], fit_loss)}: one accumulation of G^T G per bin, one solution per variant and
+    ridge. With `single` the products of a batch in float32 (their sum and the solution stay in float64). With `prior`
+    (a reference energy) the target is what it leaves. A variant (kept_columns) is fitted without some features, whose
+    weights are 0, with the absolute ridge of the whole basis."""
     g = torch.Generator().manual_seed(seed)  # the draws on the CPU: the same samples on every device
     device = torch.device("cpu") if DEVICE.type == "mps" else DEVICE  # the sums in float64: not on mps
-    w = {r: [] for r in ridges}
-    fit_loss = {r: [] for r in ridges}
+    keys = [(v, r) for v in variants for r in ridges]
+    w = {key: [] for key in keys}
+    fit_loss = {key: [] for key in keys}
     for k in range(len(bins.centres)):
         t0 = time.perf_counter()
         gram = Gram(ace, device, single)
@@ -346,19 +367,23 @@ def fit(ace, ref, bins: Bins, train: torch.Tensor, per_bin: int, batch: int, rid
             rows += batch
         a, b = gram.total()
         del gram  # room for the solution
-        for r in ridges:
-            m = a.clone()
+        for key in keys:
+            variant, r = key
+            idx = kept_columns(ace, variant).to(a.device) if variant else None
+            m = a.clone() if idx is None else a[idx][:, idx]
             m.diagonal().add_(r * float(a.diagonal().mean()))
             torch.linalg.cholesky(m, out=m)  # in place: for a large basis a second copy does not fit
-            wk = -torch.cholesky_solve(b[:, None], m)[:, 0]
+            part = -torch.cholesky_solve((b if idx is None else b[idx])[:, None], m)[:, 0]
             del m
-            w[r].append(wk.cpu())
-            fit_loss[r].append(float((wk @ a @ wk + 2 * wk @ b + yy) / rows))
-        losses = ", ".join(f"{fit_loss[r][-1]:.3f}" for r in ridges)
+            wk = part if idx is None else torch.zeros_like(b).index_copy_(0, idx, part)
+            w[key].append(wk.cpu())
+            fit_loss[key].append(float((wk @ a @ wk + 2 * wk @ b + yy) / rows))
+        losses = ", ".join(f"{fit_loss[key][-1]:.3f}" for key in keys)
+        names = ", ".join(f"{'no ' + v + ' ' if v else ''}{r:g}" for v, r in keys)
         print(f"bin {k + 1:2d}/{len(bins.centres)}: t in [{lo:.4f}, {hi:.4f}], s in [{bins.edges[k].exp():.2e}, "
-              f"{bins.edges[k + 1].exp():.2e}]: fit loss {losses} (ridge {', '.join(f'{r:g}' for r in ridges)}; "
+              f"{bins.edges[k + 1].exp():.2e}]: fit loss {losses} (ridge {names}; "
               f"zero score {yy / rows:.3f}), {time.perf_counter() - t0:.0f} s", flush=True)
-    return {r: dict(w=torch.stack(w[r]), fit_loss=fit_loss[r]) for r in ridges}
+    return {key: dict(w=torch.stack(w[key]), fit_loss=fit_loss[key]) for key in keys}
 
 
 def evaluate(ace, ref, bins: Bins, w: torch.Tensor, valid: torch.Tensor, compare, batch: int, t_min: float,
@@ -448,6 +473,9 @@ def main() -> None:
     parser.add_argument("--triples", type=int, default=0, metavar="REACH",
                         help="with --wigner or --pairs: products of the local coordinates of three joints whose tree "
                              "distances are at most REACH (27 features per triple)")
+    parser.add_argument("--leave-out", nargs="*", default=[], choices=LEAVE_OUT,
+                        help="with --wigner or --pairs: also fits without a part of the descriptors (their weights 0), "
+                             "from the same sums, saved as <out>_no_<part>_r<ridge>")
     parser.add_argument("--single", action="store_true",
                         help="the products of every batch in float32 (a large basis on a GPU with slow float64)")
     parser.add_argument("--joint-density", type=float, nargs="+", default=None, metavar="N S0",
@@ -474,6 +502,8 @@ def main() -> None:
         ace = harmonic_basis(vars(args), triples)
     elif args.all_pairs or args.products or args.triples:
         parser.error("--all-pairs, --products and --triples need --wigner or --pairs.")
+    if args.leave_out and not (args.wigner or args.pairs):
+        parser.error("--leave-out needs --wigner or --pairs.")
     ace = ace.to(DEVICE)
     valid = load_reference("valid", ROTATIONS, SPLIT)
     valid = valid[torch.randperm(len(valid), generator=torch.Generator().manual_seed(0))[:args.valid]]
@@ -484,7 +514,7 @@ def main() -> None:
     if args.load:
         saved = torch.load(Path(args.load).expanduser(), map_location="cpu", weights_only=True)
         assert torch.equal(saved["edges"], bins.edges), "the bins of the loaded fit differ (--bins)"
-        results = {saved["settings"].get("ridge", args.ridge[0]): dict(w=saved["w"], fit_loss=saved["fit_loss"])}
+        results = {("", saved["settings"].get("ridge", args.ridge[0])): dict(w=saved["w"], fit_loss=saved["fit_loss"])}
     else:
         results = None
     train = None if results else load_reference("train", ROTATIONS, SPLIT)
@@ -496,21 +526,24 @@ def main() -> None:
     elif args.joint_density:
         prior = JointDensity.from_poses(train, int(args.joint_density[0]), args.joint_density[1:], args.seed)
     if results is None:
-        results = fit(ace, ref, bins, train, args.per_bin, args.batch, args.ridge, args.seed, args.single, prior)
+        results = fit(ace, ref, bins, train, args.per_bin, args.batch, args.ridge, args.seed, args.single, prior,
+                      ["", *args.leave_out])
     compare = {Path(r).expanduser().parent.name: load_model(Path(r).expanduser(), device=args.device,
                                                              weights="weights_ema").eval() for r in args.compare}
-    for n_ridge, (ridge, result) in enumerate(results.items()):
-        report(ace, ref, bins, ridge, result, valid, compare if n_ridge == 0 else {}, args, len(results) > 1, prior)
+    for n, ((variant, ridge), result) in enumerate(results.items()):
+        report(ace, ref, bins, ridge, result, valid, compare if n == 0 else {}, args, len(results) > 1, prior, variant)
 
 
-def report(ace, ref, bins, ridge, result, valid, compare, args, several: bool, prior=None) -> None:
+def report(ace, ref, bins, ridge, result, valid, compare, args, several: bool, prior=None,
+           variant: str = "") -> None:
     """Evaluate one fit on the validation draws, print its table (and the networks' with the first), save it: the
     weights before the evaluation, so that an error there does not lose the fit."""
     out = Path(args.out).expanduser() if args.out and not args.load else None
     if out is not None:
-        out = out.with_name(f"{out.stem}_r{ridge:g}{out.suffix}") if several else out
+        stem = f"{out.stem}_no_{variant}" if variant else out.stem
+        out = out.with_name(f"{stem}_r{ridge:g}{out.suffix}") if several else out
         out.parent.mkdir(parents=True, exist_ok=True)
-    settings = dict(vars(args), ridge=ridge)
+    settings = dict(vars(args), ridge=ridge, left_out=variant)
 
     def save(table):
         extra = {"triples": ace.triples} if getattr(ace, "triples", None) else {}
