@@ -72,6 +72,22 @@ cache of hp.evaluation.pareto: their FID, FID own, APD, dNN and the harness with
 (--set) are those of the sampler: sample_steps, sampler, schedule, schedule_rho, eps, likelihood_steps. --like LABEL
 takes those of a row of hp.evaluation.pareto.MODELS, or a ready name: own, heun, euler. Without --like the sampler is
 the model's own. A stopped run (Ctrl+C) continues from its last finished stage when it is run again.
+
+Everything at once, for a new RSGM, next to the references (config/references/posedflow.yaml, hp.evaluation.references):
+
+    python scripts/evaluate.py all --run "my RSGM=~/data/experiments/x_s10" --like --quick    # then without --quick
+    python scripts/evaluate.py all --run ~/data/experiments/x_s10 --like rsgm denoising="rsgm budget" --methods inpaint
+    python scripts/evaluate.py all --run ~/data/experiments/x_s10 --tune grid --methods inpaint
+    python scripts/evaluate.py all --run ~/data/experiments/x_s10 --tune inpaint=grid dflow=ready --dry-run
+    python scripts/evaluate.py references --device cuda:0 --dry-run
+
+all runs the three protocols on the validation (the test only with --split test). The completion has no default, it is
+said on the command line (hp.evaluation.tuning): --like is ONE ready setting per procedure (--methods), that of the
+reference of the same architecture, read from model.json (another architecture: that of timeres 1024x2, said so);
+--tune grid is 10 settings of the inpainting, --tune study an Optuna study (120 or 60). A grid or study is announced
+with its number of settings and asks before it starts (--yes: no question). Generation is heun, denoising ours. Then
+a table per protocol: the model, the references with the differences and what of them is noise, the ranks, the
+targets; also written to --reports. references computes the references themselves, once.
 """
 import argparse
 import json
@@ -106,6 +122,12 @@ def completion_parser(sub) -> None:
     g.add_argument("--together", action="store_true", help="the hypotheses of a batch in one GPU batch; speed only")
     g.add_argument("--no-metrics", action="store_true", help="only the completions (no SMPL-X body on this machine)")
     p.set_defaults(protocol=completion)
+
+
+def collect(args, label: str, spec: dict, result, complete: bool = True) -> None:
+    """The results of a model for the caller of a protocol (all, references), if it gave args.collect."""
+    if complete and getattr(args, "collect", None) is not None:
+        args.collect[label] = (spec, result)
 
 
 def poses_of(split: str, args):
@@ -180,6 +202,7 @@ def completion(args) -> int:
             continue
         rows, kept = [], []
         for label, spec in specs.items():
+            parts = {}
             for occlusion in args.occlusions:
                 if soft.requested:
                     break
@@ -197,8 +220,10 @@ def completion(args) -> int:
                     from hp.evaluation.completion import Body
                     body = Body()
                 plain, _ = cached_metrics(cache, label, occlusion, pred, gt, body)
+                parts[occlusion] = plain
                 rows.append(dict(label=label, split=split, poses=len(gt), occlusion=occlusion, k=args.k,
                                  **summary(plain), spec=spec))
+            collect(args, label, spec, parts, len(parts) == len(OCCLUSIONS))
         if rows:
             merge_results(cache / "results.jsonl", rows)
             print(f"\n{split} ({len(gt)} poses; MPVPE mean per occlusion and mean / best of {args.k} in mm, "
@@ -336,6 +361,7 @@ def denoising(args) -> int:
             continue
         rows, kept = [], []
         for label, spec in specs.items():
+            parts = {}
             for sigma in args.sigmas:
                 if soft.requested:
                     break
@@ -350,7 +376,9 @@ def denoising(args) -> int:
                 if m is None:
                     continue
                 print(f"{label} / {round(sigma * 1000)} mm: {(time.perf_counter() - start) / 60:.1f} min", flush=True)
+                parts[sigma] = m
                 rows.append(dict(label=label, split=split, sequences=n, sigma=sigma, **D.summary(m), spec=spec))
+            collect(args, label, spec, parts, len(parts) == len(D.SIGMAS))
         if rows:
             merge_rows(cache / "results.jsonl", rows, keys=("label", "split", "sigma"))
             print(f"\n{split} ({n} sequences; MPJPE / MPVPE in mm)\n"
@@ -458,6 +486,7 @@ def generation(args) -> int:
             if len(results) == len(stages):
                 rows.append(dict(label=label, split=split, poses=len(arena.poses), **G.numbers(results),
                                  spec=specs[zoo.group_of[label]]))
+                collect(args, label, rows[-1]["spec"], {k: v for k, v in rows[-1].items() if k != "spec"})
         if rows:
             merge_rows(cache / "results.jsonl", rows, keys=("label", "split"))
             real = [] if soft.requested else [dict(label=k, **v) for k, v in arena.real(cache).items()]
@@ -471,10 +500,351 @@ def generation(args) -> int:
     return 0
 
 
+# ---- all protocols at once -----------------------------------------------------------------------------------------
+PROFILES = {"generation": "heun", "denoising": "ours"}  # --like rsgm; the completion gets the reference sets
+
+
+def likes_of(likes) -> dict:
+    """{protocol: LABEL} of --like; "rsgm" stands for the reference sets of the completion."""
+    from hp.evaluation import references as R
+
+    chosen = {}
+    for item in likes:
+        protocol, sep, label = item.partition("=")
+        if sep and protocol in R.PROTOCOLS:
+            chosen[protocol] = label
+        else:
+            chosen["completion"] = item
+    return chosen
+
+
+def completion_modes(args) -> dict:
+    """{method: ready | grid | study}, as said with --like or --tune: there is no default, so that nobody takes one
+    setting for a search or the other way round."""
+    from hp.evaluation import tuning as T
+
+    ready = args.like is not None and (not args.like or "completion" in likes_of(args.like))
+    if ready and args.tune:
+        raise cli.UsageError("--like and --tune both set the completion: one of them (--like PROTOCOL=LABEL is free)")
+    if ready:
+        return {method: "ready" for method in args.methods}
+    if not args.tune:
+        raise cli.UsageError(T.MENU)
+    result = T.modes(args.tune, args.methods)
+    if any(m != "ready" for m in result.values()) and (args.quick or args.poses or args.split == "test"):
+        raise cli.UsageError("a grid or a study chooses on the full validation draw: without --quick, --poses, --split")
+    return result
+
+
+def profile(likes, config: dict, arch: str, methods) -> list:
+    """[(protocol, group, arguments, note)]: the runs of a model of this architecture with ready settings. likes:
+    "rsgm" or nothing (the reference sets), a LABEL of the completion, and PROTOCOL=LABEL per protocol."""
+    from hp.evaluation import references as R
+
+    chosen = {k: v for k, v in likes_of(likes or []).items() if v != "rsgm"}
+    runs = []
+    for protocol in R.PROTOCOLS:
+        if protocol != "completion":
+            like = chosen.get(protocol, PROFILES[protocol])
+            runs.append((protocol, "", ["--like", like], like))
+        elif protocol in chosen:
+            runs.append((protocol, completion_method(chosen[protocol]), ["--like", chosen[protocol]], chosen[protocol]))
+        else:
+            for method in methods:
+                row, own = R.set_for(config, method, arch)
+                note = f"{row['key']}, {row['source']}" + ("" if own else f"; no set of {arch}")
+                runs.append((protocol, method, ["--method", method, "--settings", json.dumps(row["settings"])], note))
+    return runs
+
+
+def completion_method(label: str) -> str:
+    from evaluate_completion import MODELS
+
+    lookup = {**cli.point_specs(POINTS), **MODELS}
+    if label not in lookup:
+        raise cli.UsageError(f"--like {label!r}: not a row of the registry nor a point")
+    return cli.method_of(lookup[label])[0]
+
+
+def call(args, argv: list, parser) -> tuple:
+    """Run a protocol with these arguments as its own command would: (its code, {label: (spec, result)})."""
+    sub = parser.parse_args(argv)
+    sub.collect = {}
+    cli.resolve_poses(sub)
+    code = sub.protocol(sub)
+    return code, sub.collect
+
+
+def run_label(base: str, protocol: str, group: str, arguments: list) -> str:
+    """A label of its own for every setting of a model."""
+    return f"{base}, {group or protocol} {cli.short_hash(arguments)}"
+
+
+def common_argv(args, protocol: str) -> list:
+    argv = ["--split", args.split, "--device", args.device]
+    if args.out:
+        argv += ["--out", str(Path(args.out).expanduser() / protocol)]
+    if protocol == "completion":
+        argv += ["--together", "--batch", str(args.batch)]
+    if protocol != "generation" and (n := getattr(args, "poses" if protocol == "completion" else "sequences", None)):
+        argv += ["--poses", str(n)]
+    if getattr(args, "quick", None):
+        argv += ["--quick"]
+    return argv + [flag for flag in ("--recompute", "--force", "--dry-run")
+                   if getattr(args, flag[2:].replace("-", "_"))]
+
+
+def entry_of(protocol: str, group: str, result, **fields) -> dict:
+    from hp.evaluation import references as R
+
+    if protocol == "completion":
+        return R.completion_entry(result, group=group, **fields)
+    if protocol == "denoising":
+        return R.denoising_entry(result, **fields)
+    numbers = {k: v for k, v in result.items() if isinstance(v, (int, float)) and k != "poses"}
+    return R.generation_entry(numbers, result["poses"], **fields)
+
+
+def tune_plans(args, config: dict, path: str, arch: str, how: dict) -> dict:
+    """{method: Plan} of the grids and studies, announced before anything runs."""
+    from hp.evaluation import references as R
+    from hp.evaluation import tuning as T
+
+    plans = {}
+    for method, mode in how.items():
+        if mode != "ready":
+            row, own = R.set_for(config, method, arch)
+            plans[method] = T.make_plan(config, method, mode, path, row, own, args.n_trials,
+                                        args.batch if args.batch != BATCH else None)
+            print("\n" + T.announce(plans[method], len(trials_of(plans[method])[1]), args.device), flush=True)
+    if plans and not args.dry_run and not args.yes:
+        if not sys.stdin.isatty():
+            raise cli.UsageError("a grid or a study is about to run: add --yes to start it without a question")
+        if input("\nstart? [y/N] ").strip().lower() not in ("y", "yes"):
+            raise cli.UsageError("not started")
+    return plans
+
+
+def trials_of(plan) -> tuple:
+    """(all the trials, the finished ones as points) of the study of a plan, without creating it."""
+    from tune_completion import STUDY_DIR, averages, open_study
+
+    folder = Path(STUDY_DIR).expanduser()
+    if not (folder / f"{plan.name}.db").is_file():
+        return [], []
+    trials = [dict(number=t.number, state=t.state.name, params=t.params or t.system_attrs.get("fixed_params", {}),
+                   **({k: v for k, v in averages(t).items()} if t.state.name == "COMPLETE" else {}))
+              for t in open_study(plan.name, folder).trials]
+    return trials, [t for t in trials if t["state"] == "COMPLETE"]
+
+
+def run_plan(plan, args) -> tuple:
+    """Run (or continue) a grid or study: (the arguments of the completion at its best point, a note); (None, why) if
+    it was stopped before its end."""
+    from types import SimpleNamespace
+
+    import yaml
+    from hp.evaluation import tuning as T
+    from tune_completion import STUDY_DIR, open_study, tune
+
+    folder = Path(STUDY_DIR).expanduser()
+    folder.mkdir(parents=True, exist_ok=True)
+    file = folder / f"{plan.name}.yaml"
+    file.write_text(yaml.safe_dump(plan.config, sort_keys=False))
+    total = plan.config["n_trials"]
+    trials, points = trials_of(plan)
+    if trials:  # trials stopped halfway count as finished for Optuna: they are run again
+        total += sum(t["state"] in ("FAIL", "PRUNED") for t in trials)
+        if again := T.missing(plan.grid, trials):
+            study = open_study(plan.name, folder)
+            for settings in again:
+                study.enqueue_trial(settings)
+    _, finished = tune(file, folder, SimpleNamespace(n_trials=total, summary=False, enqueue=[], device=args.device,
+                                                     tf32=False))
+    _, points = trials_of(plan)
+    if not finished or len(points) < plan.config["n_trials"]:
+        return None, f"stopped, {len(points)} of {plan.config['n_trials']} settings; the same command continues"
+    point, warning = T.choose(points, plan.floor)
+    settings = {**plan.config["fixed"], **point["params"]}
+    note = f"{plan.mode} of {len(points)} settings, trial {point['number']} of {plan.name}"
+    if plan.mode == "grid" and T.at_end(point, plan.grid):
+        warning += ("; " if warning else "") + "the best point is at an end of the grid"
+    print(f"\nchosen: {settings} ({point['mean']:.2f} / {point['best_of_k']:.2f} / {point['apd']:.2f})"
+          + (f"; {warning}" if warning else ""))
+    return ["--method", plan.method, "--settings", json.dumps(settings)], note + (f"; {warning}" if warning else "")
+
+
+def all_parser(sub) -> None:
+    from hp.evaluation import references as R
+
+    p = sub.add_parser("all", help="generation, completion and denoising of a model, next to the references",
+                       description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--run", required=True, metavar="[LABEL=]PATH", help="a run folder of RSGM (one model)")
+    p.add_argument("--like", nargs="*", default=None, metavar="[PROTOCOL=]LABEL",
+                   help="ready settings, ONE per procedure of the completion: without a value (or rsgm) the reference "
+                        "set of the architecture, a LABEL that row or point; PROTOCOL=LABEL changes the generation "
+                        '(heun) or the denoising (ours): denoising="rsgm budget"')
+    p.add_argument("--tune", nargs="+", default=None, metavar="[METHOD=]MODE",
+                   help="instead of --like for the completion: grid (10 settings, inpaint only), study (Optuna, 120 or "
+                        "60 settings) or ready, for all the procedures or METHOD=MODE; one of --like and --tune must "
+                        "be given when the completion runs, the number of settings is announced first")
+    p.add_argument("--n-trials", type=int, default=None, help="of a study (default: 120 inpaint, 60 dflow)")
+    p.add_argument("--yes", action="store_true", help="start a grid or study without the question")
+    p.add_argument("--methods", nargs="+", default=list(R.METHODS), choices=R.METHODS,
+                   help="the procedures of the completion (default both)")
+    p.add_argument("--protocols", nargs="+", default=list(R.PROTOCOLS), choices=R.PROTOCOLS)
+    p.add_argument("--split", choices=cli.SPLITS, default="valid", help="valid (default) or, explicitly, test")
+    p.add_argument("--quick", action="store_true", help=f"{QUICK} poses, {DENOISING_QUICK} sequences, no likelihood")
+    p.add_argument("--poses", type=int, default=None, help="the first n poses of the completion")
+    p.add_argument("--sequences", type=int, default=None, help="the first n sequences of the denoising")
+    add_all_common(p)
+    p.add_argument("--reports", default="~/data/experiments/evaluate_all", help="where the summary is written (.md)")
+    p.set_defaults(protocol=all_protocols)
+
+
+def add_all_common(p) -> None:
+    p.add_argument("--out", default=None, help="a results root with a folder per protocol (default: the usual caches)")
+    p.add_argument("--device", default="cuda:0", help="cuda:N | mps | cpu")
+    p.add_argument("--batch", type=int, default=BATCH, help="poses per batch of the completion; speed and memory only")
+    p.add_argument("--recompute", action="store_true", help="replace results made with other settings")
+    p.add_argument("--force", action="store_true", help="compute every result again")
+    p.add_argument("--dry-run", action="store_true", help="print what would run and what is already there")
+
+
+def all_protocols(args) -> int:
+    from hp.evaluation import references as R
+
+    config = R.load()
+    label, sep, path = args.run.rpartition("=")
+    try:
+        path = R.resolve_run(path if sep else args.run)
+        arch = R.architecture_of(path)
+    except ValueError as error:
+        raise cli.UsageError(str(error))
+    base = label if sep else cli.default_label(path, {})
+    if args.tune and "completion" not in args.protocols:
+        raise cli.UsageError("--tune is of the completion, which is not among --protocols")
+    how = completion_modes(args) if "completion" in args.protocols else {}
+    if args.quick and (args.split == "test" or args.poses or args.sequences):
+        raise cli.UsageError("--quick is a check on the validation with its own numbers of poses and sequences")
+    print(f"{base}: {arch}, {path}")
+    plans = tune_plans(args, config, path, arch, how)
+    parser, entries, notes = build_parser(), [], []
+    for protocol, group, arguments, note in profile(args.like, config, arch, args.methods):
+        if protocol not in args.protocols:
+            continue
+        if protocol == "completion" and group in plans:
+            if args.dry_run:
+                continue
+            arguments, note = run_plan(plans[group], args)
+            if arguments is None:
+                print(note)
+                return 1
+        name = run_label(base, protocol, group, arguments)
+        print(f"\n== {protocol}{' ' + group if group else ''}: settings of {note}", flush=True)
+        code, results = call(args, [protocol, "--run", f"{name}={path}", *arguments, *common_argv(args, protocol)], parser)
+        if code:
+            return code
+        if name in results:
+            spec, result = results[name]
+            entries.append((note, entry_of(protocol, group, result, network=base, architecture=arch, label=base,
+                                           spec=spec)))
+        elif not args.dry_run:
+            notes.append(f"{protocol} {group}: not complete, see above")
+    if args.dry_run:
+        return 0
+    references = R.read()
+    known = {R.entry_key(e) for e in references}
+    references += [e for e in R.recorded_entries(config) if R.entry_key(e) not in known]
+    if args.split == "test":  # the references, their front and the targets are numbers of the validation
+        references, config = [], {**config, "front": [], "targets": {}}
+    report = [f"# {base}\n", f"{arch}, `{path}`, {args.split}{' (--quick)' if args.quick else ''}, "
+                             f"commit {cli.git_commit()}"]
+    for note, entry in entries:
+        title = f"{entry['protocol']}{' ' + entry['group'] if entry['group'] else ''}"
+        report += [f"\n## {title}: n = {entry['n']}, settings of {note}\n", R.compare(entry, references, config)]
+    own = {row["method"] for row in config["sets"] if R.resolve_or_none(row["run"]) == path}
+    ready = [e["group"] for _, e in entries if e["protocol"] == "completion" and e["group"] not in own | set(plans)]
+    if ready and args.split == "valid":
+        report.append(f"\nCompletion {', '.join(ready)}: ready settings, not searched for this network, while the "
+                      "references have their own: up to 2 mm of the mean may be the settings (see \"to the front\"). "
+                      "--tune grid before a conclusion about small differences.")
+    tuned = [e["group"] for n, e in entries if e["protocol"] == "completion" and e["group"] in plans]
+    if tuned:
+        report.append(f"\nCompletion {', '.join(tuned)}: the settings were chosen on these same validation poses, as "
+                      "those of the references: a little optimistic for both, the test decides.")
+    if entries and references:
+        report.append("\nIn brackets: the model minus the reference; `~` within the noise of the poses and draws (not of "
+                      "the training seeds), `?` noise unknown. MPVPE / MPJPE in mm, APD in cm, W / recall / precision in "
+                      "deg per joint. \"to the front\": mean minus the mean of the front of the reference studies at "
+                      "the same APD (negative: better).")
+    report = "\n".join(report + [f"\n{n}" for n in notes])
+    print("\n" + report)
+    folder = Path(args.reports).expanduser()
+    folder.mkdir(parents=True, exist_ok=True)
+    amount = "_quick" if args.quick else "".join(
+        f"_{k}{v}" for k, v in (("poses", args.poses), ("seq", args.sequences)) if v)
+    file = folder / (base.replace("/", "_").replace(" ", "_") + f"_{args.split}{amount}.md")
+    file.write_text(report + "\n")
+    print(f"\nwritten to {file}")
+    return 0
+
+
+def references_parser(sub) -> None:
+    from hp.evaluation import references as R
+
+    p = sub.add_parser("references", help="the reference networks through all the protocols, on the validation",
+                       description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--protocols", nargs="+", default=list(R.PROTOCOLS), choices=R.PROTOCOLS)
+    p.add_argument("--networks", nargs="+", default=None, help='only these, e.g. "small c10"')
+    add_all_common(p)
+    p.set_defaults(protocol=references)
+
+
+def references(args) -> int:
+    """The rows of config/references/posedflow.yaml on the validation; the numbers are added to the files of
+    hp.evaluation.references after every row, so a stopped run keeps the finished ones."""
+    from hp.evaluation import references as R
+
+    args.split = "valid"
+    config, parser = R.load(), build_parser()
+    if unknown := set(args.networks or []) - {row["network"] for row in config["sets"]}:
+        raise cli.UsageError(f"no reference networks {sorted(unknown)}")
+    rows = [row for row in config["sets"] if not args.networks or row["network"] in args.networks]
+    networks = {row["network"]: row for row in rows}
+    jobs = [(protocol, "", ["--like", PROFILES[protocol]], row) for protocol in ("generation", "denoising")
+            for row in networks.values()]
+    jobs[len(networks):len(networks)] = [
+        ("completion", row["method"], ["--method", row["method"], "--settings", json.dumps(row["settings"])], row)
+        for row in rows]
+    for protocol, group, arguments, row in jobs:
+        if protocol not in args.protocols:
+            continue
+        name = run_label(row["network"], protocol, group, arguments)
+        print(f"\n== {protocol} {group}: {row['architecture']}, {row['network']}", flush=True)
+        argv = [protocol, "--run", f"{name}={R.resolve_run(row['run'])}", *arguments, *common_argv(args, protocol)]
+        code, results = call(args, argv, parser)
+        if code:
+            return code
+        if name not in results:
+            continue
+        spec, result = results[name]
+        entry = entry_of(protocol, group, result, network=row["network"], architecture=row["architecture"],
+                         label=row["network"], spec=spec)
+        entry.update(commit=cli.git_commit(), device=args.device)
+        R.save([entry])
+        if protocol == "completion":
+            print("recorded / now: " + ", ".join(f"{k} {v:.2f} / {entry['numbers'][k]:.2f}"
+                                                 for k, v in row["validation"].items()))
+    if not args.dry_run:
+        print(f"\n{len(R.read())} rows in {R.NUMBERS} and {R.ARRAYS}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="name", required=True, metavar="protocol")
-    for add in (completion_parser, denoising_parser, generation_parser):
+    for add in (completion_parser, denoising_parser, generation_parser, all_parser, references_parser):
         add(sub)
     return parser
 
@@ -483,7 +853,8 @@ def main(argv=None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
-        cli.resolve_poses(args)
+        if args.name not in ("all", "references"):
+            cli.resolve_poses(args)
         return args.protocol(args)
     except cli.UsageError as error:
         parser.error(str(error))

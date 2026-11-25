@@ -9,6 +9,7 @@ models(), the specs of hp.evaluation.completion.build: {"run": <folder>} or {"po
 import argparse
 import hashlib
 import json
+import subprocess
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -157,6 +158,17 @@ def run_spec(path: str, weights: Optional[str] = None, method: Optional[str] = N
 def short_hash(value) -> str:
     """The first characters of the hash of a JSON value, for labels."""
     return hashlib.sha1(json.dumps(value, sort_keys=True).encode()).hexdigest()[:8]
+
+
+def git_commit() -> str:
+    """The commit of the repository of this code, with "+dirty" if it has uncommitted changes."""
+    root = Path(__file__).resolve().parents[3]
+    try:
+        commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout.strip()
+        dirty = subprocess.run(["git", "status", "--porcelain"], cwd=root, capture_output=True, text=True).stdout.strip()
+    except OSError:
+        return "unknown"
+    return (commit or "unknown") + ("+dirty" if dirty else "")
 
 
 def default_label(path: str, spec: dict) -> str:

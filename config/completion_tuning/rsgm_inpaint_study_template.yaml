@@ -1,0 +1,22 @@
+# TEMPLATE: the search of the settings of inpainting of one RSGM, as in the studies of the references (120 trials,
+# hours: see study_hours in config/references/posedflow.yaml). Used by `scripts/evaluate.py all --tune study`, which
+# fills in the model, or copied by hand to <name>.yaml. The grid (rsgm_inpaint_grid_template) is the cheap alternative.
+# Rule (as in config/references/posedflow.yaml): the lowest mean among the points with APD >= 6.40 cm.
+# model: ~/data/experiments/<run>/run_0001
+method: inpaint
+objective: mean_apd
+poses: 1000
+n_trials: 120
+params:
+  steps: [100, 200, 400]
+  guidance: {low: 0.01, high: 0.5, log: true}
+  resample: [1, 2, 3, 5]
+  replace: [true, false]
+fixed:
+  schedule: edm
+first:
+  - {steps: 200, guidance: 0.1, resample: 1, replace: false}
+  - {steps: 200, guidance: 0.2, resample: 1, replace: false}
+  - {steps: 200, guidance: 0.2, resample: 5, replace: false}
+  - {steps: 200, guidance: 0.2, resample: 5, replace: true}
+  - {steps: 200, guidance: 0.05, resample: 1, replace: true}

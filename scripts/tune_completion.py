@@ -50,7 +50,7 @@ written to <name>.json next to it, to be copied into MODELS of evaluate_completi
 import argparse
 import json
 import platform
-import subprocess
+import signal
 import time
 from pathlib import Path
 
@@ -60,6 +60,7 @@ import torch
 from omegaconf import OmegaConf
 
 from hp.evaluation.completion import OCCLUSIONS, Body, build, metrics, run, summary, valid_poses
+from hp.evaluation.protocol_cli import SoftStop, git_commit
 
 STUDY_DIR = "~/data/experiments/completion/optuna"
 ROTATIONS = "~/data/AMASS_rotations_posedflow_c10"  # their data: the validation split and the statistics of the starts
@@ -199,17 +200,6 @@ def objective_of(config: dict, model, gt, body, commit: str, device: str, tf32: 
     return objective
 
 
-def git_commit() -> str:
-    """The commit of the repository of this script, with "+dirty" if it has uncommitted changes."""
-    root = Path(__file__).resolve().parent.parent
-    try:
-        commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout.strip()
-        dirty = subprocess.run(["git", "status", "--porcelain"], cwd=root, capture_output=True, text=True).stdout.strip()
-    except OSError:
-        return "unknown"
-    return (commit or "unknown") + ("+dirty" if dirty else "")
-
-
 def open_study(name: str, study_dir: Path, directions=None, attempts: int = 5):
     """The study in its own SQLite file, study_dir / <name>.db; created with `directions` if new (None: it must
     exist). Two processes that create the same file at the same time race on Optuna's tables; the loser waits and
@@ -308,12 +298,14 @@ def main() -> int:
         report(open_study(args.study, study_dir), study_dir)
         return 0
     for path in args.config:
-        tune(Path(path), study_dir, args)
+        if not tune(Path(path), study_dir, args)[1]:
+            return 1
     return 0
 
 
-def tune(path: Path, study_dir: Path, args) -> None:
-    """Run (or continue, or with --summary only report) the study of one YAML file."""
+def tune(path: Path, study_dir: Path, args) -> tuple:
+    """Run (or continue, or with --summary only report) the study of one YAML file: (the study, False if it was
+    stopped; Ctrl+C once: after the current trial)."""
     config, name, commit = load_config(path), path.stem, git_commit()
     if args.n_trials is not None:
         config["n_trials"] = args.n_trials
@@ -321,7 +313,7 @@ def tune(path: Path, study_dir: Path, args) -> None:
     check_or_record(study, config, commit)
     if args.summary:
         report(study, study_dir)
-        return
+        return study, True
     if not study.trials:
         if config.get("import"):
             import_trials(study, config, study_dir)
@@ -331,7 +323,7 @@ def tune(path: Path, study_dir: Path, args) -> None:
         study.enqueue_trial(json.loads(params), skip_if_exists=True)
     # seeded by the trials so far: a restarted study does not draw the random trials of its first start again
     study.sampler = optuna.samplers.TPESampler(seed=SEED + len(study.trials), multivariate=True, n_startup_trials=15)
-    finished = sum(t.state.is_finished() for t in study.trials)
+    finished, soft = sum(t.state.is_finished() for t in study.trials), SoftStop("trial")
     if finished < config["n_trials"]:
         torch.manual_seed(SEED)
         gt, body = valid_poses(ROTATIONS, config["poses"]), Body()
@@ -341,12 +333,18 @@ def tune(path: Path, study_dir: Path, args) -> None:
         # several processes may work on one study (e.g. one per GPU): every one stops when the study has n_trials
         # finished trials in all; start them a little apart, as the sampler is seeded by the trials so far
         stop = optuna.study.MaxTrialsCallback(config["n_trials"], states=FINISHED)
-        study.optimize(objective_of(config, model, gt, body, commit, args.device, args.tf32),
-                       n_trials=config["n_trials"] - finished, callbacks=[stop])
+        previous = signal.signal(signal.SIGINT, soft)
+        try:
+            study.optimize(objective_of(config, model, gt, body, commit, args.device, args.tf32),
+                           n_trials=config["n_trials"] - finished,
+                           callbacks=[stop, lambda study, _: study.stop() if soft.stop() else None])
+        finally:
+            signal.signal(signal.SIGINT, previous)
         del model
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
     report(study, study_dir)
+    return study, not soft.stop()
 
 
 if __name__ == "__main__":
