@@ -324,6 +324,57 @@ class Bins:
 LEAVE_OUT = ("distances", "angles", "twist", "descriptors")  # parts of AceFeatures; descriptors: all three
 
 
+class _NoDescriptors(torch.nn.Module):
+    dim = 0
+
+    def forward(self, x):
+        return x.new_zeros(*x.shape[:-3], 0)
+
+
+def mirror_map(ace: WithHarmonics):
+    """(idx, sign): for the features after the descriptors, B(sigma x)_p = sign_p B(x)_idx_p, sigma the left-right
+    mirror of the pose ((sigma x)_j = M x_{mirror of j} M, M = diag(-1, 1, 1)); found on random rotations. The descriptors have
+    no exact map (the skeleton is not symmetric) and are left out."""
+    from hp.data.amass_cfg import AmassJoints4Learning
+
+    names = [joint.name for joint in AmassJoints4Learning]
+    swap = [names.index(n.replace("Left", "@").replace("Right", "Left").replace("@", "Right")) for n in names]
+    flip = torch.diag(torch.tensor([-1.0, 1.0, 1.0], dtype=torch.float64))
+    q, _ = torch.linalg.qr(torch.randn(8, 19, 3, 3, dtype=torch.float64, generator=torch.Generator().manual_seed(3)))
+    q = q * torch.linalg.det(q)[..., None, None]
+    basis = WithHarmonics(_NoDescriptors(), ace.wigner, ace.pairs, ace.all_pairs, ace.products)
+    f, g = basis(q), basis(flip @ q[:, swap] @ flip)
+    groups = []
+    for m in (f, g):
+        d = {}
+        for n in range(m.shape[1]):
+            sign = 1 if m[0, n] > 0 else -1
+            d.setdefault(tuple((m[:, n] * sign).round(decimals=7).tolist()), []).append((n, sign))
+        groups.append(d)
+    idx = torch.empty(f.shape[1], dtype=torch.long)
+    signs = torch.empty(f.shape[1], dtype=torch.float64)
+    assert set(groups[0]) == set(groups[1]), "a feature of the mirrored pose is not a feature of the pose"
+    for key, rows in groups[1].items():  # equal features (the children of the root): the n-th to the n-th
+        for (n, sign), (m, sign0) in zip(rows, groups[0][key]):
+            idx[n], signs[n] = m, sign * sign0
+    assert torch.allclose(g, f[:, idx] * signs, atol=1e-6) and torch.equal(idx[idx], torch.arange(len(idx)))
+    return idx, signs
+
+
+def shuffled_map(ace: WithHarmonics, idx: torch.Tensor, signs: torch.Tensor, seed: int = 0):
+    """A control for mirror_map: the same map with the features of every block (harmonics of one degree, products)
+    renamed at random, so it pairs unrelated features and splits each block into the same number of directions."""
+    size = lambda degrees: [(2 * l + 1) ** 2 for l in degrees]  # noqa: E731
+    blocks = ([19 * n for n in size(ace.wigner)] + [19 * n for n in size(ace.pairs)]
+              + [len(WIGNER_PAIRS) * n for n in size(ace.pairs)] + [len(OTHER_PAIRS) * n for n in size(ace.all_pairs)]
+              + ([81 * len(JOINT_PAIRS)] if ace.products else []))
+    assert sum(blocks) == len(idx)
+    generator = torch.Generator().manual_seed(seed)
+    perm = torch.cat([torch.randperm(n, generator=generator) + sum(blocks[:b]) for b, n in enumerate(blocks)])
+    inverse = torch.argsort(perm)
+    return perm[idx[inverse]], signs[inverse]
+
+
 def kept_columns(ace: WithHarmonics, variant: str) -> torch.Tensor:
     """The columns of the basis without one of LEAVE_OUT (all of them for ""), in its layout: the distances of point
     pairs, the angles of point triples, the twist of the bones, then the harmonics and the rest."""
@@ -336,6 +387,8 @@ def kept_columns(ace: WithHarmonics, variant: str) -> torch.Tensor:
     columns = torch.arange(ace.dim)
     if not variant:
         return columns
+    if variant.startswith(("mirror", "random")):  # fitted without the descriptors
+        variant = "descriptors"
     lo, hi = ranges[variant]
     return columns[(columns < lo) | (columns >= hi)]
 
@@ -346,6 +399,13 @@ def fit(ace, ref, bins: Bins, train: torch.Tensor, per_bin: int, batch: int, rid
     ridge. With `single` the products of a batch in float32 (their sum and the solution stay in float64). With `prior`
     (a reference energy) the target is what it leaves. A variant (kept_columns) is fitted without some features, whose
     weights are 0, with the absolute ridge of the whole basis."""
+    tied = {}
+    for v in variants:
+        if v.startswith(("mirror", "random")):
+            pair = mirror_map(ace.to("cpu")) if not tied else mirror_pair
+            mirror_pair = pair
+            tied[v] = (float(v[6:]), pair if v.startswith("mirror") else shuffled_map(ace, *pair))
+    ace.to(DEVICE)
     g = torch.Generator().manual_seed(seed)  # the draws on the CPU: the same samples on every device
     device = torch.device("cpu") if DEVICE.type == "mps" else DEVICE  # the sums in float64: not on mps
     keys = [(v, r) for v in variants for r in ridges]
@@ -369,9 +429,15 @@ def fit(ace, ref, bins: Bins, train: torch.Tensor, per_bin: int, batch: int, rid
         del gram  # room for the solution
         for key in keys:
             variant, r = key
+            lam = r * float(a.diagonal().mean())
             idx = kept_columns(ace, variant).to(a.device) if variant else None
             m = a.clone() if idx is None else a[idx][:, idx]
-            m.diagonal().add_(r * float(a.diagonal().mean()))
+            m.diagonal().add_(lam)
+            if variant in tied:  # lam (P_s + kappa P_a) in place of lam I: P_s, P_a = (I +- R) / 2, R the map
+                kappa, (to, signs) = tied[variant]
+                n = torch.arange(len(to))
+                m.diagonal().add_(lam * (kappa - 1) / 2)
+                m[n.to(m.device), to.to(m.device)] += lam * (1 - kappa) / 2 * signs.to(m)
             torch.linalg.cholesky(m, out=m)  # in place: for a large basis a second copy does not fit
             part = -torch.cholesky_solve((b if idx is None else b[idx])[:, None], m)[:, 0]
             del m
@@ -379,7 +445,8 @@ def fit(ace, ref, bins: Bins, train: torch.Tensor, per_bin: int, batch: int, rid
             w[key].append(wk.cpu())
             fit_loss[key].append(float((wk @ a @ wk + 2 * wk @ b + yy) / rows))
         losses = ", ".join(f"{fit_loss[key][-1]:.3f}" for key in keys)
-        names = ", ".join(f"{'no ' + v + ' ' if v else ''}{r:g}" for v, r in keys)
+        names = ", ".join(f"{v if v.startswith(('mirror', 'random')) else 'no ' + v if v else ''} {r:g}".strip()
+                          for v, r in keys)
         print(f"bin {k + 1:2d}/{len(bins.centres)}: t in [{lo:.4f}, {hi:.4f}], s in [{bins.edges[k].exp():.2e}, "
               f"{bins.edges[k + 1].exp():.2e}]: fit loss {losses} (ridge {names}; "
               f"zero score {yy / rows:.3f}), {time.perf_counter() - t0:.0f} s", flush=True)
@@ -476,6 +543,11 @@ def main() -> None:
     parser.add_argument("--leave-out", nargs="*", default=[], choices=LEAVE_OUT,
                         help="with --wigner or --pairs: also fits without a part of the descriptors (their weights 0), "
                              "from the same sums, saved as <out>_no_<part>_r<ridge>")
+    parser.add_argument("--mirror", type=float, nargs="*", default=[], metavar="KAPPA",
+                        help="also fits without the descriptors whose ridge is KAPPA times larger for the part of the "
+                             "weights that is odd under the left-right mirror (a large KAPPA: equal left and right)")
+    parser.add_argument("--mirror-control", type=float, nargs="*", default=[], metavar="KAPPA",
+                        help="the same with the features paired at random within a block (a control for --mirror)")
     parser.add_argument("--single", action="store_true",
                         help="the products of every batch in float32 (a large basis on a GPU with slow float64)")
     parser.add_argument("--joint-density", type=float, nargs="+", default=None, metavar="N S0",
@@ -502,8 +574,10 @@ def main() -> None:
         ace = harmonic_basis(vars(args), triples)
     elif args.all_pairs or args.products or args.triples:
         parser.error("--all-pairs, --products and --triples need --wigner or --pairs.")
-    if args.leave_out and not (args.wigner or args.pairs):
-        parser.error("--leave-out needs --wigner or --pairs.")
+    if (args.leave_out or args.mirror or args.mirror_control) and not (args.wigner or args.pairs):
+        parser.error("--leave-out, --mirror and --mirror-control need --wigner or --pairs.")
+    if (args.mirror or args.mirror_control) and args.triples:
+        parser.error("--mirror does not know the triples.")
     ace = ace.to(DEVICE)
     valid = load_reference("valid", ROTATIONS, SPLIT)
     valid = valid[torch.randperm(len(valid), generator=torch.Generator().manual_seed(0))[:args.valid]]
@@ -527,7 +601,8 @@ def main() -> None:
         prior = JointDensity.from_poses(train, int(args.joint_density[0]), args.joint_density[1:], args.seed)
     if results is None:
         results = fit(ace, ref, bins, train, args.per_bin, args.batch, args.ridge, args.seed, args.single, prior,
-                      ["", *args.leave_out])
+                      ["", *args.leave_out, *[f"mirror{k:g}" for k in args.mirror],
+                       *[f"random{k:g}" for k in args.mirror_control]])
     compare = {Path(r).expanduser().parent.name: load_model(Path(r).expanduser(), device=args.device,
                                                              weights="weights_ema").eval() for r in args.compare}
     for n, ((variant, ridge), result) in enumerate(results.items()):
@@ -540,7 +615,8 @@ def report(ace, ref, bins, ridge, result, valid, compare, args, several: bool, p
     weights before the evaluation, so that an error there does not lose the fit."""
     out = Path(args.out).expanduser() if args.out and not args.load else None
     if out is not None:
-        stem = f"{out.stem}_no_{variant}" if variant else out.stem
+        prefix = "" if variant.startswith(("mirror", "random")) else "no_"
+        stem = f"{out.stem}_{prefix}{variant}" if variant else out.stem
         out = out.with_name(f"{stem}_r{ridge:g}{out.suffix}") if several else out
         out.parent.mkdir(parents=True, exist_ok=True)
     settings = dict(vars(args), ridge=ridge, left_out=variant)
