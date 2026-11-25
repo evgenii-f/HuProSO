@@ -140,10 +140,9 @@ def low_noise_table(paths, device: str, s_max: float, n: int, batch: int) -> Non
         row("network", split, base[split])
     for path in paths:
         energy, _, b, info = load_energy(path, device)
-        assert torch.equal(b.edges, bins.edges), f"the bins of {path} differ"
         name = f"{Path(path).stem} ({info})"
         saved = torch.load(_local(path), map_location="cpu", weights_only=True)
-        if "fit_loss" in saved:
+        if "fit_loss" in saved and torch.equal(b.edges, bins.edges):  # its own bins are those of the table
             own = [float(saved["fit_loss"][k]) for k in ks]
             print(f"| {name} | in-sample | " + " | ".join(f"{v:.2f}" for v in own)
                   + f" | {sum(own) / len(ks):.3f} | – | – |")
