@@ -1,7 +1,7 @@
 """Run models through the test protocols: one command, the protocol first, the same flags for every protocol
-(hp.evaluation.protocol_cli). The protocols are pose completion (PoseD-Flow's Tab. 2, hp.evaluation.completion) and
-motion denoising (their Tab. 3, hp.evaluation.denoising; see the end of this text); generation and runtime are to
-follow.
+(hp.evaluation.protocol_cli). The protocols are pose completion (PoseD-Flow's Tab. 2, hp.evaluation.completion),
+motion denoising (their Tab. 3, hp.evaluation.denoising) and unconditional generation (hp.evaluation.generation; both
+at the end of this text); runtime is to follow.
 
     python scripts/evaluate.py completion --run ~/data/experiments/full/rsgm_posedflow_small_s10/run_0001 --split all
     python scripts/evaluate.py completion --run "my RSGM=~/data/experiments/x_s10/run_0001" --method inpaint \\
@@ -59,9 +59,23 @@ steps), dposer (DPoser's own settings), "dposer tuned", posedflow (D-Flow with P
 for RSGM (a new RSGM wants --like ours). Both splits are in --out itself (<label>/<split>_<mm>mm.pt, where motion_denoising.ipynb reads them); --poses
 n (the first n sequences) and --quick (the first 30 validation chunks) go to folders of their own. A stopped run
 (Ctrl+C) continues from its last batch when it is run again.
+
+Generation (samples without a condition; no --poses, the number of samples is part of the metrics):
+
+    python scripts/evaluate.py generation --run ~/data/experiments/x_s10/run_0001 --like heun --quick
+    python scripts/evaluate.py generation --run ~/data/experiments/x_s10/run_0001 --like heun --split valid
+    python scripts/evaluate.py generation --models "RSGM 512x4: their full" --split test --dry-run
+
+On the validation FID_val (the statistics of the validation poses), FID own, APD, dNN, our harness (Wasserstein,
+recall, precision) and, without --quick, the log-likelihood; results in <out>/valid. On the test the stages and the
+cache of hp.evaluation.pareto: their FID, FID own, APD, dNN and the harness with the log-likelihood. The settings
+(--set) are those of the sampler: sample_steps, sampler, schedule, schedule_rho, eps, likelihood_steps. --like LABEL
+takes those of a row of hp.evaluation.pareto.MODELS, or a ready name: own, heun, euler. Without --like the sampler is
+the model's own. A stopped run (Ctrl+C) continues from its last finished stage when it is run again.
 """
 import argparse
 import json
+import signal
 import sys
 import time
 from pathlib import Path
@@ -149,6 +163,9 @@ def completion(args) -> int:
     speed = {"batch": args.batch, "together": True} if args.together else (
         {"batch": args.batch} if args.batch != BATCH else {})
     recorded = cli.recorded(args.points)
+    soft = cli.SoftStop("occlusion")
+    if not args.dry_run:
+        signal.signal(signal.SIGINT, soft)
     body = None
     for split in cli.splits(args.split):
         gt = poses_of(split, args)
@@ -164,6 +181,8 @@ def completion(args) -> int:
         rows, kept = [], []
         for label, spec in specs.items():
             for occlusion in args.occlusions:
+                if soft.requested:
+                    break
                 start = time.perf_counter()
                 try:
                     pred = cached_run(cache, label, spec, gt, occlusion, args.device, args.k, args.rotations, split,
@@ -186,6 +205,9 @@ def completion(args) -> int:
                   f"APD in cm)\n" + table(rows, args.occlusions, recorded if split == "valid" else {}) + "\n")
         if kept:
             print(f"kept, made with other settings (--recompute replaces them): {kept}")
+        if soft.requested:
+            print("stopped; run the same command again to continue")
+            return 1
     return 0
 
 
@@ -288,8 +310,6 @@ def merge_rows(path: Path, rows: list, keys=("label", "occlusion")) -> None:
 
 
 def denoising(args) -> int:
-    import signal
-
     from evaluate_denoising import MODELS
 
     from hp.evaluation import denoising as D
@@ -299,16 +319,9 @@ def denoising(args) -> int:
                        spec_of=denoising_spec, settings_of=denoising_settings_of)
     recorded = cli.recorded(args.points)
     data = dict(sequences_file=args.sequences_file, first=args.poses, n_valid=args.valid_sequences)
-    requested = []  # Ctrl+C once: stop after the current batch (the run continues from there when run again)
-
-    def on_sigint(*_):
-        if requested:
-            raise KeyboardInterrupt
-        requested.append(True)
-        print("\n  stop requested: stops after the current batch (Ctrl+C again: at once)", flush=True)
-
+    soft = cli.SoftStop("batch")  # Ctrl+C once (the run continues from there when run again)
     if not args.dry_run:
-        signal.signal(signal.SIGINT, on_sigint)
+        signal.signal(signal.SIGINT, soft)
     for split in cli.splits(args.split):
         # the file names carry the split (<label>/<split>_<mm>mm.pt), so both splits share --out, as the caches of
         # evaluate_denoising.py; a check on the first n sequences goes to a folder of its own
@@ -324,12 +337,12 @@ def denoising(args) -> int:
         rows, kept = [], []
         for label, spec in specs.items():
             for sigma in args.sigmas:
-                if requested:
+                if soft.requested:
                     break
                 start = time.perf_counter()
                 try:
                     m = D.cached_run(cache, label, spec, split, sigma, args.device, args.batch,
-                                     stop=lambda: bool(requested), overwrite=args.recompute or args.force,
+                                     stop=soft.stop, overwrite=args.recompute or args.force,
                                      force=args.force, **data)
                 except D.OtherSettings:
                     kept.append(f"{label} / {round(sigma * 1000)} mm")
@@ -344,17 +357,130 @@ def denoising(args) -> int:
                   + denoising_table(rows, args.sigmas, recorded if split == "valid" else {}) + "\n")
         if kept:
             print(f"kept, made with other settings (--recompute replaces them): {kept}")
-        if requested:
+        if soft.requested:
             print("stopped; run the same command again to continue")
             return 1
     return 0
 
 
-def main(argv=None) -> int:
+# ready names for --like of the generation (any label of hp.evaluation.pareto.MODELS works too)
+GENERATION_LIKE = {
+    "own": None,                                                      # the model's own sampler, as it was trained
+    "heun": "RSGM 512x4: their c10 (3 seeds), Heun EDM 50 NFE",       # RSGM: Heun on the EDM grid, 25 steps
+    "euler": "RSGM 512x4: their c10 (3 seeds), ODE Euler 50",         # RSGM: the ODE, 50 uniform steps
+}
+
+
+def generation_settings_of(spec: dict, default_method: str = "sample"):
+    """(method, settings) of a row of hp.evaluation.pareto.MODELS, for --like: the options of its sampler."""
+    from hp.evaluation.pareto import OVERRIDES
+
+    if "posedflow" in spec:
+        raise cli.UsageError("--like takes the sampler of a --run; a PoseD-Flow row has its own")
+    return default_method, {key: spec[key] for key in OVERRIDES if key in spec}
+
+
+def generation_spec(path: str, weights=None, method=None, settings=None, default_method: str = "sample") -> dict:
+    """The spec of a --run: {"run", "weights", "settings": the options of the sampler}."""
+    from hp.evaluation.pareto import OVERRIDES
+
+    if str(path).endswith(".ckpt"):
+        raise cli.UsageError('a PoseD-Flow checkpoint is a row: --models "PoseD-Flow: their checkpoint, midpoint 100 (paper)"')
+    if method not in (None, default_method):
+        raise cli.UsageError(f"generation has no methods, not {method!r}; the sampler is set by --set or --like")
+    unknown = set(settings or {}) - set(OVERRIDES)
+    if unknown:
+        raise cli.UsageError(f"generation has the settings {', '.join(OVERRIDES)}, not {sorted(unknown)}")
+    spec = {"run": path}
+    if weights:
+        spec["weights"] = weights
+    if settings:
+        spec["settings"] = dict(settings)
+    return spec
+
+
+def generation_parser(sub) -> None:
+    from hp.evaluation import pareto as P
+
+    p = sub.add_parser("generation", help="unconditional generation, PoseD-Flow's protocol and our harness",
+                       description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    cli.add_model_arguments(p)
+    cli.add_common_arguments(p, out=str(P.CACHE), poses=False,
+                             quick_help="the validation without the log-likelihood (the other numbers are the same)")
+    g = p.add_argument_group("generation")
+    g.add_argument("--skeleton", default=P.SKELETON, help="where the SMPL skeleton is on this machine")
+    g.add_argument("--gt-stats", default=P.GT_STATS, help="where their FID statistics are on this machine (test)")
+    p.set_defaults(protocol=generation)
+
+
+def generation(args) -> int:
+    from hp.evaluation import generation as G
+    from hp.evaluation import pareto as P
+
+    if args.points or args.rotations:
+        raise cli.UsageError("generation has no --points and its data are fixed (no --rotations)")
+    if args.like is not None:
+        args.like = GENERATION_LIKE.get(args.like, args.like)  # "own": no settings
+    specs = cli.models(args, P.MODELS, default_method="sample", spec_of=generation_spec,
+                       settings_of=generation_settings_of)
+    zoo = P.Zoo({label: G.zoo_spec(spec) for label, spec in specs.items()}, args.device)
+    if not zoo.builders:
+        raise cli.UsageError("none of the models is on this machine")
+    soft = cli.SoftStop("stage")
+    if not args.dry_run:
+        signal.signal(signal.SIGINT, soft)
+    for split in cli.splits(args.split):
+        arena = G.Arena(split, args.device, skeleton=args.skeleton, gt_stats=args.gt_stats)
+        cache = cli.split_dir(args.out, split)
+        stages = [s for s in G.STAGES[split] if not (args.quick and s == "likelihood")]
+        print(f"{split}: {len(arena.poses)} poses, {len(zoo.builders)} run(s) x {len(stages)} stage(s) -> {cache}",
+              flush=True)
+        if args.dry_run:
+            for label, identity in zoo.identities.items():
+                states = [f"{s} {G.stage_state(cache, label, s, {'model': identity, **arena.settings(s)})}"
+                          for s in stages]
+                print(f"  {label}: " + ", ".join(states))
+            continue
+        rows, kept = [], []
+        for label, build in zoo.builders.items():
+            results = {}
+            for stage in stages:
+                if soft.requested:
+                    break
+                start = time.perf_counter()
+                try:
+                    results[stage] = G.run_stage(arena, label, stage, build, zoo.identities[label], cache,
+                                                 overwrite=args.recompute, force=args.force)
+                except G.OtherSettings:
+                    kept.append(f"{label} / {stage}")
+                    continue
+                print(f"{label} / {stage}: {(time.perf_counter() - start) / 60:.1f} min", flush=True)
+            if len(results) == len(stages):
+                rows.append(dict(label=label, split=split, poses=len(arena.poses), **G.numbers(results),
+                                 spec=specs[zoo.group_of[label]]))
+        if rows:
+            merge_rows(cache / "results.jsonl", rows, keys=("label", "split"))
+            real = [] if soft.requested else [dict(label=k, **v) for k, v in arena.real(cache).items()]
+            print(f"\n{split} ({len(arena.poses)} poses; FID on joints, APD in cm, dNN in rad, Wasserstein / recall / "
+                  f"precision in deg per joint)\n" + G.table(rows + real, split) + "\n")
+        if kept:
+            print(f"kept, made with other settings (--recompute replaces them): {kept}")
+        if soft.requested:
+            print("stopped; run the same command again to continue")
+            return 1
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="name", required=True, metavar="protocol")
-    completion_parser(sub)
-    denoising_parser(sub)
+    for add in (completion_parser, denoising_parser, generation_parser):
+        add(sub)
+    return parser
+
+
+def main(argv=None) -> int:
+    parser = build_parser()
     args = parser.parse_args(argv)
     try:
         cli.resolve_poses(args)

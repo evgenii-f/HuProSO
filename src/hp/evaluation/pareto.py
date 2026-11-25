@@ -192,6 +192,8 @@ def resolve(spec, path, device: str):
     def build():
         model = load_model(run, device=device, weights=weights)
         for k, v in overrides.items():
+            if not hasattr(model, k):  # it would change nothing
+                raise ValueError(f"{model.name} has no option {k!r}")
             setattr(model, k, v)
         if not spec.get("likelihood", True):
             model.has_log_prob = False
@@ -293,11 +295,15 @@ class Protocol:
     def data(self):
         if self._data is None:
             skeleton = SmplSkeleton(self.skeleton_path)
-            gt = np.load(Path(self.gt_stats_path).expanduser())
+            mu, cov = self.reference(skeleton)
             own = skeleton.joints(self.train).reshape(len(self.train), -1).numpy()
-            self._data = (skeleton, gt["muj"].astype(np.float64), gt["covj"].astype(np.float64), own.mean(0),
-                          np.cov(own, rowvar=False), self.train.to(self.device))
+            self._data = (skeleton, mu, cov, own.mean(0), np.cov(own, rowvar=False), self.train.to(self.device))
         return self._data
+
+    def reference(self, skeleton: SmplSkeleton) -> Tuple[np.ndarray, np.ndarray]:
+        """The mean and covariance of the joint positions that "FID" is computed against: theirs."""
+        gt = np.load(Path(self.gt_stats_path).expanduser())
+        return gt["muj"].astype(np.float64), gt["covj"].astype(np.float64)
 
     def __call__(self, make_set: Callable[[int], torch.Tensor]) -> dict:
         skeleton, muj, covj, mu_own, cov_own, train_dev = self.data()

@@ -45,7 +45,7 @@ Joints: ours are 19 (`AmassJoints4Learning`, no toes). PoseD-Flow has 21; the to
 `scripts/evaluate_posedflow_comparison.py` computes Harness and PoseD-Flow on a server with the same settings and writes into the same cache. The constants of the script and the notebook must stay equal.
 
 `scripts/evaluate.py <protocol>` runs any model through a protocol with the same flags for every protocol
-(`completion`, `denoising`): the model as `--run [LABEL=]PATH` (a run folder or a PoseD-Flow `.ckpt`, with `--method`, `--set
+(`completion`, `denoising`, `generation`): the model as `--run [LABEL=]PATH` (a run folder or a PoseD-Flow `.ckpt`, with `--method`, `--set
 key=value`, `--settings JSON` and `--like LABEL`, the method and settings of a row or a point;
 without them the method's own defaults, not tuned for inpaint and dposer), as rows of the registry (`--models`) or as points of the fronts (`--points`);
 `--split valid|test|all`, `--poses n` (a quick check, in a folder of its own), `--quick` (the first 200 poses of the
@@ -61,6 +61,24 @@ their settings, `config/denoising_test_points.yaml` (`scripts/denoising_test_poi
 names `ours`, `"rsgm budget"`, `dposer`, `"dposer tuned"` and `posedflow`; their settings are per noise level, and
 `--set` applies on top at both. Both splits share `--out` (the file names carry the split); a result per (label,
 split, noise level) in `results.jsonl` there.
+
+`scripts/evaluate.py generation` takes the models and the sampler (`--set sampler=heun schedule=edm sample_steps=50`, or
+`--like heun`, `euler`, `own`, or a row of `hp.evaluation.pareto.MODELS`; "heun" is 25 steps, 50 network calls). It has no
+`--poses`: the number of samples is part of the metrics.
+
+- `--split valid` (in `<out>/valid`): FID_val, the FID against the joints of the validation poses; FID own, APD, dNN; the
+  harness against the validation poses; the log-likelihood of 1000 of them. `--quick` is the same without the
+  log-likelihood.
+- `--split test`: the stages, settings and cache of the Pareto comparison (their FID, FID own, APD, dNN, the harness), so
+  its rows are found.
+- **Their FID, FID own, APD and dNN do not use the test poses** (their statistics and the training poses), so they are
+  the same numbers on both splits; the validation has FID_val and leaves their FID out, and a model is not chosen by it.
+- Real train and real poses of the split are printed below the models as a yardstick. Real training poses score
+  0.034 in FID_val: the validation poses are of other datasets, and a model that fits the training poses exactly scores
+  about the same.
+- Noise: for one model, the precision moved by 0.2 deg and the Wasserstein by 0.1 between runs that differ only in the
+  random draws or the device (`fact_RDW`, Heun EDM 50 steps: 12.70-12.92 and 15.10-15.21 over six runs on mps, cpu and
+  cuda), more than the std over the repeats of one run (0.01-0.1) shows. Smaller differences are not resolved.
 
 **Quick check of a new model:** `scripts/evaluate.py completion --run <run> --quick [--like LABEL]`, 200 validation
 poses in minutes; how to read it and the reference numbers of all our rows and points are in

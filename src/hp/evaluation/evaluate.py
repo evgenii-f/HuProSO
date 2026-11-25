@@ -200,6 +200,13 @@ def evaluate(model: PoseModel, reference: torch.Tensor, config: Optional[EvalCon
     return report
 
 
+def log_likelihood(model: PoseModel, reference: torch.Tensor, config: Optional[EvalConfig] = None,
+                   progress: bool = False) -> Optional[dict]:
+    """The log-likelihood part of evaluate() alone (None for a model without one), on its own draws of the poses."""
+    cfg = config or EvalConfig()
+    return _likelihood(model, torch.as_tensor(reference).float().cpu(), cfg, np.random.default_rng(cfg.seed), progress)
+
+
 def save_report(report: dict, path) -> Path:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

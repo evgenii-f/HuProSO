@@ -44,14 +44,19 @@ def add_model_arguments(parser: argparse.ArgumentParser) -> None:
                             "(--method, --settings and --set override them)")
 
 
-def add_common_arguments(parser: argparse.ArgumentParser, out: str, quick: Optional[int] = None) -> None:
-    """quick: the number of validation poses of --quick for this protocol (no --quick without it)."""
+def add_common_arguments(parser: argparse.ArgumentParser, out: str, quick: Optional[int] = None,
+                         poses: bool = True, quick_help: Optional[str] = None) -> None:
+    """quick: the number of validation poses of --quick for this protocol (no --quick without it). poses=False: a
+    protocol that does not run on the first n poses (no --poses); its --quick is a flag, described by quick_help."""
     group = parser.add_argument_group("common")
     group.add_argument("--split", choices=SPLITS + ("all",), default=None,
                        help="the poses: valid (the fixed validation draw), test (default), or all (valid, then test)")
-    group.add_argument("--poses", type=int, default=None, help="the first n poses of the split (a quick check, "
-                                                               "kept in a folder of its own)")
-    if quick is not None:
+    if poses:
+        group.add_argument("--poses", type=int, default=None, help="the first n poses of the split (a quick check, "
+                                                                   "kept in a folder of its own)")
+    if not poses and quick_help:
+        group.add_argument("--quick", action="store_const", const=True, default=None, help=quick_help)
+    elif quick is not None:
         group.add_argument("--quick", action="store_const", const=quick, default=None,
                            help=f"a quick check on the validation: --split valid --poses {quick} (--poses overrides "
                                 f"the number); the first poses of the validation draw, so a subset of the full one")
@@ -75,11 +80,29 @@ def resolve_poses(args: argparse.Namespace) -> None:
     if args.split not in (None, "valid"):
         raise UsageError(f"--quick is a check on the validation, not on --split {args.split}")
     args.split = "valid"
-    args.poses = args.poses if args.poses is not None else args.quick
+    if hasattr(args, "poses"):
+        args.poses = args.poses if args.poses is not None else args.quick
 
 
 def splits(split: str) -> List[str]:
     return list(SPLITS) if split == "all" else [split]
+
+
+class SoftStop:
+    """Ctrl+C once: the current unit of work is finished, then the run stops and the same command continues it (stop()
+    is true); Ctrl+C again: at once."""
+
+    def __init__(self, unit: str):
+        self.unit, self.requested = unit, False
+
+    def __call__(self, *_) -> None:
+        if self.requested:
+            raise KeyboardInterrupt
+        self.requested = True
+        print(f"\n  stop requested: stops after the current {self.unit} (Ctrl+C again: at once)", flush=True)
+
+    def stop(self) -> bool:
+        return self.requested
 
 
 def split_dir(out, split: str, poses: Optional[int] = None) -> Path:
@@ -131,6 +154,11 @@ def run_spec(path: str, weights: Optional[str] = None, method: Optional[str] = N
     return spec
 
 
+def short_hash(value) -> str:
+    """The first characters of the hash of a JSON value, for labels."""
+    return hashlib.sha1(json.dumps(value, sort_keys=True).encode()).hexdigest()[:8]
+
+
 def default_label(path: str, spec: dict) -> str:
     """The path below ~/data/experiments (or the file name of a .ckpt), the method unless D-Flow, and a hash of the
     settings when there are any: other settings never share a label (and so a cache entry)."""
@@ -142,7 +170,7 @@ def default_label(path: str, spec: dict) -> str:
         parts.append(spec["method"])
     settings = {key: spec[key] for key in ("weights", "prior", "dflow", "settings") if key in spec}
     if settings:
-        parts.append(hashlib.sha1(json.dumps(settings, sort_keys=True).encode()).hexdigest()[:8])
+        parts.append(short_hash(settings))
     return ", ".join(parts)
 
 
