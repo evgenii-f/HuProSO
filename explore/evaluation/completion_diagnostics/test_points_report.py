@@ -34,6 +34,8 @@ VERIFIED = {  # run folder: sha256 of weights_ema.pt (first 16 hex digits), the 
     "~/data/experiments/rsgm_posedflow_deep_s10/run_0001": "3b8aeadf615b348e",
     "~/data/experiments/full/rsgm_posedflow_dposer_like_aniso_s10/run_0001": "3b9af16007959df7",
     "~/data/experiments/full/rsgm_posedflow_dposer_like_s10/run_0001": "4246190f5c5fd71f",
+    "~/data/experiments/factorial/rsgm_posedflow_fact_RDW_s10/run_0001": "80af7a977379a1bd",  # Mac only, 2026-11-25
+    "~/data/experiments/data_weighting/rsgm_posedflow_rdw_b3.3_s10/run_0001": "973e9b8ce8c0ef82",  # Mac only, 2026-11-25
 }
 
 
