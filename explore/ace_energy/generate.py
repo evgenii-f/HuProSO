@@ -6,8 +6,8 @@ sampler with its own score ("network") or with the score of an energy (complete.
 Metrics: the harness (hp.evaluation.evaluate, one repeat, no likelihood): Wasserstein, recall and precision (degrees
 per joint) against the validation poses; and of PoseD-Flow's protocol (hp.evaluation.posedflow_protocol) FID_val (the
 joint statistics of the validation poses), APD and the dNN of 500 samples to the training poses. The rows "train poses"
-and "valid poses" are real poses in place of a model. Fewer samples than in the protocols, so the numbers compare only
-within this table. --out saves the samples.
+and "valid poses" are real poses; the last row has the harness of the training poses. Fewer samples than in the
+protocols, so the numbers compare only within this table. --out saves the samples.
 """
 import argparse
 import sys
@@ -57,8 +57,10 @@ def main() -> None:
     contrast = train[order(len(train), N_CONTRAST, 0)]
     cfg = EvalConfig(n_generated=args.samples, n_wasserstein=min(2000, args.samples), n_queries=min(2000, args.samples),
                      n_likelihood=0, repeats=1, sample_batch=args.batch)
-    rows = [("train poses", contrast[:args.samples], None), ("valid poses", valid[order(len(valid), args.samples, 1)], None)]
-    print("| model | Wasserstein | recall | precision | FID_val | APD (cm) | dNN | minutes |\n|---|---|---|---|---|---|---|---|")
+    rows = [("train poses", contrast[:args.samples], None),
+            ("valid poses", valid[order(len(valid), args.samples, 1)], None)]
+    print("| model | Wasserstein | recall | precision | FID_val | APD (cm) | dNN | minutes |\n"
+          "|---|---|---|---|---|---|---|---|")
     models = [] if args.no_network else [("network", None)]
     models += [(Path(f).stem, f) for f in args.fits]
 
@@ -81,17 +83,21 @@ def main() -> None:
         model.has_log_prob = False  # this instance only: no likelihood
         sample, kept = model.sample, []
         model.sample = lambda n, cond=None: kept.append(sample(n, cond)) or kept[-1]
-        report = evaluate(model, valid, cfg, contrast=contrast if name == models[0][0] else None)
+        report = evaluate(model, valid, cfg)  # without contrast: it would move the random draws of this row only
         poses = torch.cat(kept).float().cpu()
         if args.out:
             out = Path(args.out).expanduser()
             out.mkdir(parents=True, exist_ok=True)
             torch.save(poses, out / f"{name}.pt")
         line(name, report, joint_metrics(poses, skeleton, reference, train), (time.perf_counter() - t0) / 60)
-        if name == models[0][0]:
-            c = report["wasserstein"]["contrast"]["joint_mean_deg"]["mean"]
-            print(f"| train poses (the harness's contrast) | {c:.2f} | {report['contrast_recall']['mean_deg']['mean']:.2f} | "
-                  f"{report['contrast_precision']['mean_deg']['mean']:.2f} | – | – | – | – |", flush=True)
+    if models:  # the training poses in the place of the last model's samples, measured with the same random draws
+        pieces = iter(contrast[:args.samples].split(args.batch))
+        model.sample = lambda n, cond=None: next(pieces)
+        report = evaluate(model, valid, cfg)
+        print(f"| train poses in the place of the samples | "
+              f"{report['wasserstein']['generated']['joint_mean_deg']['mean']:.2f} | "
+              f"{report['recall']['mean_deg']['mean']:.2f} | {report['precision']['mean_deg']['mean']:.2f} | "
+              f"– | – | – | – |", flush=True)
 
 
 if __name__ == "__main__":
