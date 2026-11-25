@@ -32,8 +32,8 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from fit import (COMPARE, JOINT_PAIRS, OTHER_PAIRS, REFERENCE, ROTATIONS, SPLIT, TRIPLE_DIM, Bins,  # noqa: E402
-                 WithHarmonics, draw, harmonic_basis)
+from fit import (COMPARE, JOINT_PAIRS, OTHER_PAIRS, REFERENCE, ROTATIONS, SPLIT, SQUARE_DIM, TRIPLE_DIM,  # noqa: E402
+                 Bins, WithHarmonics, draw, harmonic_basis)
 from hp.evaluation.data import load_reference  # noqa: E402
 from hp.models.ace_features import LEARNED  # noqa: E402
 from hp.models.io import load_model  # noqa: E402
@@ -71,6 +71,7 @@ def owners(basis: WithHarmonics) -> list:
     if basis.products:
         out += [[i, k] for i, k in JOINT_PAIRS for _ in range(81)]
     out += [list(tr) for tr in basis.triple_joints for _ in range(TRIPLE_DIM)]
+    out += [list(pair) for pair in basis.square_pairs for _ in range(SQUARE_DIM)]
     assert len(out) == basis.dim, (len(out), basis.dim)
     return out
 

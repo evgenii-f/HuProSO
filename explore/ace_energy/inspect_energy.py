@@ -19,8 +19,8 @@ for p in (ROOT / "src", HERE):
 
 from embedding import Embedded, owners  # noqa: E402
 from joint_density import JointDensity  # noqa: E402
-from fit import (JOINT_PAIRS, OTHER_PAIRS, REFERENCE, ROTATIONS, SPLIT, TRIPLE_DIM, Bins, draw,  # noqa: E402
-                 harmonic_basis, jacobian)
+from fit import (JOINT_PAIRS, OTHER_PAIRS, REFERENCE, ROTATIONS, SPLIT, SQUARE_DIM, TRIPLE_DIM, Bins,  # noqa: E402
+                 draw, harmonic_basis, jacobian)
 from hp.evaluation.data import load_reference  # noqa: E402
 from hp.models.ace_features import AceFeatures  # noqa: E402
 from hp.models.io import load_model  # noqa: E402
@@ -167,6 +167,7 @@ def feature_groups(basis) -> list:
     if basis.products:
         out += ["x_i x_k"] * (81 * len(JOINT_PAIRS))
     out += ["triples"] * (TRIPLE_DIM * len(basis.triple_joints))
+    out += ["u u x u of a pair"] * (SQUARE_DIM * len(basis.square_pairs))
     assert len(out) == basis.dim
     return out
 

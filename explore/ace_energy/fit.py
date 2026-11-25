@@ -83,22 +83,26 @@ OTHER_PAIRS = tuple((i, k) for i, k in JOINT_PAIRS
 
 
 TRIPLE_DIM = 27  # 3 local coordinates of each of three joints
+SQUARE_DIM = 36  # (6 quadratic forms of one joint) x (3 coordinates of the other), and the other way round
+QUADRATIC = [(a, b) for a in range(3) for b in range(a, 3)]
 
 
-def joint_triples(reach: int) -> list:
-    """The triples of joints (i < j < k) whose three tree distances (in joints, over the root) are at most `reach`."""
+def tree_distance(i: int, k: int) -> int:
+    """The number of joints between i and k along the body tree (over the root)."""
     def path(j):
         out = [j]
         while PARENTS19[out[-1]] >= 0:
             out.append(PARENTS19[out[-1]])
         return out + [-1]
 
-    def distance(i, k):
-        a, b = path(i), path(k)
-        c = next(v for v in a if v in b)
-        return a.index(c) + b.index(c)
+    a, b = path(i), path(k)
+    c = next(v for v in a if v in b)
+    return a.index(c) + b.index(c)
 
-    near = {(i, k): distance(i, k) <= reach for i, k in JOINT_PAIRS}
+
+def joint_triples(reach: int) -> list:
+    """The triples of joints (i < j < k) whose three tree distances are at most `reach`."""
+    near = {(i, k): tree_distance(i, k) <= reach for i, k in JOINT_PAIRS}
     return [(i, j, k) for i in range(19) for j in range(i + 1, 19) for k in range(j + 1, 19)
             if near[i, j] and near[j, k] and near[i, k]]
 
@@ -122,7 +126,9 @@ class WithHarmonics(torch.nn.Module):
     l in `pairs` (two-body orientations; G relative to the root). More two-body terms: D^l(G_i^T G_k) of OTHER_PAIRS
     for l in `all_pairs`, and with `products` the 81 products (x_i)_a (x_k)_b of the entries of the two joints' own
     rotations, of all 171 pairs. `triples` (a dict with reach, centre, axes of `triple_coordinates`): the products
-    u_ia u_jb u_kc of the three principal local coordinates of three joints near one another (joint_triples)."""
+    u_ia u_jb u_kc of the three principal local coordinates of three joints near one another (joint_triples), and, with
+    its key squares (a tree distance), the products of a quadratic form u_ia u_ib of one joint with u_kc of another and
+    the other way round, for the pairs at most that far apart: the second order of one joint in a pair."""
 
     def __init__(self, ace, wigner: Sequence[int], pairs: Sequence[int], all_pairs: Sequence[int] = (),
                  products: bool = False, triples: dict = None):
@@ -131,10 +137,13 @@ class WithHarmonics(torch.nn.Module):
         self.all_pairs, self.products = tuple(all_pairs), bool(products)
         self.triples = triples
         self.triple_joints = joint_triples(int(triples["reach"])) if triples else []
+        self.square_pairs = ([pair for pair in JOINT_PAIRS if tree_distance(*pair) <= int(triples.get("squares", 0))]
+                             if triples else [])
         if triples:
             self.register_buffer("triple_centre", triples["centre"], persistent=False)
             self.register_buffer("triple_axes", triples["axes"], persistent=False)
-        self.sparse_dim = 81 * len(JOINT_PAIRS) * self.products + TRIPLE_DIM * len(self.triple_joints)
+        self.sparse_dim = (81 * len(JOINT_PAIRS) * self.products + TRIPLE_DIM * len(self.triple_joints)
+                           + SQUARE_DIM * len(self.square_pairs))
         size = lambda degrees: sum((2 * l + 1) ** 2 for l in degrees)  # noqa: E731
         self.dim = (ace.dim + 19 * size(self.wigner) + (19 + len(WIGNER_PAIRS)) * size(self.pairs)
                     + len(OTHER_PAIRS) * size(self.all_pairs) + self.sparse_dim)
@@ -162,6 +171,12 @@ class WithHarmonics(torch.nn.Module):
             u = self.local_coordinates(x)
             a, b, c = (list(v) for v in zip(*self.triple_joints))
             out.append(torch.einsum("bni,bnj,bnk->bnijk", u[:, a], u[:, b], u[:, c]).flatten(1))
+        if self.square_pairs:
+            u = self.local_coordinates(x)
+            i, k = (list(v) for v in zip(*self.square_pairs))
+            uu = torch.stack([u[..., a] * u[..., b] for a, b in QUADRATIC], -1)  # [B, 19, 6]
+            out.append(torch.cat([torch.einsum("bnq,bnc->bnqc", uu[:, i], u[:, k]).flatten(-2),
+                                  torch.einsum("bnc,bnq->bncq", u[:, i], uu[:, k]).flatten(-2)], -1).flatten(1))
         return torch.cat(out, dim=-1)
 
 
@@ -207,7 +222,7 @@ class Gram:
 
     def __init__(self, ace, device, single: bool):
         self.ace, self.device, self.single = ace, device, single
-        self.sparse = bool(getattr(ace, "products", False) or getattr(ace, "triples", None) is not None)
+        self.sparse = bool(getattr(ace, "products", False) or getattr(ace, "triples", None))
         self.p = ace.dim
         self.p0 = self.p - (ace.sparse_dim if self.sparse else 0)
         double = lambda *shape: torch.zeros(*shape, dtype=torch.float64, device=device)  # noqa: E731
@@ -217,7 +232,8 @@ class Gram:
             return
         self.base = WithHarmonics(ace.ace, ace.wigner, ace.pairs, ace.all_pairs)
         n_products = 81 * len(JOINT_PAIRS) * ace.products
-        self.columns, self.pairs, self.triples = [], [], []
+        self.columns, self.pairs, self.triples, self.squares = [], [], [], []
+        n_triples = TRIPLE_DIM * len(ace.triple_joints)
         for j in range(19):
             # the pairs of joint j: the number of the pair, the other joint, whether j is the first of the pair
             rows = [(n, b if a == j else a, a == j) for n, (a, b) in enumerate(JOINT_PAIRS) if j in (a, b)]
@@ -232,6 +248,11 @@ class Gram:
                 groups.append(torch.tensor([ace.triple_joints[n] for n in mine], dtype=torch.long).reshape(-1, 3))
                 cols += [n_products + TRIPLE_DIM * n + q for n in mine for q in range(TRIPLE_DIM)]
             self.triples.append(groups)
+            # the pairs of the quadratic terms: the other joint, whether j is the first of the pair
+            mine = [(n, b if a == j else a, a == j) for n, (a, b) in enumerate(ace.square_pairs) if j in (a, b)]
+            self.squares.append((torch.tensor([m[1] for m in mine], dtype=torch.long),
+                                 torch.tensor([m[2] for m in mine], dtype=torch.bool)))
+            cols += [n_products + n_triples + SQUARE_DIM * m[0] + q for m in mine for q in range(SQUARE_DIM)]
             self.columns.append(torch.tensor(cols, dtype=torch.long) + self.p0)
         self.cross = [double(self.p0, len(c)) for c in self.columns]
         self.block = [double(len(c), len(c)) for c in self.columns]
@@ -241,9 +262,12 @@ class Gram:
         """For every joint j the rows [3B, n_j] of its products and triples (the columns `columns[j]`)."""
         b, m = x.shape[0], x.flatten(-2)  # m [B, 19, 9]
         dm = torch.einsum("bjpq,cqr->bjcpr", x, HAT.to(x)).flatten(-2)  # d m_j / d delta_j, [B, 19, 3, 9]
-        if self.ace.triple_joints:
+        if self.ace.triple_joints or self.ace.square_pairs:
             u, axes = self.ace.local_coordinates(x), self.ace.triple_axes.to(x)  # [B, 19, 3], [19, 9, 3] (scaled)
             du = torch.einsum("bjcp,jpa->bjca", dm, axes)  # [B, 19, 3 (c), 3 (a)]
+            uu = torch.stack([u[..., a] * u[..., q] for a, q in QUADRATIC], -1)  # [B, 19, 6]
+            duu = torch.stack([du[..., a] * u[..., q][..., None] + u[..., a][..., None] * du[..., q]
+                               for a, q in QUADRATIC], -1)  # [B, 19, 3 (c), 6]
         out = []
         for j in range(19):
             other, first = (v.to(x.device) for v in self.pairs[j])
@@ -259,6 +283,15 @@ class Gram:
                     f = [du[:, j][:, :, None].expand(-1, -1, len(tr), -1) if q == pos else
                          u[:, tr[:, q]][:, None].expand(-1, 3, -1, -1) for q in range(3)]  # each [B, 3, n, 3]
                     parts.append(torch.einsum("bcni,bcnj,bcnk->bcnijk", *f).reshape(b, 3, -1))
+            other, first = (v.to(x.device) for v in self.squares[j])
+            if len(other):
+                # j first: (uu_j u_o, u_j uu_o); j second: (uu_o u_j, u_o uu_j) as the pair's layout (first joint first)
+                f1 = torch.einsum("bcq,bna->bcnqa", duu[:, j], u[:, other]).reshape(b, 3, len(other), -1)
+                f2 = torch.einsum("bca,bnq->bcnaq", du[:, j], uu[:, other]).reshape(b, 3, len(other), -1)
+                s1 = torch.einsum("bnq,bca->bcnqa", uu[:, other], du[:, j]).reshape(b, 3, len(other), -1)
+                s2 = torch.einsum("bna,bcq->bcnaq", u[:, other], duu[:, j]).reshape(b, 3, len(other), -1)
+                parts.append(torch.where(first[None, None, :, None], torch.cat([f1, f2], -1),
+                                         torch.cat([s1, s2], -1)).reshape(b, 3, -1))
             out.append(torch.cat(parts, -1).reshape(3 * b, -1))
         return out
 
@@ -448,6 +481,9 @@ def main() -> None:
     parser.add_argument("--triples", type=int, default=0, metavar="REACH",
                         help="with --wigner or --pairs: products of the local coordinates of three joints whose tree "
                              "distances are at most REACH (27 features per triple)")
+    parser.add_argument("--squares", type=int, default=0, metavar="REACH",
+                        help="with --wigner or --pairs: products of a quadratic form of one joint's local coordinates "
+                             "and the coordinates of another, for pairs at most REACH apart in the tree (36 per pair)")
     parser.add_argument("--single", action="store_true",
                         help="the products of every batch in float32 (a large basis on a GPU with slow float64)")
     parser.add_argument("--joint-density", type=float, nargs="+", default=None, metavar="N S0",
@@ -469,11 +505,12 @@ def main() -> None:
         ace = WithOneBody(ace, args.one_body)
     if args.wigner or args.pairs:
         triples = None
-        if args.triples:
-            triples = dict(reach=args.triples, **triple_coordinates(load_reference("train", ROTATIONS, SPLIT)))
+        if args.triples or args.squares:
+            triples = dict(reach=args.triples, squares=args.squares,
+                           **triple_coordinates(load_reference("train", ROTATIONS, SPLIT)))
         ace = harmonic_basis(vars(args), triples)
-    elif args.all_pairs or args.products or args.triples:
-        parser.error("--all-pairs, --products and --triples need --wigner or --pairs.")
+    elif args.all_pairs or args.products or args.triples or args.squares:
+        parser.error("--all-pairs, --products, --triples and --squares need --wigner or --pairs.")
     ace = ace.to(DEVICE)
     valid = load_reference("valid", ROTATIONS, SPLIT)
     valid = valid[torch.randperm(len(valid), generator=torch.Generator().manual_seed(0))[:args.valid]]
