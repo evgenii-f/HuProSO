@@ -2,7 +2,7 @@
 checkpoint, a row of a registry, a point of a front), which poses (--split, --poses), where the results go (--out),
 and the settings of a method (--set key=value, --settings JSON).
 
-A protocol (completion; later generation, runtime) adds its own options to these and gets {label: spec} from
+A protocol (completion, denoising; later generation, runtime) adds its own options to these and gets {label: spec} from
 models(), the specs of hp.evaluation.completion.build: {"run": <folder>} or {"posedflow": <.ckpt>}, with optional
 "weights", "method", "prior" and "dflow".
 """
@@ -10,7 +10,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import yaml
 
@@ -39,6 +39,9 @@ def add_model_arguments(parser: argparse.ArgumentParser) -> None:
                        help="with --run: settings of the method, values read as YAML (0.05, true, [1, 2], edm)")
     group.add_argument("--settings", default=None, metavar="JSON",
                        help="with --run: settings of the method as a JSON object; --set overrides its keys")
+    group.add_argument("--like", default=None, metavar="LABEL",
+                       help="with --run: the method and settings of this row of the registry or point of a front "
+                            "(--method, --settings and --set override them)")
 
 
 def add_common_arguments(parser: argparse.ArgumentParser, out: str, quick: Optional[int] = None) -> None:
@@ -137,16 +140,35 @@ def default_label(path: str, spec: dict) -> str:
     parts = [name]
     if spec.get("method"):
         parts.append(spec["method"])
-    settings = {key: spec[key] for key in ("weights", "prior", "dflow") if key in spec}
+    settings = {key: spec[key] for key in ("weights", "prior", "dflow", "settings") if key in spec}
     if settings:
         parts.append(hashlib.sha1(json.dumps(settings, sort_keys=True).encode()).hexdigest()[:8])
     return ", ".join(parts)
 
 
-def models(args: argparse.Namespace, registry: Dict[str, dict], default_method: str = "dflow") -> Dict[str, dict]:
+def method_of(spec: dict, default_method: str = "dflow") -> Tuple[str, dict]:
+    """(method, settings) of a spec, the inverse of run_spec: "prior" and "dflow" in one dict."""
+    return spec.get("method", default_method), {**spec.get("prior", {}), **spec.get("dflow", {})}
+
+
+def point_specs(points: Optional[str], fronts: Optional[Iterable[str]] = None) -> Dict[str, dict]:
+    """{label: spec} of the points of a YAML file of scripts/select_test_points.py (all fronts, or these)."""
+    if not points or not Path(points).expanduser().is_file():
+        return {}
+    data = yaml.safe_load(Path(points).expanduser().read_text())
+    return {p["label"]: p["spec"] for name, ps in data.items() if not fronts or name in fronts for p in ps}
+
+
+def models(args: argparse.Namespace, registry: Dict[str, dict], default_method: str = "dflow",
+           known: Optional[Dict[str, dict]] = None, spec_of=None, settings_of=None) -> Dict[str, dict]:
     """{label: spec} of --run, --models and --points, in that order; labels of points among --models restrict the
-    points to them. Raises UsageError on an unknown label, on --set / --settings / --method / --weights without --run,
-    and on one label with two specs."""
+    points to them. --like takes the method and settings of a row of the registry or of `known` (the points of the
+    protocol). A protocol whose specs are not those of completion gives spec_of(path, weights, method, settings,
+    default_method) for a --run (default run_spec) and settings_of(spec, default_method) -> (method, settings) for
+    --like (default method_of). Raises UsageError on an unknown label, on --set / --settings / --method / --weights /
+    --like without --run, and on one label with two specs."""
+    spec_of = spec_of or run_spec
+    settings_of = settings_of or method_of
     out: Dict[str, dict] = {}
 
     def add(label: str, spec: dict, where: str) -> None:
@@ -157,12 +179,22 @@ def models(args: argparse.Namespace, registry: Dict[str, dict], default_method: 
         out[label] = spec
 
     settings = method_settings(args.settings, args.assignments)
-    if not args.run and (settings or args.method or args.weights):
-        raise UsageError("--set, --settings, --method and --weights apply to --run models")
+    like = getattr(args, "like", None)
+    if not args.run and (settings or args.method or args.weights or like):
+        raise UsageError("--set, --settings, --method, --weights and --like apply to --run models")
+    method = args.method
+    if like:
+        lookup = {**(known or {}), **registry}
+        if like not in lookup:
+            raise UsageError(f"--like {like!r}: not a row of the registry nor a point")
+        like_method, like_settings = settings_of(lookup[like], default_method)
+        if method and method != like_method:
+            raise UsageError(f"--like {like!r} is {like_method}, not --method {method}")
+        method, settings = like_method, {**like_settings, **settings}
     for item in args.run:
         label, sep, path = item.rpartition("=")
         path = path if sep else item
-        spec = run_spec(path, args.weights, args.method, settings, default_method)
+        spec = spec_of(path, args.weights, method, settings, default_method)
         add(label if sep else default_label(path, spec), spec, "--run")
     points = {}
     if args.points:
@@ -170,8 +202,7 @@ def models(args: argparse.Namespace, registry: Dict[str, dict], default_method: 
         missing = set(args.fronts or []) - set(fronts)
         if missing:
             raise UsageError(f"no fronts {sorted(missing)} in {args.points}; there are {list(fronts)}")
-        points = {p["label"]: p["spec"] for name, ps in fronts.items() if not args.fronts or name in args.fronts
-                  for p in ps}
+        points = point_specs(args.points, args.fronts)
     elif args.fronts:
         raise UsageError("--fronts needs --points")
     names = list(registry) if args.models == ["all"] else args.models

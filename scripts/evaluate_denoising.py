@@ -8,11 +8,20 @@ or the test sequences with every model and noise level and caches the prediction
     python scripts/evaluate_denoising.py --split valid --summary            # the table of what is cached
     python scripts/evaluate_denoising.py --split test --models "PoseD-Flow: their checkpoint" --device cuda:0
 
-The test is run once per row, with settings chosen before on validation (--split test must be given explicitly).
+The test is run once per row, with settings chosen before on validation (--split test must be given explicitly). The
+rows of the test with their sources: config/denoising_test_points.yaml, run by
+scripts/evaluate.py denoising --points config/denoising_test_points.yaml (the same caches).
 D-Flow keeps the gradients of all ODE steps of all frames of --batch sequences: the memory grows with --batch.
+
+Stopping and continuing: every finished cell (model, noise level) is in the cache, and the cell in progress is saved
+after every batch of sequences (<split>_<sigma>mm.partial). Ctrl+C once, or `touch ~/data/experiments/denoising/STOP`,
+stops after the current batch (Ctrl+C twice: at once, losing at most that batch). Run the same command again to
+continue: the finished cells are read from the cache and the cell in progress continues after its last batch.
 """
 import argparse
+import signal
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -20,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from hp.evaluation.denoising import PAPER, SIGMAS, cached_run, summary  # noqa: E402
 
 CACHE = "~/data/experiments/denoising/cache"
+STOP_FILE = Path("~/data/experiments/denoising/STOP").expanduser()
 # RSGM in DPoser's optimization, per noise level: the best trials of the Optuna studies on validation
 # (config/denoising_tuning/rsgm_sds_<mm>mm.yaml, RSGM 512x4 c10, 40 trials each): 40 mm trial 36, 18.69 mm;
 # 100 mm trial 29, 30.87 mm. t_min = t_min_fraction * t_max.
@@ -29,6 +39,19 @@ SDS = {0.04: dict(t_max=0.05949959532179853, t_min=0.05949959532179853 * 0.38708
                  sds_weight=4.381518863971957, lr=0.042200143285960834, steps_per_iter=133)}
 # the same at DPoser's number of steps (3 x 60 at 40 mm, 3 x 80 at 100 mm), for a comparison at an equal budget
 SDS_DPOSER_STEPS = {0.04: {**SDS[0.04], "steps_per_iter": 60}, 0.1: {**SDS[0.1], "steps_per_iter": 80}}
+# DPoser in its own optimization, tuned the same way (config/denoising_tuning/dposer_sds_<mm>mm.yaml, 40 trials each,
+# 2026-11-20): 40 mm trial 35, 18.72 mm (its own settings 19.19); 100 mm trial 8, 31.60 mm (32.24).
+# The rule of those files: these settings form one more DPoser row, run once on the test.
+DPOSER_TUNED = {0.04: dict(t_max=0.2244177443120188, t_min=0.2244177443120188 * 0.3508951887230231,
+                           sds_weight=0.7582837766246451, lr=0.0406711936379964, steps_per_iter=133),
+                0.1: dict(t_max=0.37543588378633885, t_min=0.37543588378633885 * 0.4846267739770443,
+                          sds_weight=0.15444642587070062, lr=0.021884365766058848, steps_per_iter=267)}
+# RSGM at the budget of the tuned DPoser (config/denoising_tuning/rsgm_sds_budget_<mm>mm.yaml, RSGM 512x4 c10, steps
+# fixed at 3 x 133 / 3 x 267, 30 trials each, 2026-11-21): 40 mm trial 25, 18.62 mm; 100 mm trial 0, i.e. SDS at twice
+# the steps, 30.89 mm. The rule of those files: one row of RSGM 1536x6 at these settings, run once on the test.
+SDS_BUDGET = {0.04: dict(t_max=0.0768501009858013, t_min=0.0768501009858013 * 0.29767789851716797,
+                         sds_weight=3.4205697288594195, lr=0.03562882722479637, steps_per_iter=133),
+              0.1: dict(t_max=0.0515, t_min=0.0515 * 0.881, sds_weight=4.38, lr=0.0422, steps_per_iter=267)}
 RUNS = {
     "RSGM 512x4: their c10": "~/data/experiments/rsgm_posedflow_small_s10/run_0001",
     "RSGM 1536x6: their c10": "~/data/experiments/rsgm_posedflow_s10/run_0001",
@@ -50,11 +73,21 @@ MODELS = {
     # RSGM in DPoser's optimization (score distillation on SO(3)^J), the procedure we tune: settings per noise level
     # chosen on validation with RSGM 512x4 c10 (config/denoising_tuning/rsgm_sds_<mm>mm.yaml) and used for every RSGM
     **{f"{name}, DPoser method": dict(run=run, method="dposer", settings=SDS) for name, run in RUNS.items()},
+    # the first guess of the settings (10 validation sequences at 40 mm), before the Optuna studies; its test was run
+    # by mistake with the commit before the tuned settings (2026-11-17), and is reported as such
+    **{f"{name}, DPoser method, first guess": dict(run=run, method="dposer",
+                                                   settings={sigma: dict(t_max=0.05, t_min=0.01, sds_weight=10.0)
+                                                             for sigma in (0.04, 0.1)})
+       for name, run in RUNS.items()},
+    "RSGM 1536x6: their c10, DPoser method, DPoser's tuned budget": dict(run=RUNS["RSGM 1536x6: their c10"],
+                                                                        method="dposer", settings=SDS_BUDGET),
     "RSGM 512x4: their c10, DPoser method, DPoser's steps": dict(run=RUNS["RSGM 512x4: their c10"], method="dposer",
                                                                 settings=SDS_DPOSER_STEPS),
     # DPoser retrained on their full data: its own optimization (the DPoser rows of their table) and D-Flow
     "DPoser: their full, DPoser method": dict(run="~/data/experiments/full/dposer_posedflow_s10/run_0001",
                                               method="dposer"),
+    "DPoser: their full, DPoser method, tuned": dict(run="~/data/experiments/full/dposer_posedflow_s10/run_0001",
+                                                     method="dposer", settings=DPOSER_TUNED),
     "DPoser: their full, D-Flow": dict(run="~/data/experiments/full/dposer_posedflow_s10/run_0001"),
 }
 
@@ -70,18 +103,45 @@ def main() -> int:
     parser.add_argument("--summary", action="store_true", help="only print what is cached")
     args = parser.parse_args()
 
+    requested = []  # a soft stop: Ctrl+C once or the STOP file; Ctrl+C twice stops at once
+
+    def on_sigint(*_):
+        if requested:
+            raise KeyboardInterrupt
+        requested.append(True)
+        print("\n  stop requested: stops after the current batch (Ctrl+C again: at once)", flush=True)
+
+    def stop() -> bool:
+        if STOP_FILE.is_file():
+            STOP_FILE.unlink()
+            print("\n  stop requested by the STOP file", flush=True)
+            requested.append(True)
+        return bool(requested)
+
+    if not args.summary:
+        signal.signal(signal.SIGINT, on_sigint)
+    cells_total = len(args.models) * len(args.sigmas)
+    t0 = time.time()
     print(f"{'model':48s} " + " ".join(f"{'sigma ' + str(round(s * 1000)) + ' mm':>24s}" for s in args.sigmas))
-    for name in args.models:
+    for i, name in enumerate(args.models):
         cells = []
-        for sigma in args.sigmas:
-            m = cached_run(args.cache, name, MODELS[name], args.split, sigma, None if args.summary else args.device,
-                           args.batch)
+        for j, sigma in enumerate(args.sigmas):
+            m = None
+            if not stop():
+                if not args.summary:
+                    print(f"[cell {i * len(args.sigmas) + j + 1} / {cells_total}, {(time.time() - t0) / 60:.0f} min] "
+                          f"{name}, {round(sigma * 1000)} mm", flush=True)
+                m = cached_run(args.cache, name, MODELS[name], args.split, sigma,
+                               None if args.summary else args.device, args.batch, stop=stop)
             if m is None:
                 cells.append(f"{'-':>24s}")
                 continue
             s = summary(m)
             cells.append(f"{s['mpjpe']:7.2f} / {s['mpvpe']:6.2f} ({s['input_mpjpe']:5.1f})")
         print(f"{name:48s} " + " ".join(cells), flush=True)
+    if requested:
+        print("stopped; run the same command again to continue", flush=True)
+        return 1
     print("cells: MPJPE / MPVPE (MPJPE of the input), mm; "
           f"paper AMASS 40 / 100 mm: " + ", ".join(f"{k} {v[0]} / {v[1]}" for k, v in PAPER.items()))
     return 0
