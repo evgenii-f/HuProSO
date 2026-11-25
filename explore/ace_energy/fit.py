@@ -82,21 +82,66 @@ OTHER_PAIRS = tuple((i, k) for i, k in JOINT_PAIRS
                     if (i, k) not in PAIR_INDEX and (k, i) not in PAIR_INDEX and PARENTS19[k] != i)
 
 
+TRIPLE_DIM = 27  # 3 local coordinates of each of three joints
+
+
+def joint_triples(reach: int) -> list:
+    """The triples of joints (i < j < k) whose three tree distances (in joints, over the root) are at most `reach`."""
+    def path(j):
+        out = [j]
+        while PARENTS19[out[-1]] >= 0:
+            out.append(PARENTS19[out[-1]])
+        return out + [-1]
+
+    def distance(i, k):
+        a, b = path(i), path(k)
+        c = next(v for v in a if v in b)
+        return a.index(c) + b.index(c)
+
+    near = {(i, k): distance(i, k) <= reach for i, k in JOINT_PAIRS}
+    return [(i, j, k) for i in range(19) for j in range(i + 1, 19) for k in range(j + 1, 19)
+            if near[i, j] and near[j, k] and near[i, k]]
+
+
+def triple_coordinates(poses: torch.Tensor, n: int = 100_000, floor: float = 0.3) -> dict:
+    """What the triples need from training poses: the mean of the 9 entries of every joint's rotation [19, 9] and its
+    three principal axes, divided by the joint's rms distance from the mean (at least `floor`) [19, 9, 3]."""
+    pick = torch.randperm(len(poses), generator=torch.Generator().manual_seed(0))[:n]
+    m = poses[pick].double().flatten(-2)  # [n, 19, 9]
+    centre, axes = m.mean(0), []
+    for j in range(19):
+        d = m[:, j] - centre[j]
+        vals, vecs = torch.linalg.eigh(d.T @ d / len(d))
+        axes.append(vecs[:, -3:].flip(-1) / max(float(vals.sum().sqrt()), floor))
+    return dict(centre=centre.float(), axes=torch.stack(axes).float())
+
+
 class WithHarmonics(torch.nn.Module):
     """The descriptors and harmonics of SO(3) (hp.models.so3_harmonics): D^l(x_j) of every joint's own rotation for l
     in `wigner` (one-body), and D^l(G_j), D^l(G_i^T G_k) of the joints with the root and the pairs of WIGNER_PAIRS for
     l in `pairs` (two-body orientations; G relative to the root). More two-body terms: D^l(G_i^T G_k) of OTHER_PAIRS
     for l in `all_pairs`, and with `products` the 81 products (x_i)_a (x_k)_b of the entries of the two joints' own
-    rotations, of all 171 pairs."""
+    rotations, of all 171 pairs. `triples` (a dict with reach, centre, axes of `triple_coordinates`): the products
+    u_ia u_jb u_kc of the three principal local coordinates of three joints near one another (joint_triples)."""
 
     def __init__(self, ace, wigner: Sequence[int], pairs: Sequence[int], all_pairs: Sequence[int] = (),
-                 products: bool = False):
+                 products: bool = False, triples: dict = None):
         super().__init__()
         self.ace, self.wigner, self.pairs = ace, tuple(wigner), tuple(pairs)
         self.all_pairs, self.products = tuple(all_pairs), bool(products)
+        self.triples = triples
+        self.triple_joints = joint_triples(int(triples["reach"])) if triples else []
+        if triples:
+            self.register_buffer("triple_centre", triples["centre"], persistent=False)
+            self.register_buffer("triple_axes", triples["axes"], persistent=False)
+        self.sparse_dim = 81 * len(JOINT_PAIRS) * self.products + TRIPLE_DIM * len(self.triple_joints)
         size = lambda degrees: sum((2 * l + 1) ** 2 for l in degrees)  # noqa: E731
         self.dim = (ace.dim + 19 * size(self.wigner) + (19 + len(WIGNER_PAIRS)) * size(self.pairs)
-                    + len(OTHER_PAIRS) * size(self.all_pairs) + 81 * len(JOINT_PAIRS) * self.products)
+                    + len(OTHER_PAIRS) * size(self.all_pairs) + self.sparse_dim)
+
+    def local_coordinates(self, x: torch.Tensor) -> torch.Tensor:
+        """u [B, 19, 3]: the scaled principal coordinates of the 9 entries of every rotation."""
+        return torch.einsum("bjp,jpa->bja", x.flatten(-2) - self.triple_centre.to(x), self.triple_axes.to(x))
 
     def forward(self, x):
         out = [self.ace(x)]
@@ -113,13 +158,17 @@ class WithHarmonics(torch.nn.Module):
             i, k = (list(v) for v in zip(*JOINT_PAIRS))
             m = x.flatten(-2)  # [B, J, 9]
             out.append((m[:, i][..., :, None] * m[:, k][..., None, :]).flatten(1))
+        if self.triple_joints:
+            u = self.local_coordinates(x)
+            a, b, c = (list(v) for v in zip(*self.triple_joints))
+            out.append(torch.einsum("bni,bnj,bnk->bnijk", u[:, a], u[:, b], u[:, c]).flatten(1))
         return torch.cat(out, dim=-1)
 
 
-def harmonic_basis(settings: dict) -> WithHarmonics:
-    """The basis of a fit from its settings (the arguments of this script)."""
+def harmonic_basis(settings: dict, triples: dict = None) -> WithHarmonics:
+    """The basis of a fit from its settings (the arguments of this script) and, if it has triples, what they need."""
     return WithHarmonics(AceFeatures(smooth=not settings.get("plain", False)), settings.get("wigner", []),
-                         settings.get("pairs", []), settings.get("all_pairs", []), settings.get("products", False))
+                         settings.get("pairs", []), settings.get("all_pairs", []), settings.get("products", False), triples)
 
 
 def draw(ref, x0: torch.Tensor, t: torch.Tensor, generator=None):
@@ -152,63 +201,86 @@ for _c, _i, _j in ((0, 1, 2), (1, 2, 0), (2, 0, 1)):
 
 class Gram:
     """The sums G^T G and G^T y of a basis over the batches of a bin, in float64, with the structure of the products
-    (x_i)_a (x_k)_b: the rows of joint j of G have only the 18 pairs of j (1458 of the 13851 columns), so the sums are
-    taken per joint over the other features (dense, P0 columns) and these, and put together at the end. The same sums
-    as of the full G (without products: the plain sums)."""
+    (x_i)_a (x_k)_b and of the triples: the rows of joint j of G have only the pairs and triples of j (1458 of the 13851
+    products), so the sums are taken per joint over the other features (dense, P0 columns) and these, and put together
+    at the end. The same sums as of the full G (without products and triples: the plain sums)."""
 
     def __init__(self, ace, device, single: bool):
         self.ace, self.device, self.single = ace, device, single
-        self.products = bool(getattr(ace, "products", False))
+        self.sparse = bool(getattr(ace, "products", False) or getattr(ace, "triples", None) is not None)
         self.p = ace.dim
-        self.p0 = self.p - 81 * len(JOINT_PAIRS) * self.products
+        self.p0 = self.p - (ace.sparse_dim if self.sparse else 0)
         double = lambda *shape: torch.zeros(*shape, dtype=torch.float64, device=device)  # noqa: E731
         self.dense, self.b0 = double(self.p0, self.p0), double(self.p0)
-        if self.products:
-            self.base = WithHarmonics(ace.ace, ace.wigner, ace.pairs, ace.all_pairs)
-            self.cross, self.block = double(19, self.p0, 18 * 81), double(19, 18 * 81, 18 * 81)
-            self.by = double(19, 18 * 81)
-            # the pairs of joint j, whether j is their first joint, and their columns among the products
-            pairs = [[n for n, pair in enumerate(JOINT_PAIRS) if j in pair] for j in range(19)]
-            self.other = torch.tensor([[JOINT_PAIRS[n][1] if JOINT_PAIRS[n][0] == j else JOINT_PAIRS[n][0] for n in row]
-                                       for j, row in enumerate(pairs)])
-            self.first = torch.tensor([[JOINT_PAIRS[n][0] == j for n in row] for j, row in enumerate(pairs)])
-            self.columns = torch.tensor([[81 * n + q for n in row for q in range(81)] for row in pairs]) + self.p0
-        else:
+        if not self.sparse:
             self.base = ace
+            return
+        self.base = WithHarmonics(ace.ace, ace.wigner, ace.pairs, ace.all_pairs)
+        n_products = 81 * len(JOINT_PAIRS) * ace.products
+        self.columns, self.pairs, self.triples = [], [], []
+        for j in range(19):
+            # the pairs of joint j: the number of the pair, the other joint, whether j is the first of the pair
+            rows = [(n, b if a == j else a, a == j) for n, (a, b) in enumerate(JOINT_PAIRS) if j in (a, b)]
+            rows = rows if ace.products else []
+            cols = [81 * n + q for n, _, _ in rows for q in range(81)]
+            self.pairs.append((torch.tensor([r[1] for r in rows], dtype=torch.long),
+                               torch.tensor([r[2] for r in rows], dtype=torch.bool)))
+            # the triples of joint j, by its position in the triple
+            groups = []
+            for pos in range(3):
+                mine = [n for n, tr in enumerate(ace.triple_joints) if tr[pos] == j]
+                groups.append(torch.tensor([ace.triple_joints[n] for n in mine], dtype=torch.long).reshape(-1, 3))
+                cols += [n_products + TRIPLE_DIM * n + q for n in mine for q in range(TRIPLE_DIM)]
+            self.triples.append(groups)
+            self.columns.append(torch.tensor(cols, dtype=torch.long) + self.p0)
+        self.cross = [double(self.p0, len(c)) for c in self.columns]
+        self.block = [double(len(c), len(c)) for c in self.columns]
+        self.by = [double(len(c)) for c in self.columns]
 
-    def product_rows(self, x: torch.Tensor) -> torch.Tensor:
-        """[19, 3B, 1458]: for every joint j the rows of its products, d (x_i)_a (x_k)_b / d delta_j."""
-        b = x.shape[0]
-        m = x.flatten(-2)  # [B, 19, 9]
-        dm = torch.einsum("bjpq,cqr->bjcpr", x, HAT.to(x)).flatten(-2)  # [B, 19, 3, 9]
-        other = m[:, self.other.to(x.device)]  # [B, 19, 18, 9]
-        # the product of the derivative (index a if j is the first joint of the pair, else b) and the other's entries
-        as_first = torch.einsum("bjca,bjnq->bjcnaq", dm, other)
-        as_second = torch.einsum("bjcq,bjna->bjcnaq", dm, other)
-        first = self.first.to(x.device)[None, :, None, :, None, None]
-        rows = torch.where(first, as_first, as_second).reshape(b, 19, 3, -1)  # [B, 19, 3, 1458]
-        return rows.permute(1, 0, 2, 3).reshape(19, 3 * b, -1)
+    def sparse_rows(self, x: torch.Tensor) -> list:
+        """For every joint j the rows [3B, n_j] of its products and triples (the columns `columns[j]`)."""
+        b, m = x.shape[0], x.flatten(-2)  # m [B, 19, 9]
+        dm = torch.einsum("bjpq,cqr->bjcpr", x, HAT.to(x)).flatten(-2)  # d m_j / d delta_j, [B, 19, 3, 9]
+        if self.ace.triple_joints:
+            u, axes = self.ace.local_coordinates(x), self.ace.triple_axes.to(x)  # [B, 19, 3], [19, 9, 3] (scaled)
+            du = torch.einsum("bjcp,jpa->bjca", dm, axes)  # [B, 19, 3 (c), 3 (a)]
+        out = []
+        for j in range(19):
+            other, first = (v.to(x.device) for v in self.pairs[j])
+            parts = []
+            if len(other):
+                d, o = dm[:, j], m[:, other]  # [B, 3, 9], [B, n, 9]
+                as_first = torch.einsum("bca,bnq->bcnaq", d, o)
+                as_second = torch.einsum("bcq,bna->bcnaq", d, o)
+                parts.append(torch.where(first[None, None, :, None, None], as_first, as_second).reshape(b, 3, -1))
+            for pos in range(3):
+                tr = self.triples[j][pos].to(x.device)
+                if len(tr):
+                    f = [du[:, j][:, :, None].expand(-1, -1, len(tr), -1) if q == pos else
+                         u[:, tr[:, q]][:, None].expand(-1, 3, -1, -1) for q in range(3)]  # each [B, 3, n, 3]
+                    parts.append(torch.einsum("bcni,bcnj,bcnk->bcnijk", *f).reshape(b, 3, -1))
+            out.append(torch.cat(parts, -1).reshape(3 * b, -1))
+        return out
 
     def add(self, x: torch.Tensor, y: torch.Tensor) -> None:
-        """The batch x [B, 19, 3, 3] with the targets y [B, 57]."""
+        """The batch x [B, 19, 3, 3] with the targets y [B, 57] or [B, 19, 3]."""
         gm = jacobian(self.base, x)  # [B, 57, P0]
         gm = gm if self.single else gm.double()
         flat, yy = gm.reshape(-1, self.p0), y.reshape(-1).to(gm)
         self.dense += (flat.T @ flat).to(self.device)
         self.b0 += (flat.T @ yy).to(self.device)
-        if not self.products:
+        if not self.sparse:
             return
-        dtype = gm.dtype
-        rows = self.product_rows(x.float().to(gm.device)).to(dtype)  # [19, 3B, 1458]
-        g = gm.reshape(len(x), 19, 3, self.p0).permute(1, 0, 2, 3).reshape(19, -1, self.p0)  # [19, 3B, P0]
-        yj = y.reshape(len(x), 19, 3).permute(1, 0, 2).reshape(19, -1).to(gm)
-        self.cross += torch.bmm(g.transpose(1, 2), rows).to(self.device)
-        self.block += torch.bmm(rows.transpose(1, 2), rows).to(self.device)
-        self.by += torch.bmm(rows.transpose(1, 2), yj[..., None])[..., 0].to(self.device)
+        g, yj = gm.reshape(len(x), 19, 3, self.p0), y.reshape(len(x), 19, 3).to(gm)
+        for j, rows in enumerate(self.sparse_rows(x.float().to(gm.device))):
+            rows, gj = rows.to(gm.dtype), g[:, j].reshape(-1, self.p0)
+            self.cross[j] += (gj.T @ rows).to(self.device)
+            self.block[j] += (rows.T @ rows).to(self.device)
+            self.by[j] += (rows.T @ yj[:, j].reshape(-1)).to(self.device)
 
     def total(self):
         """(G^T G [P, P], G^T y [P])."""
-        if not self.products:
+        if not self.sparse:
             return self.dense, self.b0
         a = torch.zeros(self.p, self.p, dtype=torch.float64, device=self.device)
         b = torch.zeros(self.p, dtype=torch.float64, device=self.device)
@@ -277,7 +349,8 @@ def fit(ace, ref, bins: Bins, train: torch.Tensor, per_bin: int, batch: int, rid
         for r in ridges:
             m = a.clone()
             m.diagonal().add_(r * float(a.diagonal().mean()))
-            wk = -torch.cholesky_solve(b[:, None], torch.linalg.cholesky(m))[:, 0]
+            torch.linalg.cholesky(m, out=m)  # in place: for a large basis a second copy does not fit
+            wk = -torch.cholesky_solve(b[:, None], m)[:, 0]
             del m
             w[r].append(wk.cpu())
             fit_loss[r].append(float((wk @ a @ wk + 2 * wk @ b + yy) / rows))
@@ -372,6 +445,9 @@ def main() -> None:
                         help="with --wigner or --pairs: D^l(G_i^T G_k) of the other pairs of joints, of these degrees")
     parser.add_argument("--products", action="store_true",
                         help="with --wigner or --pairs: the products of the entries of x_i and x_k, all pairs")
+    parser.add_argument("--triples", type=int, default=0, metavar="REACH",
+                        help="with --wigner or --pairs: products of the local coordinates of three joints whose tree "
+                             "distances are at most REACH (27 features per triple)")
     parser.add_argument("--single", action="store_true",
                         help="the products of every batch in float32 (a large basis on a GPU with slow float64)")
     parser.add_argument("--joint-density", type=float, nargs="+", default=None, metavar="N S0",
@@ -392,9 +468,12 @@ def main() -> None:
     if args.one_body:
         ace = WithOneBody(ace, args.one_body)
     if args.wigner or args.pairs:
-        ace = harmonic_basis(vars(args))
-    elif args.all_pairs or args.products:
-        parser.error("--all-pairs and --products need --wigner or --pairs.")
+        triples = None
+        if args.triples:
+            triples = dict(reach=args.triples, **triple_coordinates(load_reference("train", ROTATIONS, SPLIT)))
+        ace = harmonic_basis(vars(args), triples)
+    elif args.all_pairs or args.products or args.triples:
+        parser.error("--all-pairs, --products and --triples need --wigner or --pairs.")
     ace = ace.to(DEVICE)
     valid = load_reference("valid", ROTATIONS, SPLIT)
     valid = valid[torch.randperm(len(valid), generator=torch.Generator().manual_seed(0))[:args.valid]]
@@ -434,7 +513,9 @@ def report(ace, ref, bins, ridge, result, valid, compare, args, several: bool, p
     settings = dict(vars(args), ridge=ridge)
 
     def save(table):
-        extra = {} if prior is None else dict(prior=dict(centres=prior.centres.cpu(), s0=prior.s0.cpu()))
+        extra = {"triples": ace.triples} if getattr(ace, "triples", None) else {}
+        if prior is not None:
+            extra["prior"] = dict(centres=prior.centres.cpu(), s0=prior.s0.cpu())
         torch.save(dict(w=result["w"], edges=bins.edges, fit_loss=result["fit_loss"], table=table,
                         settings=settings, descriptors=ace.dim, **extra), out)
 

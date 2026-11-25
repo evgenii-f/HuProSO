@@ -19,8 +19,8 @@ for p in (ROOT / "src", HERE):
 
 from embedding import Embedded, owners  # noqa: E402
 from joint_density import JointDensity  # noqa: E402
-from fit import (JOINT_PAIRS, OTHER_PAIRS, REFERENCE, ROTATIONS, SPLIT, Bins, draw, harmonic_basis,  # noqa: E402
-                 jacobian)
+from fit import (JOINT_PAIRS, OTHER_PAIRS, REFERENCE, ROTATIONS, SPLIT, TRIPLE_DIM, Bins, draw,  # noqa: E402
+                 harmonic_basis, jacobian)
 from hp.evaluation.data import load_reference  # noqa: E402
 from hp.models.ace_features import AceFeatures  # noqa: E402
 from hp.models.io import load_model  # noqa: E402
@@ -44,7 +44,7 @@ def load_energy(path, device: str = "cpu"):
         args = saved["settings"]
         init = torch.load(_local(args["init"]), map_location="cpu", weights_only=True)
         s = init["settings"]
-        basis = harmonic_basis(s)
+        basis = harmonic_basis(s, init.get("triples"))
         bins = Bins(ref, ref.loss_t_min, s["bins"])
         energy = Embedded(basis, bins, owners(basis), k=args.get("k", 2), embedding=args.get("embedding", "fs"),
                           hidden=args.get("hidden", 64))
@@ -58,7 +58,7 @@ def load_energy(path, device: str = "cpu"):
         s = saved["settings"]
         if s.get("one_body"):
             raise ValueError("fits with --one-body are not supported; use the --wigner fits")
-        basis = harmonic_basis(s)
+        basis = harmonic_basis(s, saved.get("triples"))
         bins = Bins(ref, ref.loss_t_min, s["bins"])
         energy = Embedded(basis, bins, owners(basis))
         energy.init_linear(saved["w"], scale2=0.0)
@@ -167,6 +167,7 @@ def feature_groups(basis) -> list:
         out += [f"D^{l}(G_i^T G_k), other pairs"] * (len(OTHER_PAIRS) * (2 * l + 1) ** 2)
     if basis.products:
         out += ["x_i x_k"] * (81 * len(JOINT_PAIRS))
+    out += ["triples"] * (TRIPLE_DIM * len(basis.triple_joints))
     assert len(out) == basis.dim
     return out
 
