@@ -1,0 +1,77 @@
+reproduction (new - stored fact_RDW rows):
+  ctrl_s10 generation: wasserstein +0.0000 recall +0.0000 precision +0.0000 ll +0.0000 FID_val +0.0000 APD +0.0000 dNN +0.0000
+  ctrl_s10 generation_ode: wasserstein +0.0000 recall +0.0000 precision +0.0000 FID_val +0.0000 APD +0.0000 dNN +0.0000
+  ctrl_s11 generation: wasserstein +0.0000 recall +0.0000 precision +0.0000 ll +0.0000 FID_val +0.0000 APD +0.0000 dNN +0.0000
+  ctrl_s11 generation_ode: wasserstein +0.0000 recall +0.0000 precision +0.0000 FID_val +0.0000 APD +0.0000 dNN +0.0000
+
+== b0: harness values
+  generation     ctrl_s10  wasserstein 14.5229 recall 11.8647 precision 11.8288 ll 137.0669 FID_val 0.0364 APD 14.9190 dNN 0.0734
+  generation     ctrl_s11  wasserstein 14.5458 recall 11.8713 precision 11.8797 ll 136.9437 FID_val 0.0363 APD 14.9094 dNN 0.0736
+  generation     pairs_s10 wasserstein 14.6114 recall 11.9018 precision 11.9286 ll 136.9136 FID_val 0.0359 APD 15.0451 dNN 0.0745
+  generation     pairs_s11 wasserstein 14.5758 recall 11.8911 precision 11.9370 ll 136.8377 FID_val 0.0355 APD 15.0170 dNN 0.0744
+  generation_ode ctrl_s10  wasserstein 15.1935 recall 11.9760 precision 12.9194 FID_val 0.0327 APD 15.9412 dNN 0.0816
+  generation_ode ctrl_s11  wasserstein 15.2247 recall 11.9625 precision 12.9690 FID_val 0.0327 APD 15.9649 dNN 0.0819
+  generation_ode pairs_s10 wasserstein 15.3223 recall 12.0019 precision 13.0875 FID_val 0.0325 APD 16.0708 dNN 0.0832
+  generation_ode pairs_s11 wasserstein 15.3037 recall 11.9862 precision 13.0427 FID_val 0.0322 APD 16.0472 dNN 0.0829
+== b0: pairs - control, seed 10 / 11 / mean
+  generation     wasserstein  +0.0886 / +0.0301 / +0.0593
+  generation     recall       +0.0371 / +0.0199 / +0.0285
+  generation     precision    +0.0998 / +0.0573 / +0.0786
+  generation     ll           -0.1533 / -0.1060 / -0.1297
+  generation     FID_val      -0.0006 / -0.0008 / -0.0007
+  generation     APD          +0.1261 / +0.1076 / +0.1169
+  generation     dNN          +0.0011 / +0.0008 / +0.0010
+  generation_ode wasserstein  +0.1288 / +0.0789 / +0.1039
+  generation_ode recall       +0.0259 / +0.0237 / +0.0248
+  generation_ode precision    +0.1681 / +0.0737 / +0.1209
+  generation_ode FID_val      -0.0003 / -0.0005 / -0.0004
+  generation_ode APD          +0.1295 / +0.0824 / +0.1060
+  generation_ode dNN          +0.0015 / +0.0011 / +0.0013
+  rule harness b0: gain False (two better: []), harm False ([])
+== b0: denoising MPJPE / MPVPE, pairs - control, seed 10 / 11 / mean
+  40 mm MPJPE: -0.019 / +0.025 / +0.003
+  40 mm MPVPE: +0.050 / -0.019 / +0.016
+  100 mm MPJPE: -0.016 / +0.007 / -0.004
+  100 mm MPVPE: -0.094 / -0.024 / -0.059
+  rule denoising b0: gain False, harm False
+
+== b3p3: harness values
+  generation     ctrl_s10  wasserstein 17.3131 recall 12.2454 precision 15.0836 ll 137.2891 FID_val 0.0737 APD 18.9874 dNN 0.1003
+  generation     ctrl_s11  wasserstein 17.3688 recall 12.2642 precision 15.1231 ll 137.2474 FID_val 0.0735 APD 19.0068 dNN 0.1007
+  generation     pairs_s10 wasserstein 17.2380 recall 12.2191 precision 14.9962 ll 137.1725 FID_val 0.0731 APD 18.9198 dNN 0.0998
+  generation     pairs_s11 wasserstein 17.2772 recall 12.2147 precision 15.0259 ll 137.2408 FID_val 0.0756 APD 19.0171 dNN 0.0999
+  generation_ode ctrl_s10  wasserstein 18.3559 recall 12.5024 precision 16.2870 FID_val 0.0909 APD 20.0141 dNN 0.1106
+  generation_ode ctrl_s11  wasserstein 18.3874 recall 12.5113 precision 16.3348 FID_val 0.0909 APD 20.0785 dNN 0.1111
+  generation_ode pairs_s10 wasserstein 18.2604 recall 12.4353 precision 16.2202 FID_val 0.0903 APD 19.9985 dNN 0.1097
+  generation_ode pairs_s11 wasserstein 18.2337 recall 12.4250 precision 16.1973 FID_val 0.0911 APD 19.9941 dNN 0.1095
+== b3p3: pairs - control, seed 10 / 11 / mean
+  generation     wasserstein  -0.0751 / -0.0916 / -0.0833
+  generation     recall       -0.0264 / -0.0495 / -0.0379
+  generation     precision    -0.0874 / -0.0973 / -0.0923
+  generation     ll           -0.1166 / -0.0067 / -0.0616
+  generation     FID_val      -0.0006 / +0.0021 / +0.0008
+  generation     APD          -0.0676 / +0.0103 / -0.0286
+  generation     dNN          -0.0005 / -0.0008 / -0.0007
+  generation_ode wasserstein  -0.0955 / -0.1537 / -0.1246
+  generation_ode recall       -0.0671 / -0.0863 / -0.0767
+  generation_ode precision    -0.0668 / -0.1375 / -0.1021
+  generation_ode FID_val      -0.0006 / +0.0002 / -0.0002
+  generation_ode APD          -0.0157 / -0.0843 / -0.0500
+  generation_ode dNN          -0.0009 / -0.0016 / -0.0013
+  rule harness b3p3: gain False (two better: []), harm False ([])
+== b3p3: denoising MPJPE / MPVPE, pairs - control, seed 10 / 11 / mean
+  40 mm MPJPE: -0.020 / -0.080 / -0.050
+  40 mm MPVPE: +0.007 / -0.147 / -0.070
+  100 mm MPJPE: -0.006 / -0.065 / -0.036
+  100 mm MPVPE: +0.037 / -0.101 / -0.032
+  rule denoising b3p3: gain False, harm False
+
+== beta 3.3 - beta 0, mean of the two seeds
+  ctrl   generation     wasserstein +2.8066 recall +0.3868 precision +3.2491 ll +0.2630 FID_val +0.0372 APD +4.0829 dNN +0.0270
+  ctrl   generation_ode wasserstein +3.1626 recall +0.5377 precision +3.3666 FID_val +0.0581 APD +4.0933 dNN +0.0291
+  ctrl   denoising 40 mm MPJPE s10/s11/mean -0.124/-0.039/-0.081 MPVPE -0.474/-0.327/-0.400
+  ctrl   denoising 100 mm MPJPE s10/s11/mean -0.011/-0.024/-0.018 MPVPE -0.617/-0.618/-0.617
+  pairs  generation     wasserstein +2.6640 recall +0.3204 precision +3.0782 ll +0.3310 FID_val +0.0387 APD +3.9374 dNN +0.0254
+  pairs  generation_ode wasserstein +2.9341 recall +0.4361 precision +3.1436 FID_val +0.0584 APD +3.9373 dNN +0.0266
+  pairs  denoising 40 mm MPJPE s10/s11/mean -0.125/-0.144/-0.135 MPVPE -0.517/-0.455/-0.486
+  pairs  denoising 100 mm MPJPE s10/s11/mean -0.002/-0.096/-0.049 MPVPE -0.486/-0.695/-0.590

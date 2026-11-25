@@ -8,7 +8,7 @@ puts the three networks side by side and proposes the one to try.
 
 ## Summary
 
-Updated 2026-11-25 (sections 6-20). Validation numbers only; no test was run for this line of work.
+Updated 2026-11-25 (sections 6-22). Validation numbers only; no test was run for this line of work.
 
 - **Skip connections or LayerNorm in the score network remove the drift of SDS at the smallest noise** and improve the
   hybrid (DPoser's optimization with the RSGM denoiser) by 15-17 mm on the legs and 10-14 mm on the arms over a plain
@@ -112,6 +112,13 @@ Updated 2026-11-25 (sections 6-20). Validation numbers only; no test was run for
   weighting alone lowers the mean in the same runs by 3.4 mm in D-Flow (two seeds agree), 1.7 mm in SDS and 0.4 mm in inpainting.
   Decision: the pairs are closed for the protocol. The settings were not tuned for the pairs, so the negative result
   means "pairs do not help at these settings".
+
+- **The pairs are neutral in generation and in motion denoising too** (section 22): by the rule neither gain nor harm
+  at beta 0 or 3.3 (harness changes of at most 0.12 deg, log-likelihood -0.06 to -0.13 nats, MPJPE within 0.05 mm; two
+  seeds, validation). "Not better" was not "worse", and the pairs stay closed, since they cost a larger input.
+- **Take-away of the input line (harmonics, pairs, graphs; sections 18-21): closed.** No richer input improved the
+  completion protocol; the limit we see is generalization at small noise, not the input, and neither the denoising loss
+  nor the diagnostics (phase, hybrid) predicts the protocol. The list is in section 21.
 
 ## 1. The three networks
 
@@ -1312,6 +1319,100 @@ beta 0 in both seeds, +1.8 mm at beta 3.3); what they moved in the phase diagnos
 not show up here. Pairs are closed for the protocol: the input of `fact_RDW` stays `local`. Whether beta 3.3 is the
 base of the next steps is decided in its own line.
 
+## 21. 2026-11-25: Is the input the limit? Train against validation loss, and the take-aways of sections 18-20
+
+**Question.** Harmonics, pairs and a graph are richer inputs. Is a richer input what the score lacks (train loss close
+to validation loss), or does the network not generalize (train loss far below)? Predicted before the check: a large gap
+that grows from `local` to `wigner+pairs`.
+
+`explore/evaluation/train_valid_gap.py`: 8192 random poses of the training and of the validation split of c10, the same
+for every run, the fixed noise of the loss, the median over 16 chunks of 512; loss at time t of the noise, train /
+valid / gap. The networks of sections 17-19, full data, seed 10 (and 11 for `local`). Zero score: a network that
+predicts nothing (57.2 in the three bands shown).
+
+| model | t 0.002-0.004 | t 0.004-0.007 | t 0.01-0.03 |
+|---|---|---|---|
+| local s10 | 45.5 / 54.2 / 8.7 | 37.0 / 48.4 / 11.4 | 19.1 / 28.2 / 9.1 |
+| local s11 | 45.5 / 54.4 / 8.9 | 36.9 / 48.5 / 11.6 | 19.1 / 28.2 / 9.1 |
+| local+pairs | 45.2 / 54.5 / 9.4 | 36.5 / 48.5 / 12.0 | 18.9 / 28.3 / 9.4 |
+| local+wigner | 45.9 / 55.8 / 9.9 | 37.3 / 49.3 / 11.9 | 19.3 / 28.5 / 9.1 |
+| wigner+pairs | 46.6 / 57.4 / 10.8 | 38.1 / 50.3 / 12.2 | 20.3 / 28.8 / 8.5 |
+| mace_g_x | 46.2 / 53.0 / 6.8 | 38.1 / 47.8 / 9.8 | 19.6 / 28.0 / 8.4 |
+
+The gap is 7-13 units up to t = 0.03; on validation the inputs differ from `local` by 0.1-3.2 units. At the smallest
+noise the network removes about 20% of the zero-score loss on training poses and 5% on validation poses. The
+prediction held by half: the gap is large, but it grows from `local` to `wigner+pairs` only at the smallest noise, and
+the harmonics are worse on the training poses too (45.9 and 46.6 against 45.5), so they are not more expressive where
+it counts. A part of the gap may be the change of subjects between the splits; the check cannot separate it.
+
+**Take-aways of the input line** (evidence in brackets; validation numbers only):
+
+1. *No richer input improved the completion protocol.* Harmonics of degree 2-3 and pair products: a more confident
+   score, not a more accurate one (best of 10 up to 5.2 mm worse, section 18). The pairs as plain rotations (l = 1): 0 of
+   3 methods pass on `fact_RDW`, two seeds (section 20). A graph: 13-25 mm worse in completion (section 19).
+2. *The evidence says the limit is not the input.* The gap between train and validation loss is several times the
+   difference between the inputs (the table above). What to change next is the data, the noise and the procedure, not
+   the representation of the input. Part of the gap may be the change of subjects, so this is not a proof.
+3. *The denoising loss does not choose a model.* `mace_g_x` has the best validation loss in every band and loses 13 mm
+   in completion (section 19). It stays a loose gate, as for a broken run.
+4. *The diagnostics do not predict the protocol.* The pairs take 0.24 deg of the first phase on `wide_RAD_x` (section
+   18) and do not show on `fact_RDW`; the per-axis noise helps the hybrid and is worse in RSGM's own SDS (section 18).
+   A gain in the phase or in the hybrid is a reason to run the protocol, not a result.
+5. *Compare means at equal APD.* At beta 3.3 the pairs looked 0.4-0.5 mm worse in SDS and D-Flow; with the shift of the
+   APD taken out nothing was left (section 20).
+6. *Two seeds and an unselected control.* Seeds differ by up to 1.4 mm in SDS, and a control chosen on the same poses is
+   favoured; a difference under 1 mm is not evidence.
+7. *A cheap gate at ready settings works.* 51 points instead of full fronts took about 3 hours on two GPUs against
+   about 20 hours per model; it answers "no large effect at these settings", not "no effect at any".
+
+**Not established:** that pairs cannot help at any settings (they were not tuned); that the effect of the pairs on the
+first phase is real (one seed). A model with weights shared over the edges other than MACE-lite was not tried. The code
+stays on the branches `experimental/wigner-inputs` and `experimental/pairs-weighting`, not merged into `dev`; the option
+`inputs="local+pairs"` can be reused.
+
+## 22. 2026-11-25: The pairs in generation and motion denoising, with and without data weighting (neutral)
+
+Section 20 showed no gain in completion, which does not say that the pairs harm, nor that they do not help elsewhere. The
+same 8 models (`fact_RDW`, inputs `local` / `local+pairs`, beta 0 / 3.3, seeds 10 and 11) were evaluated on validation in
+two protocols; plan, prediction and rule in `~/data/experiments/pairs_extra/PLAN.md`, written before any run.
+
+- Harness: `scripts/evaluate_factorial.py --parts generation generation_ode`, with the model's own sampler (Euler, 100
+  steps) and Heun on the EDM grid (50 steps): Wasserstein, recall, precision (deg), and the log-likelihood of 1000
+  validation poses (nats).
+- Denoising: `scripts/evaluate.py denoising --like ours --split valid`, 100 validation chunks, 40 and 100 mm, SDS at the
+  settings tuned for RSGM 512x4 c10 (not for these models).
+- All 8 models were run, so the stored `fact_RDW` rows of section 13 are the reproduction check: differences 0.0000.
+
+**Rule** (per beta, pairs - control, mean of two seeds): harness gain if two of {Wasserstein <= -0.15, recall <=
+-0.10, precision <= -0.15 deg} with both samplers and the same sign in both seeds and none worse by these amounts, or
+log-likelihood >= +0.5 nats in both seeds; harm the opposite. Denoising gain if MPJPE <= -0.10 mm at one level, the
+same sign in both seeds, the other level <= +0.05; harm if >= +0.10 mm in both seeds. Reopen the pairs only by a gain
+at beta 0 in one protocol and no harm in the other. Predicted: Wasserstein and precision 0.1-0.3 deg better,
+likelihood level or 0.5 nats lower, MPJPE within 0.1 mm; for beta 3.3 better recall, worse precision and likelihood.
+
+Pairs - control, mean (seed 10 / 11); "+" is worse except for the log-likelihood:
+
+| | beta 0 | beta 3.3 |
+|---|---|---|
+| Wasserstein, own sampler, deg | +0.06 (+0.09 / +0.03) | -0.08 (-0.08 / -0.09) |
+| Wasserstein, Heun EDM 50, deg | +0.10 (+0.13 / +0.08) | -0.12 (-0.10 / -0.15) |
+| recall, own sampler, deg | +0.03 (+0.04 / +0.02) | -0.04 (-0.03 / -0.05) |
+| precision, own sampler, deg | +0.08 (+0.10 / +0.06) | -0.09 (-0.09 / -0.10) |
+| precision, Heun EDM 50, deg | +0.12 (+0.17 / +0.07) | -0.10 (-0.07 / -0.14) |
+| log-likelihood, nats | -0.13 (-0.15 / -0.11) | -0.06 (-0.12 / -0.01) |
+| MPJPE 40 mm, mm | +0.00 (-0.02 / +0.03) | -0.05 (-0.02 / -0.08) |
+| MPJPE 100 mm, mm | -0.00 (-0.02 / +0.01) | -0.04 (-0.01 / -0.07) |
+
+By the rule neither gain nor harm, in both protocols and at both betas. The signs agree in both seeds (slightly worse
+at beta 0, slightly better at beta 3.3), but the sizes are 1-3 times the spread of the seeds (0.02-0.05 deg) and below
+the thresholds. The prediction was wrong for the harness at beta 0 and right for denoising and the likelihood.
+
+**Beta 3.3 against 0 without the pairs** (the same two seeds; mean), reported as a by-product of the 2 x 2, the subject
+of the data-weighting line: generation is much worse (Wasserstein +2.8 / +3.2 deg with the two samplers, precision +3.2 /
++3.4, recall +0.4 / +0.5, FID_val 0.036 to 0.074, APD of the samples 14.9 to 19.0), the expected shift to the rare
+poses; the log-likelihood of validation poses is 0.26 nats higher; in denoising MPVPE is 0.40 / 0.62 mm better (40 / 100
+mm, both seeds), MPJPE within 0.1 mm. The predicted better recall and lower likelihood did not happen.
+
 ## Conclusions
 
 1. Residual connections or LayerNorm are what a score network on SO(3) needs for score distillation at small noise:
@@ -1351,8 +1452,16 @@ base of the next steps is decided in its own line.
 6. The relations of the joints as plain rotations (`local+pairs`) do not help the completion protocol of `fact_RDW` at
    the settings of its fronts (section 20, two seeds, 0 of 3 methods at either beta): the pairs are closed for the
    protocol, their gain of section 18 was in the phase diagnostics of another network.
+7. The line of richer inputs (sections 18-20) is closed: the train/validation gap says generalization rather than the
+   input is the limit (section 21, with the take-aways of the line). Reopen only with a new reason to expect a
+   different result, such as a change of the data or of the noise that closes the gap. The pairs are neutral in
+   generation and denoising too (section 22), so this line closes on completion, generation and denoising.
 
 ## What it does not show
+
+- The pairs in generation and denoising (section 22): the SDS settings are those of another RSGM, and the same for all
+  models; two seeds; validation only; the thresholds were set by the spread of two seeds of one model, so effects of
+  0.1 deg in the harness are not resolved. The by-product on beta 3.3 is not a test of the weighting.
 
 - The pairs on `fact_RDW` (section 20): the settings were chosen for models without pairs, so it means that pairs do not
   help at these settings, not that they cannot; a model with pairs may have its optimum elsewhere, and the transfer was
@@ -1452,7 +1561,7 @@ base of the next steps is decided in its own line.
 
 - The pairs on `fact_RDW` (section 20): branch `experimental/pairs-weighting` (commit `ffefbee`); runs
   `~/data/experiments/pairs/rsgm_posedflow_{fact_RDW,rdw_b3.3}_s1{0,1}` (pairs, on the Mac and workstation2),
-  `~/data/experiments/pairs_control/rsgm_posedflow_rdw_b3.3_s11` (control, on workstation2 only at the time of writing),
+  `~/data/experiments/pairs_control/rsgm_posedflow_rdw_b3.3_s11` (control, on the Mac and workstation2),
   controls `~/data/experiments/factorial/rsgm_posedflow_fact_RDW_s1{0,1}` (s11 on workstation2) and
   `~/data/experiments/data_weighting/rsgm_posedflow_rdw_b3.3_s10`; plan `~/data/experiments/pairs_gate/PLAN.md`; studies
   `~/data/experiments/pairs_gate/optuna` (21 databases, 51 trials, complete), logs `chain_b0.log` and `chain_b3p3.log`
@@ -1461,6 +1570,14 @@ base of the next steps is decided in its own line.
   (its output: [2026-11-14_score_network_architectures_pairs_weighting.txt](2026-11-14_score_network_architectures_pairs_weighting.txt));
   each study by
   `scripts/tune_completion.py <yaml> --study-dir ~/data/experiments/pairs_gate/optuna`.
+
+- The pairs in generation and denoising (section 22): `~/data/experiments/pairs_extra/` (`PLAN.md`,
+  `harness_{b0,b3p3}.jsonl`, `denoising_{b0,b3p3}/`, `chain.log`; run on workstation2 GPU 0, copied to the Mac); the rule
+  by `explore/evaluation/pairs_gate/compare_extra.py`, its output
+  [2026-11-14_score_network_architectures_pairs_extra.txt](2026-11-14_score_network_architectures_pairs_extra.txt).
+
+- The train/validation gap (section 21): `explore/evaluation/train_valid_gap.py`, its output
+  [2026-11-14_score_network_architectures_gap.txt](2026-11-14_score_network_architectures_gap.txt).
 
 - The graph networks (section 19): runs `~/data/experiments/full/rsgm_posedflow_mace{,_g}_x_s10` (trained on
   workstation2, copied to the Mac); the panel rows of all candidates in `~/data/experiments/candidate_panel.jsonl`
