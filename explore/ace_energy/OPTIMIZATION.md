@@ -28,8 +28,15 @@ standard error 0.02). Rows of one note share the noise of their samples; rows of
 ## 2. Columns that carry no information
 
 - 249 columns are exact duplicates: G_j = x_j for the three children of the root (LeftUpLeg, RightUpLeg, Spine0), so
-  D^l(G_j) = D^l(x_j), l = 1, 2, 3 (9 + 25 + 49 = 83 per joint). Found on the harmonics; products not checked.
+  D^l(G_j) = D^l(x_j), l = 1, 2, 3 (9 + 25 + 49 = 83 per joint). Found on the harmonics; with the products checked on
+  random and on validation poses, the products add no other exact duplicates. In the fit the weights of a pair of
+  duplicates agree to 1e-10.
 - The smooth twist (36) is linear in the entries of x_j, that is in D^1(x_j).
+- Linear in the products (least squares on random poses, residual 1e-29 of the variance): D^1(G_j) of the three joints
+  of depth 2 (27 features), and D^1(G_i^T G_k) of six of the eleven pairs (54): left and right thigh, both thighs with
+  Spine0, both shoulders, and Neck with each shoulder. The other five have more than two joints on their path.
+- The descriptors have exact duplicates among themselves: 92 on validation poses, 558 on random ones. The difference is
+  not explained; it does not matter if the descriptors go.
 - The energy is the same family of functions without them; G^T G is singular with them and ridge repairs it (a
   duplicate pair has half the effective ridge). Removing them changes the layout of the features: old fits need a
   version or a flag.
