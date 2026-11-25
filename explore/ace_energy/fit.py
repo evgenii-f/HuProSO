@@ -142,6 +142,83 @@ def jacobian(ace, x: torch.Tensor) -> torch.Tensor:
     return jac.flatten(2).transpose(1, 2)
 
 
+HAT = torch.zeros(3, 3, 3)  # hat(e_c): x exp(eps hat(e_c)) = x + eps x HAT[c] + ...
+for _c, _i, _j in ((0, 1, 2), (1, 2, 0), (2, 0, 1)):
+    HAT[_c, _i, _j], HAT[_c, _j, _i] = -1.0, 1.0
+
+
+class Gram:
+    """The sums G^T G and G^T y of a basis over the batches of a bin, in float64, with the structure of the products
+    (x_i)_a (x_k)_b: the rows of joint j of G have only the 18 pairs of j (1458 of the 13851 columns), so the sums are
+    taken per joint over the other features (dense, P0 columns) and these, and put together at the end. The same sums
+    as of the full G (without products: the plain sums)."""
+
+    def __init__(self, ace, device, single: bool):
+        self.ace, self.device, self.single = ace, device, single
+        self.products = bool(getattr(ace, "products", False))
+        self.p = ace.dim
+        self.p0 = self.p - 81 * len(JOINT_PAIRS) * self.products
+        double = lambda *shape: torch.zeros(*shape, dtype=torch.float64, device=device)  # noqa: E731
+        self.dense, self.b0 = double(self.p0, self.p0), double(self.p0)
+        if self.products:
+            self.base = WithHarmonics(ace.ace, ace.wigner, ace.pairs, ace.all_pairs)
+            self.cross, self.block = double(19, self.p0, 18 * 81), double(19, 18 * 81, 18 * 81)
+            self.by = double(19, 18 * 81)
+            # the pairs of joint j, whether j is their first joint, and their columns among the products
+            pairs = [[n for n, pair in enumerate(JOINT_PAIRS) if j in pair] for j in range(19)]
+            self.other = torch.tensor([[JOINT_PAIRS[n][1] if JOINT_PAIRS[n][0] == j else JOINT_PAIRS[n][0] for n in row]
+                                       for j, row in enumerate(pairs)])
+            self.first = torch.tensor([[JOINT_PAIRS[n][0] == j for n in row] for j, row in enumerate(pairs)])
+            self.columns = torch.tensor([[81 * n + q for n in row for q in range(81)] for row in pairs]) + self.p0
+        else:
+            self.base = ace
+
+    def product_rows(self, x: torch.Tensor) -> torch.Tensor:
+        """[19, 3B, 1458]: for every joint j the rows of its products, d (x_i)_a (x_k)_b / d delta_j."""
+        b = x.shape[0]
+        m = x.flatten(-2)  # [B, 19, 9]
+        dm = torch.einsum("bjpq,cqr->bjcpr", x, HAT.to(x)).flatten(-2)  # [B, 19, 3, 9]
+        other = m[:, self.other.to(x.device)]  # [B, 19, 18, 9]
+        # the product of the derivative (index a if j is the first joint of the pair, else b) and the other's entries
+        as_first = torch.einsum("bjca,bjnq->bjcnaq", dm, other)
+        as_second = torch.einsum("bjcq,bjna->bjcnaq", dm, other)
+        first = self.first.to(x.device)[None, :, None, :, None, None]
+        rows = torch.where(first, as_first, as_second).reshape(b, 19, 3, -1)  # [B, 19, 3, 1458]
+        return rows.permute(1, 0, 2, 3).reshape(19, 3 * b, -1)
+
+    def add(self, x: torch.Tensor, y: torch.Tensor) -> None:
+        """The batch x [B, 19, 3, 3] with the targets y [B, 57]."""
+        gm = jacobian(self.base, x)  # [B, 57, P0]
+        gm = gm if self.single else gm.double()
+        flat, yy = gm.reshape(-1, self.p0), y.reshape(-1).to(gm)
+        self.dense += (flat.T @ flat).to(self.device)
+        self.b0 += (flat.T @ yy).to(self.device)
+        if not self.products:
+            return
+        dtype = gm.dtype
+        rows = self.product_rows(x.float().to(gm.device)).to(dtype)  # [19, 3B, 1458]
+        g = gm.reshape(len(x), 19, 3, self.p0).permute(1, 0, 2, 3).reshape(19, -1, self.p0)  # [19, 3B, P0]
+        yj = y.reshape(len(x), 19, 3).permute(1, 0, 2).reshape(19, -1).to(gm)
+        self.cross += torch.bmm(g.transpose(1, 2), rows).to(self.device)
+        self.block += torch.bmm(rows.transpose(1, 2), rows).to(self.device)
+        self.by += torch.bmm(rows.transpose(1, 2), yj[..., None])[..., 0].to(self.device)
+
+    def total(self):
+        """(G^T G [P, P], G^T y [P])."""
+        if not self.products:
+            return self.dense, self.b0
+        a = torch.zeros(self.p, self.p, dtype=torch.float64, device=self.device)
+        b = torch.zeros(self.p, dtype=torch.float64, device=self.device)
+        a[:self.p0, :self.p0], b[:self.p0] = self.dense, self.b0
+        for j in range(19):
+            c = self.columns[j].to(self.device)
+            a[:self.p0].index_add_(1, c, self.cross[j])
+            a[c[:, None], c[None, :]] += self.block[j]
+            b.index_add_(0, c, self.by[j])
+        a[self.p0:, :self.p0] = a[:self.p0, self.p0:].T
+        return a, b
+
+
 class Bins:
     """Bins of equal width in log s over [s(t_min), s(1)]; w per bin, interpolated linearly in log s between centres."""
 
@@ -174,32 +251,27 @@ def fit(ace, ref, bins: Bins, train: torch.Tensor, per_bin: int, batch: int, rid
     """{ridge: dict(w [bins, P], fit_loss)}: one accumulation of G^T G per bin, one solution per ridge. With `single`
     the products of a batch in float32 (their sum and the solution stay in float64)."""
     g = torch.Generator().manual_seed(seed)  # the draws on the CPU: the same samples on every device
-    p = ace.dim
     device = torch.device("cpu") if DEVICE.type == "mps" else DEVICE  # the sums in float64: not on mps
     w = {r: [] for r in ridges}
     fit_loss = {r: [] for r in ridges}
     for k in range(len(bins.centres)):
         t0 = time.perf_counter()
-        a = torch.zeros(p, p, dtype=torch.float64, device=device)
-        b = torch.zeros(p, dtype=torch.float64, device=device)
+        gram = Gram(ace, device, single)
         yy, rows = 0.0, 0
         lo, hi = bins.t_range(k)
         for _ in range(0, per_bin, batch):
             x0 = train[torch.randint(len(train), (batch,), generator=g)]
             t = lo + (hi - lo) * torch.rand(batch, dtype=torch.float64, generator=g)
             xt, target, _ = draw(ref, x0, t, g)
-            gm = jacobian(ace, xt).reshape(-1, p)  # [B 3J, P]
-            gm = gm if single else gm.double()
-            y = target.reshape(-1)
-            a += (gm.T @ gm).to(device)
-            b += (gm.T @ y.to(gm)).to(device)
-            yy += float(y @ y)
+            gram.add(xt, target)
+            yy += float((target ** 2).sum())
             rows += batch
-        del gm  # room for the solution
+        a, b = gram.total()
+        del gram  # room for the solution
         for r in ridges:
             m = a.clone()
             m.diagonal().add_(r * float(a.diagonal().mean()))
-            wk = -torch.linalg.solve(m, b)
+            wk = -torch.cholesky_solve(b[:, None], torch.linalg.cholesky(m))[:, 0]
             del m
             w[r].append(wk.cpu())
             fit_loss[r].append(float((wk @ a @ wk + 2 * wk @ b + yy) / rows))
