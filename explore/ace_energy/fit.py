@@ -36,6 +36,9 @@ from torch.func import jacfwd, vmap
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))  # the code of this checkout, before an editable install of another one
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from joint_density import JointDensity  # noqa: E402
 from hp.evaluation.data import load_reference  # noqa: E402
 from hp.models import igso3  # noqa: E402
 from hp.models.ace_features import AceFeatures  # noqa: E402
@@ -247,9 +250,10 @@ class Bins:
 
 
 def fit(ace, ref, bins: Bins, train: torch.Tensor, per_bin: int, batch: int, ridges, seed: int,
-        single: bool = False) -> dict:
+        single: bool = False, prior: JointDensity = None) -> dict:
     """{ridge: dict(w [bins, P], fit_loss)}: one accumulation of G^T G per bin, one solution per ridge. With `single`
-    the products of a batch in float32 (their sum and the solution stay in float64)."""
+    the products of a batch in float32 (their sum and the solution stay in float64). With `prior` (a reference energy)
+    the target is what it leaves."""
     g = torch.Generator().manual_seed(seed)  # the draws on the CPU: the same samples on every device
     device = torch.device("cpu") if DEVICE.type == "mps" else DEVICE  # the sums in float64: not on mps
     w = {r: [] for r in ridges}
@@ -263,6 +267,8 @@ def fit(ace, ref, bins: Bins, train: torch.Tensor, per_bin: int, batch: int, rid
             x0 = train[torch.randint(len(train), (batch,), generator=g)]
             t = lo + (hi - lo) * torch.rand(batch, dtype=torch.float64, generator=g)
             xt, target, _ = draw(ref, x0, t, g)
+            if prior is not None:
+                target = target - prior.scaled_score(xt.float(), ref.s(t)).double()
             gram.add(xt, target)
             yy += float((target ** 2).sum())
             rows += batch
@@ -283,7 +289,7 @@ def fit(ace, ref, bins: Bins, train: torch.Tensor, per_bin: int, batch: int, rid
 
 
 def evaluate(ace, ref, bins: Bins, w: torch.Tensor, valid: torch.Tensor, compare, batch: int, t_min: float,
-             interp: str = "linear") -> dict:
+             interp: str = "linear", prior: JointDensity = None) -> dict:
     """Losses [N] per model on one fixed draw per validation pose, and the times."""
     g = torch.Generator().manual_seed(0)
     t = t_min + (1 - t_min) * torch.rand(len(valid), dtype=torch.float64, generator=g)
@@ -294,6 +300,8 @@ def evaluate(ace, ref, bins: Bins, w: torch.Tensor, valid: torch.Tensor, compare
         gm = jacobian(ace, xt[i:i + batch])  # [b, 3J, P]
         gm = (gm.cpu() if gm.device.type == "mps" else gm).double()
         pred = -torch.einsum("bkp,bp->bk", gm, bins.weights(w, t[i:i + batch], interp).to(gm.device)).cpu()
+        if prior is not None:
+            pred = pred + prior.scaled_score(xt[i:i + batch].float(), ref.s(t[i:i + batch])).double().flatten(1)
         energy.append(((pred - target[i:i + batch].reshape(len(pred), -1)) ** 2).sum(1))
     out["ACE energy"] = torch.cat(energy)
     for name, model in compare.items():
@@ -366,6 +374,9 @@ def main() -> None:
                         help="with --wigner or --pairs: the products of the entries of x_i and x_k, all pairs")
     parser.add_argument("--single", action="store_true",
                         help="the products of every batch in float32 (a large basis on a GPU with slow float64)")
+    parser.add_argument("--joint-density", type=float, nargs="+", default=None, metavar="N S0",
+                        help="the density of every joint's own rotation as a reference energy (joint_density.py): N "
+                             "training poses, then the bandwidth S0 (a Brownian time), or one per joint")
     parser.add_argument("--load", default=None, help="a .pt file of an earlier fit: evaluate it, fit nothing")
     parser.add_argument("--interp", choices=("linear", "nearest"), default="linear", help="w between bins")
     args = parser.parse_args()
@@ -400,15 +411,20 @@ def main() -> None:
     train = None if results else load_reference("train", ROTATIONS, SPLIT)
     print(f"{ace.dim} descriptors, {args.bins} bins x {args.per_bin} samples ({args.per_bin * 57:,} rows per bin), "
           f"{len(train) if train is not None else 0:,} training poses, {len(valid)} validation poses", flush=True)
+    prior = None
+    if args.load and "prior" in saved:
+        prior = JointDensity(saved["prior"]["centres"], saved["prior"]["s0"])
+    elif args.joint_density:
+        prior = JointDensity.from_poses(train, int(args.joint_density[0]), args.joint_density[1:], args.seed)
     if results is None:
-        results = fit(ace, ref, bins, train, args.per_bin, args.batch, args.ridge, args.seed, args.single)
+        results = fit(ace, ref, bins, train, args.per_bin, args.batch, args.ridge, args.seed, args.single, prior)
     compare = {Path(r).expanduser().parent.name: load_model(Path(r).expanduser(), device=args.device,
                                                              weights="weights_ema").eval() for r in args.compare}
     for n_ridge, (ridge, result) in enumerate(results.items()):
-        report(ace, ref, bins, ridge, result, valid, compare if n_ridge == 0 else {}, args, len(results) > 1)
+        report(ace, ref, bins, ridge, result, valid, compare if n_ridge == 0 else {}, args, len(results) > 1, prior)
 
 
-def report(ace, ref, bins, ridge, result, valid, compare, args, several: bool) -> None:
+def report(ace, ref, bins, ridge, result, valid, compare, args, several: bool, prior=None) -> None:
     """Evaluate one fit on the validation draws, print its table (and the networks' with the first), save it: the
     weights before the evaluation, so that an error there does not lose the fit."""
     out = Path(args.out).expanduser() if args.out and not args.load else None
@@ -418,12 +434,13 @@ def report(ace, ref, bins, ridge, result, valid, compare, args, several: bool) -
     settings = dict(vars(args), ridge=ridge)
 
     def save(table):
+        extra = {} if prior is None else dict(prior=dict(centres=prior.centres.cpu(), s0=prior.s0.cpu()))
         torch.save(dict(w=result["w"], edges=bins.edges, fit_loss=result["fit_loss"], table=table,
-                        settings=settings, descriptors=ace.dim), out)
+                        settings=settings, descriptors=ace.dim, **extra), out)
 
     if out is not None:
         save({})
-    losses = evaluate(ace, ref, bins, result["w"], valid, compare, args.batch, ref.loss_t_min, args.interp)
+    losses = evaluate(ace, ref, bins, result["w"], valid, compare, args.batch, ref.loss_t_min, args.interp, prior)
     losses[f"ACE energy, ridge {ridge:g}"] = losses.pop("ACE energy")
     k = bins.index(losses["t"])
     names = [n for n in losses if n != "t"]

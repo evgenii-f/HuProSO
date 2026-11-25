@@ -18,6 +18,7 @@ for p in (ROOT / "src", HERE):
         sys.path.insert(0, str(p))
 
 from embedding import Embedded, owners  # noqa: E402
+from joint_density import JointDensity  # noqa: E402
 from fit import (JOINT_PAIRS, OTHER_PAIRS, REFERENCE, ROTATIONS, SPLIT, Bins, draw, harmonic_basis,  # noqa: E402
                  jacobian)
 from hp.evaluation.data import load_reference  # noqa: E402
@@ -62,6 +63,9 @@ def load_energy(path, device: str = "cpu"):
         energy = Embedded(basis, bins, owners(basis))
         energy.init_linear(saved["w"], scale2=0.0)
         info = f"linear fit, basis {basis.dim}"
+        if "prior" in saved:
+            energy.prior = JointDensity(saved["prior"]["centres"], saved["prior"]["s0"])
+            info += f", joint density of {saved['prior']['centres'].shape[-1]} poses"
     energy.requires_grad_(False)
     return energy.to(device).eval(), ref, bins, info
 

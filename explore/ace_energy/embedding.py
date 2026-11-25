@@ -86,6 +86,7 @@ class Embedded(torch.nn.Module):
         if embedding not in ("fs", "mlp"):
             raise ValueError(f"Unknown embedding '{embedding}'. Use 'fs' or 'mlp'.")
         self.basis, self.bins, self.embedding = basis, bins, embedding
+        self.prior = None  # a reference energy (joint_density.JointDensity), added to the energy of the features
         if embedding == "mlp":
             self.joint_emb = torch.nn.Parameter(0.1 * torch.randn(19, joint_dim))
             self.mlp = torch.nn.Sequential(torch.nn.Linear(k - 1 + 1 + joint_dim, hidden), torch.nn.SiLU(),
@@ -117,7 +118,10 @@ class Embedded(torch.nn.Module):
         return (1 - a) * self.c[:, lo] + a * self.c[:, lo + 1]
 
     def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-        return self.energy_of_features(self.basis(x), t)
+        e = self.energy_of_features(self.basis(x), t)
+        if self.prior is not None:
+            e = e + self.prior.energy(x, self.bins.ref.s(t.detach().cpu().double()).to(e))
+        return e
 
     def energy_of_features(self, features: torch.Tensor, t: torch.Tensor, per_joint: bool = False) -> torch.Tensor:
         """E~_t [B] (or [B, 19] per joint) from the features B(x) [B, P] of the basis."""
