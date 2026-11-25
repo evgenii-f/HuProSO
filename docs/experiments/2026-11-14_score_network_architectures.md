@@ -8,7 +8,7 @@ puts the three networks side by side and proposes the one to try.
 
 ## Summary
 
-Updated 2026-11-24 (sections 6-19). Validation numbers only; no test was run for this line of work.
+Updated 2026-11-25 (sections 6-20). Validation numbers only; no test was run for this line of work.
 
 - **Skip connections or LayerNorm in the score network remove the drift of SDS at the smallest noise** and improve the
   hybrid (DPoser's optimization with the RSGM denoiser) by 15-17 mm on the legs and 10-14 mm on the arms over a plain
@@ -104,6 +104,14 @@ Updated 2026-11-24 (sections 6-19). Validation numbers only; no test was run for
   completion (93.4 mm) and has the best validation loss of all networks, in every band of noise levels, yet its
   completion and generation stay worse (precision 17.66 against 16.73 deg): a better fit of the denoising loss that
   does not carry over to where the score is used.
+
+- **The pairs do not help the completion protocol of the best isotropic network** (section 20, negative): `local+pairs`
+  on `fact_RDW` (c10, isotropic noise), with and without data weighting (beta 3.3), two seeds each, at ready settings of
+  the fronts without pairs (1000 validation poses): 0 of 3 methods pass the rule at either beta. The means move by -0.65
+  to +0.49 mm against a threshold of -1.0 mm, and by -0.41 to +0.37 mm once the shift of the APD is taken out. The
+  weighting alone lowers the mean in the same runs by 3.4 mm in D-Flow (two seeds agree), 1.7 mm in SDS and 0.4 mm in inpainting.
+  Decision: the pairs are closed for the protocol. The settings were not tuned for the pairs, so the negative result
+  means "pairs do not help at these settings".
 
 ## 1. The three networks
 
@@ -1225,6 +1233,85 @@ the graph network does worse there. That this is a matter of generalization away
 guess, not checked. For the staged rule it means that the validation loss is a poor predictor and stays a loose gate
 only. The dense network with the pairs (`local+pairs`) remains the best of this line.
 
+## 20. 2026-11-25: The pairs on the best isotropic network, with and without data weighting (negative)
+
+Sections 18 and 19 measured the pairs on `wide_RAD_x` (per-axis noise, full data) with the phase diagnostics and the
+hybrid, one seed. Does `inputs="local+pairs"` (l = 1: the matrices, the rotations G_j and 11 rotations G_i^T G_k; 441
+inputs, 442 with the time, against 172) help the completion protocol of `fact_RDW`, the best isotropic network of RSGM,
+and does it add up with the data weighting (sampling weights, beta = 3.3)?
+
+**Setup.** `fact_RDW`: timeres 1024 x 2 blocks, residual, dropout 0.1, isotropic IGSO(3) noise, c10 (1,861,105
+poses), 30k steps x 4096, AdamW lr 2e-3. Cells: inputs `local` / `local+pairs` x beta 0 / 3.3 x seeds 10, 11 = 8
+models. Four with pairs and the beta 3.3 control of seed 11 were trained for this (about 4 minutes each for the four
+with pairs); the other three existed. 1000 validation poses, K = 10, four occlusions, the means over them; the test was
+not touched. The numbers come from `scripts/tune_completion.py` with fixed points, so it searches nothing.
+
+**Settings.** No new fronts (about 20 hours per model). Each model is evaluated at 8 points of the ready fronts of
+`fact_RDW` seed 10 without pairs at the same beta: the lowest mean at APD >= 4 / 5 / 6 / 7 cm (inpainting 2 points, SDS
+= RSGM + DPoser method 4, D-Flow 2). The control of seed 10 is read from the fronts; it was selected on these poses,
+the control of seed 11 was not. Beta 3.3 itself was chosen by the data-weighting study on 300 validation poses.
+
+**Reproduction.** One stored point per method (SDS t28, inpainting t111, D-Flow t53 of seed 10, beta 0) recomputed with
+the merged code gives the stored mean and APD to 0.01 (89.24 / 4.27, 92.67 / 7.19, 89.00 / 5.16).
+
+**Prediction, written before the runs** (`PLAN.md`): D-Flow and SDS better by 1-2 mm, mainly on the legs; inpainting at
+most 1 mm; the interaction with beta about 0. **Rule, per beta:** pairs - control, averaged over the points of a method
+(seed 10 against seed 10, 11 against 11); a method passes if the mean of the two seeds has d mean <= -1.0 mm, d APD >=
+-0.2 cm, d best of 10 <= +0.3 mm, and d mean is negative in both seeds. Pairs pass if two of three methods do;
+otherwise they are closed for the protocol.
+
+**Result.** Validation, pairs - control (mm, APD in cm; negative d mean and d best are better):
+
+| beta | method | d mean s10 | d mean s11 | d mean | d best of 10 | d APD | d mean left_leg / legs / arms / trunk | control s11 - s10, d mean |
+|---|---|---|---|---|---|---|---|---|
+| 0 | inpainting | +0.32 | +0.29 | +0.31 | +0.35 | -0.01 | -0.0 / +0.4 / +0.7 / +0.1 | +0.04 |
+| 0 | SDS | -0.12 | -1.15 | -0.63 | -0.25 | -0.09 | -1.0 / -1.9 / -0.3 / +0.7 | +0.62 |
+| 0 | D-Flow | -0.13 | -0.59 | -0.36 | -0.21 | -0.01 | -0.8 / -0.3 / -0.2 / -0.2 | -0.04 |
+| 3.3 | inpainting | -0.50 | -0.79 | -0.65 | -0.27 | -0.08 | -0.9 / -0.2 / -0.9 / -0.6 | +0.34 |
+| 3.3 | SDS | +0.75 | +0.23 | +0.49 | -0.04 | +0.12 | +0.1 / +1.8 / -0.1 / +0.1 | +1.42 |
+| 3.3 | D-Flow | +0.53 | +0.35 | +0.44 | -0.11 | +0.13 | -0.3 / +0.5 / +1.2 / +0.3 | +0.30 |
+
+By the rule the pairs do not pass: 0 of 3 methods at beta 0 and 0 of 3 at beta 3.3. The largest gain is 0.65 mm; the
+threshold is 1.0. The spread of the two control seeds in SDS (0.62 and 1.42 mm) is as large as the effect or larger.
+
+*The APD moves with the mean* (post hoc, not a part of the rule): a higher APD by itself raises the mean. With the slope
+of the control between its first and last point (2.4-3.6 mm/cm in SDS and D-Flow, 6.9-8.3 in inpainting) taken out, d
+mean is +0.37 / -0.41 / -0.34 mm (inpainting / SDS / D-Flow) at beta 0 and -0.02 / +0.17 / -0.03 at beta 3.3. So the
++0.4 to +0.5 mm of SDS and D-Flow at beta 3.3 are mostly the wider hypotheses: the pairs are neutral there, they do not
+harm.
+
+The 2 x 2 cells (mean / best of 10 / APD over the points of a method, the two seeds averaged):
+
+| method | beta 0, local | beta 0, pairs | beta 3.3, local | beta 3.3, pairs |
+|---|---|---|---|---|
+| inpainting | 89.44 / 48.51 / 6.73 | 89.74 / 48.86 / 6.72 | 89.00 / 47.63 / 6.82 | **88.35 / 47.36** / 6.75 |
+| SDS | 92.71 / 56.97 / 5.67 | 92.08 / 56.72 / 5.59 | **90.97** / 55.26 / 5.66 | 91.46 / **55.22** / 5.78 |
+| D-Flow | 90.59 / 52.98 / 5.77 | 90.23 / 52.77 / 5.76 | **87.23** / 49.88 / 5.84 | 87.67 / **49.77** / 5.98 |
+
+The means of a method average its points, not a band of APD, and the points of the two betas are not at the same APD,
+so a column pair compares models, not a single operating point. Along the columns:
+
+| method | beta 3.3 - beta 0, local: s10 / s11 / both, d mean | local, d best of 10 | pairs: s10 / s11 / both, d mean |
+|---|---|---|---|
+| inpainting | -0.59 / -0.29 / -0.44 | -0.88 | -1.41 / -1.38 / -1.39 |
+| SDS | -2.14 / -1.34 / -1.74 | -1.71 | -1.28 / +0.04 / -0.62 |
+| D-Flow | -3.52 / -3.18 / -3.35 | -3.10 | -2.86 / -2.25 / -2.55 |
+
+The weighting gives by far the larger effect, seed 11, which was not selected, included: D-Flow -3.2 mm, SDS -1.3 mm.
+Inpainting at beta 3.3 loses on the arms (+2.9 mm) and gains on the left leg and the legs (-1.6 to -2.5 mm). The
+weighting is the subject of another line of work, which owns its fronts and its test; this table is only the component
+of the 2 x 2 on validation, and no test row was used here. The interaction (effect of the pairs
+at beta 3.3 minus at beta 0) is -0.96 / +1.12 / +0.80 mm (inpainting / SDS / D-Flow), and -0.39 / +0.58 / +0.31 mm with the APD taken out: without one sign, and not resolved by two seeds.
+
+**Cost.** The larger input makes D-Flow slower: 13.2 minutes per point for the control of seed 11 and 17.7-19.3 with
+pairs at beta 0, 15.5 and 22.2-33.8 at beta 3.3 (the two chains shared a machine, so these are not a benchmark).
+
+**What it says.** The prediction was wrong in both methods it was confident about. With the isotropic noise and the
+ready settings the relations of the joints change neither the trade-off nor the legs consistently (SDS legs -1.9 mm at
+beta 0 in both seeds, +1.8 mm at beta 3.3); what they moved in the phase diagnostics of `wide_RAD_x` (section 18) does
+not show up here. Pairs are closed for the protocol: the input of `fact_RDW` stays `local`. Whether beta 3.3 is the
+base of the next steps is decided in its own line.
+
 ## Conclusions
 
 1. Residual connections or LayerNorm are what a score network on SO(3) needs for score distillation at small noise:
@@ -1261,8 +1348,18 @@ only. The dense network with the pairs (`local+pairs`) remains the best of this 
    No network is the best for inpainting, the hybrid and generation together. No combination beats `abl_norm` by
    the rule fixed before, but the rule does not separate the five best cells; the open candidates are `fact_RDW`
    (and its width 2048) and `fact_RADW`, to be compared with `fact_N` at equal APD by an inpainting study.
+6. The relations of the joints as plain rotations (`local+pairs`) do not help the completion protocol of `fact_RDW` at
+   the settings of its fronts (section 20, two seeds, 0 of 3 methods at either beta): the pairs are closed for the
+   protocol, their gain of section 18 was in the phase diagnostics of another network.
 
 ## What it does not show
+
+- The pairs on `fact_RDW` (section 20): the settings were chosen for models without pairs, so it means that pairs do not
+  help at these settings, not that they cannot; a model with pairs may have its optimum elsewhere, and the transfer was
+  checked only between beta 0 and 3.3, not for a change of inputs. The control of seed 10 is favoured by the selection
+  of the points on the same poses. Two seeds give the direction, not a variance. Eight points per model, two of them
+  per method for inpainting and D-Flow; the correction for the APD is post hoc and uses the slope between settings,
+  not a curve at fixed settings. One network, isotropic noise, c10, 30k steps; validation only.
 
 - The graph networks (section 19): one seed each, one size (256 channels, 3 layers), one budget, the per-axis noise
   only; no tuning of the time input, of the depth or of the learning rate for a graph; whether the gap is the
@@ -1352,6 +1449,18 @@ only. The dense network with the pairs (`local+pairs`) remains the best of this 
   `local+global` in `~/data/experiments/full_global` (run `rsgm_posedflow_wide_RAD_x_s10`, its outputs
   `{trajectory,hybrid}_wide_RAD_x_global_s10.txt` there), trained by `--config wide_RAD_x` with
   `model.args.inputs=local+global`.
+
+- The pairs on `fact_RDW` (section 20): branch `experimental/pairs-weighting` (commit `ffefbee`); runs
+  `~/data/experiments/pairs/rsgm_posedflow_{fact_RDW,rdw_b3.3}_s1{0,1}` (pairs, on the Mac and workstation2),
+  `~/data/experiments/pairs_control/rsgm_posedflow_rdw_b3.3_s11` (control, on workstation2 only at the time of writing),
+  controls `~/data/experiments/factorial/rsgm_posedflow_fact_RDW_s1{0,1}` (s11 on workstation2) and
+  `~/data/experiments/data_weighting/rsgm_posedflow_rdw_b3.3_s10`; plan `~/data/experiments/pairs_gate/PLAN.md`; studies
+  `~/data/experiments/pairs_gate/optuna` (21 databases, 51 trials, complete), logs `chain_b0.log` and `chain_b3p3.log`
+  next to them; the fronts of the settings `~/data/experiments/completion/optuna/rsgm_{inpaint,sds,dflow}_mean_apd_rdw_{b0,b3p3}.db`;
+  configs by `explore/evaluation/pairs_gate/make_configs.py`, all numbers by `explore/evaluation/pairs_gate/compare.py`
+  (its output: [2026-11-14_score_network_architectures_pairs_weighting.txt](2026-11-14_score_network_architectures_pairs_weighting.txt));
+  each study by
+  `scripts/tune_completion.py <yaml> --study-dir ~/data/experiments/pairs_gate/optuna`.
 
 - The graph networks (section 19): runs `~/data/experiments/full/rsgm_posedflow_mace{,_g}_x_s10` (trained on
   workstation2, copied to the Mac); the panel rows of all candidates in `~/data/experiments/candidate_panel.jsonl`
