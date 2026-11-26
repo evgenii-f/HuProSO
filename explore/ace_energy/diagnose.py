@@ -60,12 +60,18 @@ COMPLETION = {  # name: complete.py --out file in FOLDER
     "network no-DPS": "diag/network_nodps.pt", "old no-DPS": "diag/energy_nodps.pt",
     "P+L no-DPS": "diag2/nodps_products.pt", "network SDS": "diag2/sds_network.pt",
     "P+L SDS": "diag2/sds_products.pt", "t5 SDS": "diag2/sds_t5.pt",
+    "MLP K8": "diag5/inpaint_mlp_pl_k8.pt", "MLP K8 no-DPS": "diag5/nodps_mlp_pl_k8.pt",
+    "MLP K8 SDS": "diag5/sds_mlp_pl_k8.pt", "linear Adam": "diag5/inpaint_lin_pl_adam.pt",
+    "linear Adam no-DPS": "diag5/nodps_lin_pl_adam.pt", "linear Adam SDS": "diag5/sds_lin_pl_adam.pt",
 }
 DIFFS = [("products 1e-4", "old base"), ("base + pairs 1e-4", "old base"), ("base + limits 1e-4", "old base"),
          ("P+L 1e-4", "products 1e-4"), ("P+L 1e-3", "P+L 1e-4"), ("P+L 1e-2", "P+L 1e-3"),
          ("no descriptors", "P+L 1e-3"), ("squares", "P+L 1e-3"), ("t5", "P+L 1e-3"), ("100k", "P+L 1e-3"),
          ("network no-DPS", "network"), ("network SDS", "network"), ("old no-DPS", "old base"),
-         ("P+L no-DPS", "P+L 1e-3"), ("P+L SDS", "P+L 1e-3"), ("t5 SDS", "t5")]
+         ("P+L no-DPS", "P+L 1e-3"), ("P+L SDS", "P+L 1e-3"), ("t5 SDS", "t5"),
+         ("MLP K8", "P+L 1e-3"), ("MLP K8", "linear Adam"), ("linear Adam", "P+L 1e-3"), ("MLP K8", "t5"),
+         ("MLP K8 SDS", "P+L SDS"), ("MLP K8 SDS", "linear Adam SDS"), ("MLP K8 no-DPS", "P+L no-DPS"),
+         ("MLP K8 no-DPS", "linear Adam no-DPS"), ("MLP K8 SDS", "MLP K8"), ("MLP K8 no-DPS", "MLP K8")]
 FITS = {"P+L 1e-3": "energy_b_rich_products_jd_r0.001.pt", "t5": "energy_b_rich_products_jd_t5_r0.001.pt",
         "P+L 1e-2": "energy_b_rich_products_jd_r0.01.pt", "100k": "energy_b_rich_products_jd_100k_r0.001.pt",
         "old base": "energy_b_smooth_w123_p123.pt"}
