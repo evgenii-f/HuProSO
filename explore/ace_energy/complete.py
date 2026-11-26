@@ -1,5 +1,5 @@
 """Pose completion with an ACE energy as the prior: the reverse process of RSGM (inpainting) with the score of the
-energy in place of the network (docs/experiments/2026-11-23_ace_descriptors.md). A quick check on the first poses of the
+energy in place of the network (docs/experiments/ace/README.md). A quick check on the first poses of the
 validation draw of the completion studies, without tuning: the inpainting point t81 of abl_residual, or SDS
 (--method dposer, hp.models.score_completion.rsgm_complete) at the point t15 of rsgm_sds_mean_apd_full_dposer_like. From
 the root:
