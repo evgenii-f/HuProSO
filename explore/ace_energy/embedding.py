@@ -480,7 +480,7 @@ def main() -> None:
         if args.fp_weight > 0:
             term = fp.loss(x0[:args.fp_points], gen, device)
             total = loss + args.fp_weight * term
-            running_fp.append(float(term))
+            running_fp.append(float(term.detach()))
         opt.zero_grad()
         total.backward()
         opt.step()

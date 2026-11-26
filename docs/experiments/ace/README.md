@@ -30,6 +30,8 @@ Rows 1-3 are from one harness run (1000 samples) and one completion run (200 pos
   energy's own ranked by itself 82.44 mm. On hard poses too: at s ≥ 0.02 the energies place the network's legs below
   their own wrong ones; at s = 0.002 they do not separate them.
 - **Completion settings** are not the gap: tuning inpainting for P+L gains 0.3 mm over t81 (20 trials, 500 poses).
+- **Small noise:** far from the data the noise levels of the energies disagree by hundreds of nats; a Fokker-Planck
+  term makes them agree but leaves the holes and makes completion 7 mm worse (closed in that form).
 - **Next:** a joint Optuna study of the embedding and the basis (to be announced before it starts), chosen by
   Wasserstein on validation; then completion of the winner once. The code was made faster for it first.
 - **Deferred:** mixing the scores of the energy and the network (end of the line); changes of the model that make it
@@ -45,6 +47,7 @@ Rows 1-3 are from one harness run (1000 samples) and one completion run (200 pos
 | 2026-11-26 | [Ideas from ACE for the network](2026-11-26_network_ideas.md) | Mixing the scores lowers the loss like a second network, the harness is unchanged (deferred); a cluster block on `fact_RDW` fails its gate (closed) |
 | 2026-11-26 | [MLP embedding on P+L](2026-11-26_mlp_embedding.md) | Loss 6.090, Wasserstein 15.31° against 15.93° (network 14.86°); a linear control trained alike does not move; completion −1.8 mm, below the rule |
 | 2026-11-26 | [Tuning inpainting; the energy of the truth](2026-11-26_completion_tuning_and_truth_energy.md) | Optuna on inpainting with P+L: 98.43 against 98.73 mm at t81, closed; the energies prefer the network's hypotheses to their own at s ≥ 0.02, not at s = 0.002; splits on hard poses come from the sampler or the clean end, to be told apart by noise bands |
+| 2026-11-27 | [A Fokker-Planck term](2026-11-27_fokker_planck.md) | The levels of s disagree far from the data by hundreds of nats; the heat equation as a training term cuts that 3–5 times at the same loss, but the holes stay and inpainting is +7.1 mm worse than without it: negative |
 | 2026-11-26 | [Speed of the score](speed.md) | Exact speed-ups: on the GPU the MLP score 30 → 7 ms, a training step 52 → 26 ms, DPS 59 → 32 ms (500 poses); DPS is what is left |
 
 ## Decisions
@@ -57,13 +60,15 @@ Rows 1-3 are from one harness run (1000 samples) and one completion run (200 pos
 - 2026-11-26: exact speed-ups first, then the joint study; changes of the model (descriptors out, fewer centres) not
   yet.
 - 2026-11-26: tuning completion settings for the energy is closed (t81 kept); the check on poses 500–999 not run.
+- 2026-11-27: the Fokker-Planck term at isotropic points is closed (completion +7.1 mm); ideas for the linear model
+  next.
 
 ## Where things are
 
 - **Code:** `explore/ace_energy/` — `fit.py` (the linear fit, the basis `WithHarmonics`), `joint_density.py`,
   `embedding.py` (the embeddings and their training), `inspect_energy.py` (`load_energy`), `generate.py` (the harness),
   `complete.py` (completion), `diagnose.py` (paired comparisons and the gap), `gt_energy.py` (the energy of the truth against
-  the hypotheses), `bench.py` (speed),
+  the hypotheses), `fp_residual.py` and `fokker_planck.py` (the heat equation between the levels), `bench.py` (speed),
   `OPTIMIZATION.md` (what the basis could lose); features in `hp.models.ace_features`, harmonics in
   `hp.models.so3_harmonics`.
 - **Runs:** `~/data/experiments/ace/` (fits `energy_*.pt` with their `.json`, logs, completion caches `diag*/`,
