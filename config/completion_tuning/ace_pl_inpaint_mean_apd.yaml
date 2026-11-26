@@ -1,0 +1,32 @@
+# Inpainting with the reverse process of RSGM (run(method="inpaint"), hp.models.inpainting) with the score of the
+# linear ACE energy P+L (products of local rotations + joint densities, ridge 1e-3; explore/ace_energy, reports in
+# docs/experiments/ace/) in place of the network of fact_RDW s10, whose noising and sampler it
+# uses. Until now the energies ran at the point t81 of the network abl residual (97.49 mm on the first 200 validation
+# poses, network 85.23 mm), never tuned for them. The search space of rsgm_inpaint_mean_apd_residual (where t81 comes
+# from), its objectives (mean MPVPE minimized, APD maximized), 20 trials on the first 500 poses of the 1000-pose
+# validation draw (valid_poses: nested, so a later study of another model on 500 poses uses the same poses); 8 random
+# trials before TPE, the first three enqueued.
+# Rule, fixed before the study: among the points of the front with APD not lower than 6.40 cm (as for the networks: D-Flow
+# with Heun EDM 50 of small std c10), take the one with the lowest mean; if there is none, the point of the front with the
+# highest APD. The chosen point is then run on the other half, validation poses 500 ... 999 (complete.py --offset 500),
+# next to P+L at t81 and the network at t81 on the same poses; a gain counts when the mean is lower than P+L at t81 by at
+# least 2 mm with a paired 95% interval excluding 0. No test.
+model: ~/data/experiments/factorial/rsgm_posedflow_fact_RDW_s10/run_0001
+energy: ~/data/experiments/ace/energy_b_rich_products_jd_r0.001.pt
+method: inpaint
+objective: mean_apd
+poses: 500
+n_trials: 20
+startup: 8
+batch: 100
+params:
+  steps: [100, 200, 400]
+  guidance: {low: 0.01, high: 0.5, log: true}
+  resample: [1, 2, 3, 5]
+  replace: [true, false]
+fixed:
+  schedule: edm
+first:  # t81 of the network, and the two guidance probes of P+L (0.02 and 0.1, both worse on 200 poses)
+  - {steps: 400, guidance: 0.04934967328387599, resample: 5, replace: false}
+  - {steps: 400, guidance: 0.02, resample: 5, replace: false}
+  - {steps: 200, guidance: 0.1, resample: 2, replace: false}

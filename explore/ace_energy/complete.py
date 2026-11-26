@@ -115,6 +115,9 @@ def main() -> None:
                         help="noise levels at which the completed poses get their energy (an energy, not --network)")
     parser.add_argument("--no-dps", action="store_true", help="replacement of the visible joints instead of guidance")
     parser.add_argument("--poses", type=int, default=200)
+    parser.add_argument("--offset", type=int, default=0,
+                        help="the poses offset ... offset + poses of the 1000-pose validation draw (e.g. 500: the half "
+                             "not used by the studies on 500 poses)")
     parser.add_argument("--occlusions", nargs="+", default=list(OCCLUSIONS))
     parser.add_argument("--batch", type=int, default=200)
     parser.add_argument("--device", default="cpu")
@@ -155,6 +158,8 @@ def main() -> None:
 
     settings = dict(fit=None if args.network else Path(args.fit).name, info=info, options=options, poses=args.poses,
                     batch=args.batch, method=args.method, rank=args.rank)
+    if args.offset:  # only then, so that the files made before --offset existed still resume
+        settings["offset"] = args.offset
     out = Path(args.out).expanduser() if args.out else None
     done = {}
     if out and out.exists():
@@ -166,8 +171,8 @@ def main() -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):  # the first one: finish the occlusion; the second: as usual
         signal.signal(sig, lambda number, _: (stop.append(number), signal.signal(number, signal.SIG_DFL),
                                               print("\nstopping after this occlusion", flush=True)))
-    gt, body = valid_poses(n=1000)[:args.poses], Body()
-    print(f"{info}, {args.poses} poses", flush=True)
+    gt, body = valid_poses(n=1000)[args.offset:args.offset + args.poses], Body()
+    print(f"{info}, {args.poses} poses from {args.offset}", flush=True)
     for occ in args.occlusions:
         if occ not in done:
             t0 = time.perf_counter()

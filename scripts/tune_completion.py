@@ -27,6 +27,10 @@ A study is described by a YAML file in config/completion_tuning, and its name is
       study: rsgm_sds_old   # (same model, method, poses, batch; their settings inside this one's space)
       trials: [2, 14]
       params: {scale: std}  # values of this study's params that the other one did not search
+    energy: ~/data/experiments/ace/energy_b_rich_products_jd_r0.001.pt  # optional: an ACE energy (explore/ace_energy,
+                            # fit.py or embedding.py) in place of the score of the run of `model`, whose noising and
+                            # sampler it uses (complete.py energy_model); inpaint and dposer only
+    startup: 15             # optional: random trials before the TPE sampler (default 15)
 
 The values of a trial (fixed and searched) are options of run(): for dposer all of them go to the optimization
 (dposer_complete or rsgm_complete, and start / scale / stats of run's RSGM starts); for inpaint, to rsgm_inpaint
@@ -51,6 +55,7 @@ import argparse
 import json
 import platform
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -74,7 +79,9 @@ OBJECTIVES = {  # name: (the values of a trial, their directions)
 }
 FINISHED = (optuna.trial.TrialState.COMPLETE, optuna.trial.TrialState.PRUNED, optuna.trial.TrialState.FAIL)
 RUN_KEYS = ("lr", "running_weight", "steps", "ode_steps")  # dflow: arguments of run(), the others go to the prior
-KEYS = ("model", "method", "objective", "poses", "n_trials", "params", "fixed", "first", "batch", "import")
+KEYS = ("model", "method", "objective", "poses", "n_trials", "params", "fixed", "first", "batch", "import", "energy",
+        "startup")
+STARTUP = 15  # random trials before TPE
 
 
 def load_config(path: Path) -> dict:
@@ -330,12 +337,19 @@ def tune(path: Path, study_dir: Path, args) -> None:
     for params in args.enqueue:
         study.enqueue_trial(json.loads(params), skip_if_exists=True)
     # seeded by the trials so far: a restarted study does not draw the random trials of its first start again
-    study.sampler = optuna.samplers.TPESampler(seed=SEED + len(study.trials), multivariate=True, n_startup_trials=15)
+    study.sampler = optuna.samplers.TPESampler(seed=SEED + len(study.trials), multivariate=True,
+                                               n_startup_trials=config.get("startup", STARTUP))
     finished = sum(t.state.is_finished() for t in study.trials)
     if finished < config["n_trials"]:
         torch.manual_seed(SEED)
         gt, body = valid_poses(ROTATIONS, config["poses"]), Body()
-        model = build(model_spec(config["model"]), args.device)
+        if config.get("energy"):  # the run's noising and sampler with the score of an ACE energy
+            sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "explore" / "ace_energy"))
+            from complete import energy_model
+            model, _, info = energy_model(config["energy"], config["model"], args.device)
+            print(f"prior: {info}", flush=True)
+        else:
+            model = build(model_spec(config["model"]), args.device)
         print(f"study {name} ({commit}): {finished} of {config['n_trials']} trials done, {len(gt)} validation poses",
               flush=True)
         # several processes may work on one study (e.g. one per GPU): every one stops when the study has n_trials
