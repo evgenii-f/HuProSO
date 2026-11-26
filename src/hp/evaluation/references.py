@@ -25,7 +25,8 @@ NUMBERS = ROOT / "config" / "references" / "posedflow_valid.jsonl"
 ARRAYS = "~/data/experiments/references/posedflow_valid.pt"
 METHODS = ("inpaint", "dflow")  # of the completion, the procedures with references
 PROTOCOLS = ("generation", "completion", "denoising")
-FULL = {"completion": 1000, "denoising": 100}  # poses / sequences of the validation draws (the studies)
+FULL = {"generation": 8601, "completion": 1000, "denoising": 100}  # poses / sequences of the validation draws
+# (generation: all the validation poses; completion and denoising: the draws of the studies)
 
 # columns of the tables: (key, title, decimals, direction: -1 lower is better, 1 higher, 0 neither)
 COLUMNS = {

@@ -110,6 +110,14 @@ def test_compare_ranks_and_targets():
     assert "target" not in R.compare(completion("mine", n=200), R.recorded_entries(config), config)
 
 
+def test_generation_targets_only_on_the_full_validation():
+    config = {**R.load(), "targets": {"generation": [{"label": "DPoser full, 1000 steps", "FID_val": 0.05, "APD": 15.0}]}}
+    entry = lambda n: {"protocol": "generation", "group": "", "network": "mine", "architecture": "MLP 512x4",  # noqa
+                       "label": "mine", "spec": {}, "n": n, "numbers": {"FID_val": 0.03, "APD": 16.0}}
+    table = R.compare(entry(R.FULL["generation"]), [], config)
+    assert "| target: DPoser full, 1000 steps | 0.0500 | 15.00 |" in table
+    assert "target" not in R.compare(entry(1000), [], config)
+
 def test_profile():
     config = R.load()
     runs = evaluate.profile(None, config, "MLP 512x4", R.METHODS)

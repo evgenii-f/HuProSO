@@ -3,7 +3,7 @@
 # with APD >= 6.40 cm (D-Flow of small c10), on the 1000 validation poses of the studies, K = 10, means over the four
 # occlusions: mean and best of 10 (mm), APD (cm). sets: the settings (also what `all` gives a new model of the same
 # architecture) and the recorded numbers; front: the non-dominated points (mean, APD) of all the trials of these studies
-# together; targets: the same rule for DPoser and PoseD-Flow, and their validation numbers on denoising.
+# together; targets: the same rule for DPoser and PoseD-Flow, and their validation numbers on denoising and generation.
 # minutes: of the chosen trial, study_hours: of all its trials (the hosts differ; only an order of magnitude).
 apd_floor: 6.40
 unknown_architecture: timeres 1024x2
@@ -112,6 +112,9 @@ front:  # up to a mean of 100 mm
 - {mean: 99.898, best: 51.408, apd: 8.147, source: "rsgm_dflow_mean_apd_rdw_b0 t22"}
 - {mean: 99.964, best: 50.937, apd: 8.193, source: "rsgm_dflow_mean_apd_rdw_b0 t20"}
 targets:
+  generation:  # validation, 8601 poses, evaluate.py generation --split valid (2026-11-26, workstation1, 340cf3d)
+  - {label: "DPoser full, 1000 steps", source: "DPoser: their full, 1000 steps", FID_val: 0.0379, FID_own: 0.0072, APD: 15.11, dNN: 0.0682, wasserstein: 14.39, recall: 11.76, precision: 11.69}
+  - {label: "PoseD-Flow, midpoint 100", source: "PoseD-Flow: their checkpoint, midpoint 100 (paper)", FID_val: 0.0342, FID_own: 0.0088, APD: 15.41, dNN: 0.0766, wasserstein: 14.90, recall: 11.82, precision: 12.36}
   completion:
   - {label: "DPoser full, inpaint", source: "dposer_full_inpaint_mean_apd t90", mean: 86.746, best: 47.379, apd: 6.524}
   - {label: "DPoser full, its own optimization", source: "dposer_full_method_mean_apd t28", mean: 91.162, best: 48.558, apd: 7.321}
