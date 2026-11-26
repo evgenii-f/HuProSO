@@ -1,0 +1,122 @@
+# The references of scripts/evaluate.py all, PoseD-Flow's protocol. Fixed on 2026-11-23, networks without data weighting.
+# Rule: per method and architecture (layers and width) the point of its study with the lowest mean MPVPE among those
+# with APD >= 6.40 cm (D-Flow of small c10), on the 1000 validation poses of the studies, K = 10, means over the four
+# occlusions: mean and best of 10 (mm), APD (cm). sets: the settings (also what `all` gives a new model of the same
+# architecture) and the recorded numbers; front: the non-dominated points (mean, APD) of all the trials of these studies
+# together; targets: the same rule for DPoser and PoseD-Flow, and their validation numbers on denoising.
+# minutes: of the chosen trial, study_hours: of all its trials (the hosts differ; only an order of magnitude).
+apd_floor: 6.40
+unknown_architecture: timeres 1024x2
+sets:
+- method: inpaint
+  architecture: timeres 512x2
+  network: abl_residual c10
+  run: ~/data/experiments/rsgm_posedflow_abl_residual_s10/run_0001
+  settings: {steps: 400, guidance: 0.04934967328387599, resample: 5, replace: false, schedule: "edm"}
+  source: rsgm_inpaint_mean_apd_residual t81
+  minutes: 16.7
+  study_hours: 5.1
+  validation: {mean: 88.323, best: 49.182, apd: 6.413}
+- method: inpaint
+  architecture: timeres 1024x2
+  network: fact_RDW c10
+  run: ~/data/experiments/factorial/rsgm_posedflow_fact_RDW_s10/run_0001
+  settings: {steps: 400, guidance: 0.03330060246460422, resample: 5, replace: false, schedule: "edm"}
+  source: rsgm_inpaint_mean_apd_rdw_b0 t91
+  minutes: 3.3
+  study_hours: 2.1
+  validation: {mean: 88.472, best: 48.598, apd: 6.442}
+- method: inpaint
+  architecture: MLP 1536x6
+  network: search_lik full
+  run: ~/data/experiments/full/rsgm_posedflow_search_lik_s10/run_0001
+  settings: {steps: 400, guidance: 0.035341776791969745, resample: 5, replace: false, schedule: "edm"}
+  source: rsgm_inpaint_mean_apd_search_lik_full t110
+  minutes: 28.2
+  study_hours: 13.4
+  validation: {mean: 90.663, best: 50.429, apd: 6.657}
+- method: inpaint
+  architecture: timeres 256x8
+  network: deep c10
+  run: ~/data/experiments/rsgm_posedflow_deep_s10/run_0001
+  settings: {steps: 200, guidance: 0.09753705685072556, resample: 5, replace: false, schedule: "edm"}
+  source: rsgm_inpaint_mean_apd_deep t75
+  minutes: 7.5
+  study_hours: 4.8
+  validation: {mean: 91.294, best: 50.187, apd: 6.838}
+- method: inpaint
+  architecture: MLP 512x4
+  network: small c10
+  run: ~/data/experiments/rsgm_posedflow_small_s10/run_0001
+  settings: {steps: 400, guidance: 0.057708678925692564, resample: 5, replace: false, schedule: "edm"}
+  source: rsgm_inpaint_pareto t52
+  minutes: 5.6
+  study_hours: 3.8
+  validation: {mean: 92.435, best: 50.858, apd: 6.987}
+- method: dflow
+  architecture: timeres 1024x2
+  network: fact_RDW c10
+  run: ~/data/experiments/factorial/rsgm_posedflow_fact_RDW_s10/run_0001
+  settings: {lr: 0.06191246136496006, running_weight: 0.001012771994964723, steps: 200, ode_steps: 25, sampler: "heun", schedule: "edm"}
+  source: rsgm_dflow_mean_apd_rdw_b0 t48
+  minutes: 12.4
+  study_hours: 15.1
+  validation: {mean: 92.614, best: 51.015, apd: 6.508}
+- method: dflow
+  architecture: MLP 512x4
+  network: small c10
+  run: ~/data/experiments/rsgm_posedflow_small_s10/run_0001
+  settings: {ode_steps: 25, sampler: "heun", schedule: "edm"}
+  source: dflow_valid_arch_ws2.jsonl (D-Flow of their protocol)
+  validation: {mean: 93.329, best: 52.433, apd: 6.398}
+front:  # up to a mean of 100 mm
+- {mean: 86.161, best: 47.642, apd: 6.251, source: "rsgm_inpaint_mean_apd_rdw_b0 t99"}
+- {mean: 86.325, best: 47.708, apd: 6.266, source: "rsgm_inpaint_mean_apd_rdw_b0 t95"}
+- {mean: 86.824, best: 47.941, apd: 6.31, source: "rsgm_inpaint_mean_apd_rdw_b0 t13"}
+- {mean: 87.043, best: 48.042, apd: 6.329, source: "rsgm_inpaint_mean_apd_rdw_b0 t92"}
+- {mean: 88.22, best: 49.301, apd: 6.391, source: "rsgm_inpaint_mean_apd_residual t59"}
+- {mean: 88.323, best: 49.182, apd: 6.413, source: "rsgm_inpaint_mean_apd_residual t81"}
+- {mean: 88.472, best: 48.598, apd: 6.442, source: "rsgm_inpaint_mean_apd_rdw_b0 t91"}
+- {mean: 89.022, best: 49.086, apd: 6.495, source: "rsgm_inpaint_mean_apd_residual t89"}
+- {mean: 89.991, best: 49.563, apd: 6.511, source: "rsgm_inpaint_mean_apd_rdw_b0 t40"}
+- {mean: 90.411, best: 50.084, apd: 6.549, source: "rsgm_inpaint_mean_apd_residual t16"}
+- {mean: 90.663, best: 50.429, apd: 6.657, source: "rsgm_inpaint_mean_apd_search_lik_full t110"}
+- {mean: 90.716, best: 49.647, apd: 6.761, source: "rsgm_inpaint_mean_apd_residual t113"}
+- {mean: 91.054, best: 49.384, apd: 6.828, source: "rsgm_inpaint_mean_apd_rdw_b0 t16"}
+- {mean: 91.061, best: 49.282, apd: 6.833, source: "rsgm_inpaint_mean_apd_rdw_b0 t93"}
+- {mean: 91.294, best: 50.187, apd: 6.838, source: "rsgm_inpaint_mean_apd_deep t75"}
+- {mean: 91.297, best: 50.181, apd: 6.84, source: "rsgm_inpaint_mean_apd_deep t97"}
+- {mean: 91.562, best: 50.184, apd: 6.862, source: "rsgm_inpaint_mean_apd_deep t54"}
+- {mean: 91.611, best: 50.201, apd: 6.865, source: "rsgm_inpaint_mean_apd_deep t56"}
+- {mean: 91.944, best: 49.247, apd: 6.917, source: "rsgm_inpaint_mean_apd_rdw_b0 t80"}
+- {mean: 92.435, best: 50.858, apd: 6.987, source: "rsgm_inpaint_pareto t52"}
+- {mean: 92.493, best: 50.819, apd: 7.004, source: "rsgm_inpaint_pareto t56"}
+- {mean: 92.512, best: 50.815, apd: 7.008, source: "rsgm_inpaint_pareto t51"}
+- {mean: 92.557, best: 50.812, apd: 7.015, source: "rsgm_inpaint_pareto t54"}
+- {mean: 92.668, best: 49.218, apd: 7.19, source: "rsgm_inpaint_mean_apd_rdw_b0 t111"}
+- {mean: 93.096, best: 49.701, apd: 7.217, source: "rsgm_inpaint_mean_apd_rdw_b0 t102"}
+- {mean: 93.161, best: 49.284, apd: 7.243, source: "rsgm_inpaint_mean_apd_rdw_b0 t101"}
+- {mean: 93.196, best: 49.308, apd: 7.245, source: "rsgm_inpaint_mean_apd_rdw_b0 t98"}
+- {mean: 93.996, best: 49.48, apd: 7.324, source: "rsgm_inpaint_mean_apd_rdw_b0 t100"}
+- {mean: 95.57, best: 51.095, apd: 7.429, source: "rsgm_inpaint_pareto t58"}
+- {mean: 96.077, best: 50.223, apd: 7.525, source: "rsgm_inpaint_mean_apd_rdw_b0 t105"}
+- {mean: 96.656, best: 51.258, apd: 7.537, source: "rsgm_inpaint_pareto t31"}
+- {mean: 97.071, best: 51.648, apd: 7.599, source: "rsgm_inpaint_pareto t8"}
+- {mean: 97.725, best: 51.671, apd: 7.607, source: "rsgm_inpaint_mean_apd_rdw_b0 t36"}
+- {mean: 98.176, best: 51.872, apd: 7.65, source: "rsgm_inpaint_mean_apd_search_lik_full t31"}
+- {mean: 98.324, best: 52.562, apd: 7.787, source: "rsgm_inpaint_mean_apd_deep t109"}
+- {mean: 98.406, best: 52.452, apd: 7.804, source: "rsgm_inpaint_mean_apd_deep t34"}
+- {mean: 98.455, best: 51.043, apd: 7.912, source: "rsgm_dflow_mean_apd_rdw_b0 t35"}
+- {mean: 98.659, best: 50.743, apd: 7.961, source: "rsgm_dflow_mean_apd_rdw_b0 t29"}
+- {mean: 99.398, best: 51.249, apd: 8.019, source: "rsgm_dflow_mean_apd_rdw_b0 t59"}
+- {mean: 99.898, best: 51.408, apd: 8.147, source: "rsgm_dflow_mean_apd_rdw_b0 t22"}
+- {mean: 99.964, best: 50.937, apd: 8.193, source: "rsgm_dflow_mean_apd_rdw_b0 t20"}
+targets:
+  completion:
+  - {label: "DPoser full, inpaint", source: "dposer_full_inpaint_mean_apd t90", mean: 86.746, best: 47.379, apd: 6.524}
+  - {label: "DPoser full, its own optimization", source: "dposer_full_method_mean_apd t28", mean: 91.162, best: 48.558, apd: 7.321}
+  - {label: "PoseD-Flow, D-Flow", source: "posedflow_dflow_guess_mean_apd t4", mean: 91.999, best: 51.178, apd: 6.517}
+  denoising:
+  - {label: "DPoser full, tuned", source: "DPoser: their full, DPoser method, tuned", mpjpe_40: 18.725, mpjpe_100: 31.598, mpvpe_40: 38.981, mpvpe_100: 55.061}
+  - {label: "DPoser full, its own settings", source: "DPoser: their full, DPoser method", mpjpe_40: 19.188, mpjpe_100: 32.234, mpvpe_40: 38.153, mpvpe_100: 54.382}
+  - {label: "PoseD-Flow, its own settings", source: "PoseD-Flow: their checkpoint", mpjpe_40: 19.832, mpjpe_100: 31.729, mpvpe_40: 37.192, mpvpe_100: 56.893}

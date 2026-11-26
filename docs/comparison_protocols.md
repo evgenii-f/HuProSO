@@ -45,7 +45,7 @@ Joints: ours are 19 (`AmassJoints4Learning`, no toes). PoseD-Flow has 21; the to
 `scripts/evaluate_posedflow_comparison.py` computes Harness and PoseD-Flow on a server with the same settings and writes into the same cache. The constants of the script and the notebook must stay equal.
 
 `scripts/evaluate.py <protocol>` runs any model through a protocol with the same flags for every protocol
-(`completion`, `denoising`): the model as `--run [LABEL=]PATH` (a run folder or a PoseD-Flow `.ckpt`, with `--method`, `--set
+(`completion`, `denoising`, `generation`): the model as `--run [LABEL=]PATH` (a run folder or a PoseD-Flow `.ckpt`, with `--method`, `--set
 key=value`, `--settings JSON` and `--like LABEL`, the method and settings of a row or a point;
 without them the method's own defaults, not tuned for inpaint and dposer), as rows of the registry (`--models`) or as points of the fronts (`--points`);
 `--split valid|test|all`, `--poses n` (a quick check, in a folder of its own), `--quick` (the first 200 poses of the
@@ -61,6 +61,49 @@ their settings, `config/denoising_test_points.yaml` (`scripts/denoising_test_poi
 names `ours`, `"rsgm budget"`, `dposer`, `"dposer tuned"` and `posedflow`; their settings are per noise level, and
 `--set` applies on top at both. Both splits share `--out` (the file names carry the split); a result per (label,
 split, noise level) in `results.jsonl` there.
+
+`scripts/evaluate.py generation` takes the models and the sampler (`--set sampler=heun schedule=edm sample_steps=50`, or
+`--like heun`, `euler`, `own`, or a row of `hp.evaluation.pareto.MODELS`; "heun" is 25 steps, 50 network calls). It has no
+`--poses`: the number of samples is part of the metrics.
+
+- `--split valid` (in `<out>/valid`): FID_val, the FID against the joints of the validation poses; FID own, APD, dNN; the
+  harness against the validation poses; the log-likelihood of 1000 of them. `--quick` is the same without the
+  log-likelihood.
+- `--split test`: the stages, settings and cache of the Pareto comparison (their FID, FID own, APD, dNN, the harness), so
+  its rows are found.
+- **Their FID, FID own, APD and dNN do not use the test poses** (their statistics and the training poses), so they are
+  the same numbers on both splits; the validation has FID_val and leaves their FID out, and a model is not chosen by it.
+- Real train and real poses of the split are printed below the models as a yardstick. Real training poses score
+  0.034 in FID_val: the validation poses are of other datasets, and a model that fits the training poses exactly scores
+  about the same.
+- Noise: for one model, the precision moved by 0.2 deg and the Wasserstein by 0.1 between runs that differ only in the
+  random draws or the device (`fact_RDW`, Heun EDM 50 steps: 12.70-12.92 and 15.10-15.21 over six runs on mps, cpu and
+  cuda), more than the std over the repeats of one run (0.01-0.1) shows. Smaller differences are not resolved.
+
+**A new RSGM against the references:** `scripts/evaluate.py all --run [LABEL=]PATH --like` (`--quick` first) runs generation,
+completion and denoising on the validation and prints a table per protocol: the model, the references with the
+differences, the ranks per column (no overall score) and the targets; also written to `~/data/experiments/evaluate_all`.
+
+- References: `config/references/posedflow.yaml` (fixed on 2026-11-23, its header has the rule): seven completion sets,
+  one per procedure (inpaint, D-Flow) and architecture, of five networks. The model gets the set of its architecture
+  (read from `model.json`); another architecture gets those of timeres 1024x2, and the table says so. Generation is
+  `--like heun`, denoising `--like ours`; `--like PROTOCOL=LABEL` changes one, `--like LABEL` the completion.
+- The settings of the completion have no default, the command says which: `--like` (ready: ONE setting per procedure,
+  that of the reference), `--tune grid` (inpaint: 10 values of `guidance`, 20 for an unknown architecture) or
+  `--tune study` (Optuna, 120 settings for inpaint, 60 for D-Flow); `--tune inpaint=grid dflow=ready` per procedure. A
+  grid or study prints its number of settings and the recorded time and asks first (`--yes` without a terminal). It then
+  takes the point with the lowest mean and APD >= 6.40 cm and evaluates it like a ready one. Ready settings cost a new
+  network up to 2 mm of the mean (interpolated from the studies of the references), so a small difference is decided
+  with the grid. Templates: `config/completion_tuning/*_template.yaml`.
+- Their numbers of all three protocols: `config/references/posedflow_valid.jsonl` and, per pose,
+  `~/data/experiments/references/posedflow_valid.pt`, both written by `scripts/evaluate.py references`, once. Before
+  that only the completion has references (the numbers recorded in the studies), without noise marks and without
+  `--quick`.
+- A difference is the model minus the reference; `~` is within two standard errors of the paired difference over the
+  poses (completion) or sequences (denoising), or within the spread between runs (generation). It is not the spread
+  between training seeds, which is larger. "To the front" is the distance in mean MPVPE to the front of the reference
+  studies at the same APD, the fair comparison when the APD differs.
+- Validation by default. `--split test` runs the test, without references; finished rows are not computed again.
 
 **Quick check of a new model:** `scripts/evaluate.py completion --run <run> --quick [--like LABEL]`, 200 validation
 poses in minutes; how to read it and the reference numbers of all our rows and points are in

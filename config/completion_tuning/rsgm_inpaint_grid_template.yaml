@@ -1,0 +1,33 @@
+# TEMPLATE: inpainting of a new RSGM on a fixed grid of 10 guidance values, instead of a search of 120 trials. Copy it
+# to <name>.yaml (the name of the study), set model, and run scripts/tune_completion.py <name>.yaml, or let
+# `scripts/evaluate.py all --tune grid` fill it in. For a first look at a model: `all --like`, one setting.
+# Why a grid: in the studies of five networks (residual 512x2, fact_RDW 1024x2, search_lik 1536x6, deep 256x8, small
+# 512x4) the points chosen by the rule had resample 5 and replace false, with 400 steps (deep: 200), so only guidance is
+# left. Interpolated from the trials of these studies, the grid is within 0.15 mm of their choices; the first 10 trials
+# of the search are 2.9-6.9 mm worse. Not yet run as a grid. 400 steps of deep were tried at one guidance only: for a
+# new architecture run a second study with steps 200 as well.
+# Rule (as in config/references/posedflow.yaml): the lowest mean among the points with APD >= 6.40 cm. If that point is
+# at an end of the grid, add values: --n-trials 12 --enqueue '{"guidance": 0.12}' '{"guidance": 0.15}'.
+# model: ~/data/experiments/<run>/run_0001
+method: inpaint
+objective: mean_apd
+poses: 1000
+n_trials: 10
+params:
+  guidance: {low: 0.01, high: 0.5, log: true}
+fixed:
+  schedule: edm
+  steps: 400
+  resample: 5
+  replace: false
+first:
+  - {guidance: 0.02}
+  - {guidance: 0.0239}
+  - {guidance: 0.0286}
+  - {guidance: 0.0342}
+  - {guidance: 0.0409}
+  - {guidance: 0.0489}
+  - {guidance: 0.0585}
+  - {guidance: 0.0699}
+  - {guidance: 0.0836}
+  - {guidance: 0.1}
