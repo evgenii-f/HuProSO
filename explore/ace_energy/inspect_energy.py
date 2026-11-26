@@ -48,12 +48,17 @@ def load_energy(path, device: str = "cpu"):
         bins = Bins(ref, ref.loss_t_min, s["bins"])
         energy = Embedded(basis, bins, owners(basis), k=args.get("k", 2), embedding=args.get("embedding", "fs"),
                           hidden=args.get("hidden", 64))
+        if "prior" in init:  # before the state, which holds its buffers
+            energy.prior = JointDensity(init["prior"]["centres"], init["prior"]["s0"])
+            info_prior = f", joint density of {init['prior']['centres'].shape[-1]} poses"
+        else:
+            info_prior = ""
         if "state" in saved:
             energy.load_state_dict(saved["state"])
         else:
             with torch.no_grad():
                 energy.c.copy_(saved["c"])
-        info = f"{args.get('embedding', 'fs')} embedding, K = {args.get('k', 2)}, basis {basis.dim}"
+        info = f"{args.get('embedding', 'fs')} embedding, K = {args.get('k', 2)}, basis {basis.dim}" + info_prior
     else:  # fit.py
         s = saved["settings"]
         if s.get("one_body"):

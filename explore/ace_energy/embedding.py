@@ -18,7 +18,9 @@ per bin of log s and interpolated linearly between bin centres, as in fit.py. Tr
 weighting, t uniform on [t_min, 1]), the noise drawn by the reference run's noising, as fit.py.
 
 Init: phi^(1) from a linear fit of fit.py (--init, with its basis), each feature's coefficient on its first owner, and
-phi^(2) small; then the energy starts as that linear fit (--check verifies it on the validation draws).
+phi^(2) small; then the energy starts as that linear fit (--check verifies it on the validation draws). A fit with a
+joint density (fit.py --joint-density) keeps it as a fixed reference energy. "--embedding fs --k 1" has no embedding:
+the linear energy, trained by Adam from the fit (the control of an embedding).
 """
 import argparse
 import json
@@ -39,6 +41,7 @@ from hp.models.ace_features import LEARNED  # noqa: E402
 from hp.models.io import load_model  # noqa: E402
 from hp.models.rsgm import exp_frame  # noqa: E402
 from hp.models.so3_harmonics import PAIR_INDEX  # noqa: E402
+from joint_density import JointDensity  # noqa: E402
 
 
 def owners(basis: WithHarmonics) -> list:
@@ -189,6 +192,8 @@ def main() -> None:
     assert torch.equal(saved["edges"], bins.edges)
     model = Embedded(basis, bins, owners(basis), k=args.k, embedding=args.embedding, hidden=args.hidden).to(device)
     model.init_linear(saved["w"])
+    if "prior" in saved:  # the joint density of the fit, a fixed reference energy (not trained)
+        model.prior = JointDensity(saved["prior"]["centres"], saved["prior"]["s0"]).to(device)
     print(f"{basis.dim} features, {model.c.numel():,} coefficients ({model.c.shape[2]} joint-feature entries x "
           f"{model.c.shape[1]} bins x K = {model.c.shape[0]})", flush=True)
 
