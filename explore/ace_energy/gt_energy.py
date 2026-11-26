@@ -16,7 +16,8 @@ network, P+L, MLP; K = 10 each, the --out files of complete.py) are scored toget
 
 With --shares FILE ... (files saved before), no energy is computed: for every energy, occlusion and s, the mean share
 of the hypotheses below the truth, of the energy's own row and of the network's, over all poses and over the worst 20%
-(the poses where the energy's own row has the highest mean error). With good samples of a calibrated model and a fair
+(the poses where the energy's own row has the highest mean error). An energy given by --energy has no completions
+of its own: --own names the fixed row that stands for them (P+L for a linear energy). With good samples of a calibrated model and a fair
 sampler it is about 0.5; the network's samples are the reference.
 
 The visible joints of the hypotheses are exactly the truth's, so they differ from it only in the hidden joints. With
@@ -67,7 +68,7 @@ def shares(paths) -> None:
         d = torch.load(Path(path).expanduser(), weights_only=True)
         for key, v in d["results"].items():
             ename, occ = key.split("/")
-            own = d["rows"].index(ename)
+            own = d["rows"].index(d.get("own", {}).get(ename, ename))
             mean = v["err"][:, own].mean(1)
             worst = mean > mean.quantile(0.8)
             for i, s in enumerate(d["levels"]):
@@ -82,9 +83,16 @@ def main() -> None:
     parser.add_argument("--levels", type=float, nargs="+", default=[0.002, 0.02])
     parser.add_argument("--pose", type=int, default=189, help="a pose to print hypothesis by hypothesis (legs hidden)")
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--own", default="P+L", choices=("P+L", "MLP"),
+                        help="the row of hypotheses that counts as 'own' for an energy given by --energy")
+    parser.add_argument("--energy", nargs="+", default=None, metavar="LABEL=FILE",
+                        help="other energies (files in ~/data/experiments/ace or paths), instead of the default two")
     parser.add_argument("--save", default=str(ACE / "gt_energy.pt"))
     parser.add_argument("--shares", nargs="+", default=None, metavar="FILE", help="only the table of shares of files")
     args = parser.parse_args()
+    if args.energy:
+        ENERGIES.clear()
+        ENERGIES.update(dict(e.split("=", 1) for e in args.energy))
     if args.shares:
         shares(args.shares)
         return
@@ -102,7 +110,7 @@ def main() -> None:
             e_gt = energies(energy, model, gt, args.levels, args.device)  # [L, 200]
             e_h = energies(energy, model, hyp, args.levels, args.device)  # [L, 200, 3, 10]
             saved[(ename, occ)] = dict(gt=e_gt, hyp=e_h, err=err)
-            own = list(ROWS).index(ename)
+            own = list(ROWS).index(ename if ename in ROWS else args.own)
             for i, s in enumerate(args.levels):
                 e = e_h[i]
                 a = (e_gt[i] < e[:, own].min(-1).values).double().mean()
@@ -120,7 +128,7 @@ def main() -> None:
                         f"{float(e_h[i, p, r, k]):.1f}" for i in range(len(args.levels))) for k in order]
                     print(f"  {row}: " + "; ".join(cells))
                 print()
-    torch.save(dict(levels=args.levels, rows=list(ROWS), results={f"{e}/{o}": v for (e, o), v in saved.items()}),
+    torch.save(dict(levels=args.levels, rows=list(ROWS), own={e: (e if e in ROWS else args.own) for e in ENERGIES}, results={f"{e}/{o}": v for (e, o), v in saved.items()}),
                args.save)
     print(f"saved {args.save}")
 

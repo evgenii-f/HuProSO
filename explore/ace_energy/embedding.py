@@ -21,6 +21,9 @@ Init: phi^(1) from a linear fit of fit.py (--init, with its basis), each feature
 phi^(2) small; then the energy starts as that linear fit (--check verifies it on the validation draws). A fit with a
 joint density (fit.py --joint-density) keeps it as a fixed reference energy. "--embedding fs --k 1" has no embedding:
 the linear energy, trained by Adam from the fit (the control of an embedding).
+
+--fp-weight L adds L times the Fokker-Planck term of fokker_planck.py (the levels of s tied by the heat equation) on
+--fp-points training poses per step; --fp-check prints the term at init and its estimate against exact differences.
 """
 import argparse
 import json
@@ -41,6 +44,7 @@ from hp.models.ace_features import LEARNED  # noqa: E402
 from hp.models.io import load_model  # noqa: E402
 from hp.models.rsgm import exp_frame  # noqa: E402
 from hp.models.so3_harmonics import PAIR_INDEX  # noqa: E402
+from fokker_planck import FokkerPlanck  # noqa: E402
 from joint_density import JointDensity  # noqa: E402
 
 
@@ -332,6 +336,51 @@ def losses(model, xt, target, t, batch) -> torch.Tensor:
     return torch.cat(out)
 
 
+def fp_check(fp, model, train, ref, device, args) -> None:
+    """The Fokker-Planck term at init on --fp-points poses, its parts near and far, and the float32 estimate of the
+    residual against exact central differences in float64 (fp_residual.py) on 16 of the points."""
+    from fp_residual import residual as exact_residual
+    gen = torch.Generator().manual_seed(5)
+    x0 = train[torch.randint(len(train), (args.fp_points,), generator=gen)]
+    x, s = fp.points(x0, gen)
+    t0 = time.perf_counter()
+    r = fp.residual(x.float().to(device), s, gen)
+    took = time.perf_counter() - t0
+    n = len(x0)
+    hub = torch.nn.functional.huber_loss(r, torch.zeros_like(r), delta=args.fp_huber, reduction="none")
+    hub = hub.detach()
+    print(f"Fokker-Planck term at init (a = 0): {float(hub.mean()):.2f}; near {float(hub[:n].mean()):.2f}, "
+          f"far {float(hub[n:].mean()):.2f}; |R| median near {float(r[:n].abs().median()):.1f}, "
+          f"far {float(r[n:].abs().median()):.1f}; {took:.1f} s for {2 * n} points with the graph", flush=True)
+    pick = torch.cat([torch.arange(8), n + torch.arange(8)])
+    fp.probes, keep = 256, fp.probes  # many probes: the estimate of the 16 points without the noise of Hutchinson
+    many = fp.residual(x[pick].float().to(device), s[pick], gen).detach()
+    fp.probes = keep
+    with torch.no_grad():  # the term once a(s) has learned the offsets: a per bin from the points near the data
+        fp.a.copy_(fp.bin_offsets(r[:n], s[:n]).to(fp.a))
+    r2 = r.detach() - fp.offset(s).detach()
+    hub2 = torch.nn.functional.huber_loss(r2, torch.zeros_like(r2), delta=args.fp_huber, reduction="none")
+    print(f"with a(s) = the mean near residual per bin: {float(hub2.mean()):.2f}; near {float(hub2[:n].mean()):.2f}, "
+          f"far {float(hub2[n:].mean()):.2f}; |R - a| median near {float(r2[:n].abs().median()):.1f}, "
+          f"far {float(r2[n:].abs().median()):.1f}; far and s < 0.02: mean |R - a| "
+          f"{float(r2[n:][s[n:] < 0.02].abs().mean()):.1f}", flush=True)
+    fp.a.data.zero_()
+    model_d = model.double()
+
+    @torch.no_grad()
+    def energy_of(xx, level):
+        st = torch.tensor(level, dtype=torch.float64)
+        return model_d(xx, ref.t_of_s(st).expand(len(xx))) / torch.sqrt(-torch.expm1(-st))
+
+    class A:
+        h, delta, batch = 1e-3, 0.02, 2000
+    for k, i in enumerate(pick.tolist()):
+        exact = exact_residual(energy_of, x[i:i + 1].double(), float(s[i]), A)[0]
+        print(f"  s {float(s[i]):.1e} {'near' if i < n else 'far '}: estimate {float(r[i]):+9.2f} "
+              f"({args.fp_probes} probes), {float(many[k]):+9.2f} (256 probes), exact {float(exact):+9.2f}", flush=True)
+    model.float()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--init", default="~/data/experiments/ace/energy_b_smooth_w123_p123.pt",
@@ -350,6 +399,12 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--out", default=None)
     parser.add_argument("--check", action="store_true", help="only: the energy at init against the linear fit")
+    parser.add_argument("--fp-weight", type=float, default=0.0, help="weight of the Fokker-Planck term (0: none)")
+    parser.add_argument("--fp-points", type=int, default=256, help="training poses per step for the term")
+    parser.add_argument("--fp-probes", type=int, default=2, help="Hutchinson probes of the Laplacian")
+    parser.add_argument("--fp-huber", type=float, default=5.0, help="delta of the Huber loss of the residual, nats")
+    parser.add_argument("--fp-check", action="store_true", help="only: the term at init and its estimate")
+    parser.add_argument("--fp-offset-lr", type=float, default=1.0, help="learning rate of the offsets a(s), nats")
     args = parser.parse_args()
     device = torch.device(args.device)
     torch.manual_seed(args.seed)
@@ -393,31 +448,53 @@ def main() -> None:
     print("networks on the same draws:", compare, flush=True)
 
     train = load_reference("train", ROTATIONS, SPLIT)
-    opt = torch.optim.Adam(model.parameters(), lr=args.lr)
+    fp = FokkerPlanck(model, ref, probes=args.fp_probes, huber=args.fp_huber).to(device)
+    if args.fp_check:
+        fp_check(fp, model, train, ref, device, args)
+        return
+    groups = [dict(params=list(model.parameters()))]
+    if args.fp_weight > 0:  # a(s) starts at the mean residual near the data per bin and moves fast (hundreds of nats)
+        g0 = torch.Generator().manual_seed(args.seed + 2)
+        x, s0 = fp.points(train[torch.randint(len(train), (2048,), generator=g0)], g0)
+        n0 = len(x) // 2
+        r0 = torch.cat([fp.residual(x[i:i + 256].float().to(device), s0[i:i + 256], g0).detach()
+                        for i in range(0, n0, 256)])
+        with torch.no_grad():
+            fp.a.copy_(fp.bin_offsets(r0, s0[:n0]).to(fp.a))
+        groups.append(dict(params=[fp.a], lr=args.fp_offset_lr))
+    opt = torch.optim.Adam(groups, lr=args.lr)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, args.steps)
     gen = torch.Generator().manual_seed(args.seed + 1)
     history = []
     mean, per, med = evaluate()
     print(f"step 0: valid loss {mean:.3f} (median {med:.3f})", flush=True)
     history.append(dict(step=0, valid=mean, median=med, per_bin=per))
-    t0, running = time.perf_counter(), []
+    t0, running, running_fp = time.perf_counter(), [], []
     for step in range(1, args.steps + 1):
         x0 = train[torch.randint(len(train), (args.batch,), generator=gen)]
         t = ref.loss_t_min + (1 - ref.loss_t_min) * torch.rand(args.batch, dtype=torch.float64, generator=gen)
         xt, target, _ = draw(ref, x0, t, gen)
         pred = model.scaled_score(xt.float().to(device), t.float().to(device), create_graph=True)
         loss = ((pred - target.float().to(device)) ** 2).sum((1, 2)).mean()
+        total = loss
+        if args.fp_weight > 0:
+            term = fp.loss(x0[:args.fp_points], gen, device)
+            total = loss + args.fp_weight * term
+            running_fp.append(float(term))
         opt.zero_grad()
-        loss.backward()
+        total.backward()
         opt.step()
         sched.step()
         running.append(float(loss))
         if step % args.eval_every == 0 or step == args.steps:
             mean, per, med = evaluate()
-            history.append(dict(step=step, valid=mean, median=med, per_bin=per, train=sum(running) / len(running)))
+            fpm = sum(running_fp) / len(running_fp) if running_fp else None
+            history.append(dict(step=step, valid=mean, median=med, per_bin=per, train=sum(running) / len(running),
+                                fp=fpm))
             print(f"step {step}: train {sum(running) / len(running):.3f}, valid loss {mean:.3f} (median {med:.3f}), "
-                  f"{(time.perf_counter() - t0) / step:.2f} s/step", flush=True)
-            running = []
+                  + (f"Fokker-Planck {fpm:.2f}, " if fpm is not None else "")
+                  + f"{(time.perf_counter() - t0) / step:.2f} s/step", flush=True)
+            running, running_fp = [], []
     edges = [f"{bins.edges[i].exp():.0e}" for i in range(len(bins.centres))]
     print("| model | mean | " + " | ".join(f"s {e}" for e in edges) + " |")
     print(f"| {args.embedding.upper()} energy, K = {args.k} | {mean:.3f} | " + " | ".join(f"{v:.2f}" for v in per) + " |")
@@ -430,6 +507,7 @@ def main() -> None:
     if args.out:
         out = Path(args.out).expanduser()
         torch.save(dict(c=model.c.detach().cpu(), state=model.state_dict(), edges=bins.edges, history=history,
+                        fp_offset=fp.a.detach().cpu(),
                         settings=vars(args),
                         basis=dict(wigner=basis.wigner, pairs=basis.pairs)), out)
         out.with_suffix(".json").write_text(json.dumps(dict(history=history, settings=vars(args), compare=compare),
