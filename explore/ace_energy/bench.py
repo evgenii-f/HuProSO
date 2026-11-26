@@ -72,6 +72,7 @@ def main() -> None:
     parser.add_argument("--threads", type=int, default=None)
     parser.add_argument("--save-reference", action="store_true")
     parser.add_argument("--label", default="", help="a name for this code version in the table")
+    parser.add_argument("--all-bins", action="store_true", help="every bin in one product also on the CPU")
     parser.add_argument("--compile", action="store_true", help="Embedded.compile(): the scores without a graph")
     parser.add_argument("--no-quadratic", action="store_true",
                         help="the products as columns of the features, not as a quadratic form (the code before it)")
@@ -98,6 +99,8 @@ def main() -> None:
             energy.quadratic = False
         if args.compile:
             energy.compile()
+        if args.all_bins:
+            energy.all_bins = True
         if name.startswith("MLP"):
             params = [p for p in energy.parameters()]
             target = torch.randn(xm.shape[0], 19, 3, generator=torch.Generator().manual_seed(14)).to(dev)

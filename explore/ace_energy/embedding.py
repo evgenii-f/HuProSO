@@ -106,6 +106,7 @@ class Embedded(torch.nn.Module):
         n = len(bins.centres)
         self.c = torch.nn.Parameter(torch.zeros(k, n, len(feat)))  # [K, bins, entries]
         self._dense = {}  # (bin, kind) -> (version of c, matrix): the coefficients of a bin, cached when c is fixed
+        self.all_bins = None  # every bin in one product (None: on a GPU only; the CPU groups the poses by bin)
         # the products (x_i)_a (x_k)_b as a quadratic form: the entry of a product on owner j is a coefficient of
         # (x_j)_a' times (x_other)_b', A [K, 19 (j), 9 (a'), 171 (9 other + b')]; the other features as rows of a
         # matrix [K, P - 13851, 19]
@@ -193,10 +194,48 @@ class Embedded(torch.nn.Module):
             self._dense[(b, "split")] = (self.c._version, (lin, quad))
         return lin, quad
 
+    def _matrices_range(self, b0: int, b1: int):
+        """(L [n, K, P - 13851, 19], A [n, K, 19 * 9, 171]) of the bins b0 ... b1 (n of them), built at once."""
+        cached = self._dense.get((b0, b1, "range"))
+        if cached is not None and cached[0] == self.c._version and not self.c.requires_grad:
+            return cached[1]
+        k, dev, dt = self.c.shape[0], self.c.device, self.c.dtype
+        n = b1 - b0 + 1
+        c = self.c[:, b0:b1 + 1].transpose(0, 1)  # [n, K, entries]
+
+        def index(*cols):  # every bin and density with the entries' coordinates cols
+            e = len(cols[0])
+            nb = torch.arange(n, device=dev).repeat_interleave(k * e)
+            kk = torch.arange(k, device=dev).repeat_interleave(e).repeat(n)
+            return (nb, kk) + tuple(v.repeat(n * k) for v in cols)
+
+        lin = torch.zeros(n, k, self.n_linear, 19, device=dev, dtype=dt).index_put(
+            index(self.lin_row, self.lin_joint), c[:, :, self.lin_entry].reshape(-1))
+        quad = torch.zeros(n, k, 19, 9, 171, device=dev, dtype=dt).index_put(
+            index(self.quad_joint, self.quad_row, self.quad_col),
+            c[:, :, self.quad_entry].reshape(-1)).reshape(n, k, 19 * 9, 171)
+        if not self.c.requires_grad:
+            self._dense[(b0, b1, "range")] = (self.c._version, (lin, quad))
+        return lin, quad
+
     def densities_split(self, features: torch.Tensor, m: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         """phi [K, B, 19] from the features without the products [B, P - 13851] and the entries m [B, 171] of x."""
         lo, a = self._bin_weights(t)
         mj = m.reshape(len(m), 19, 9)
+        all_bins = self.all_bins if self.all_bins is not None else features.is_cuda
+        b0, b1 = int(lo.min()), int(lo.max()) + 1
+        if all_bins and b1 - b0 > 1:  # several noise levels on a GPU: every bin used in one product, no groups
+            lin, quad = self._matrices_range(b0, b1)
+            n, k, p = lin.shape[0], lin.shape[1], lin.shape[2]
+            w = torch.zeros(len(lo), n, dtype=features.dtype)
+            rows = torch.arange(len(lo))
+            w[rows, lo - b0] = (1 - a).to(w)
+            w[rows, lo + 1 - b0] = a.to(w)
+            w = w.to(features.device)
+            y = (features @ lin.permute(2, 0, 1, 3).reshape(p, n * k * 19)).reshape(-1, n, k, 19)
+            h = (m @ quad.permute(3, 0, 1, 2).reshape(171, n * k * 171)).reshape(-1, n, k, 19, 9)
+            y = y + (h * mj[:, None, None]).sum(-1)
+            return torch.einsum("bnkj,bn->kbj", y, w)
         mats = {}  # every bin built once per call
 
         def part(f, mm, mmj, g):
