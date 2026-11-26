@@ -363,15 +363,27 @@ class Bins:
         return torch.bucketize(u, self.edges[1:-1])
 
 
+def ridge_scale(ace, hop_ridge: float) -> torch.Tensor:
+    """The factor of the ridge of every feature [P]: 1, and for the 81 products of a pair (i, k) h_ik ** hop_ridge,
+    h_ik the number of edges between the two joints along the tree (1 for parent and child, so these keep the ridge)."""
+    scale = torch.ones(ace.dim, dtype=torch.float64)
+    if hop_ridge and getattr(ace, "products", False):
+        hops = torch.tensor([tree_distance(i, k) for i, k in JOINT_PAIRS], dtype=torch.float64)
+        scale[ace.product_slice()] = (hops ** hop_ridge).repeat_interleave(81)
+    return scale
+
+
 def fit(ace, ref, bins: Bins, train: torch.Tensor, per_bin: int, batch: int, ridges, seed: int,
-        single: bool = False, prior: JointDensity = None) -> dict:
+        single: bool = False, prior: JointDensity = None, hop_ridge: float = 0.0) -> dict:
     """{ridge: dict(w [bins, P], fit_loss)}: one accumulation of G^T G per bin, one solution per ridge. With `single`
     the products of a batch in float32 (their sum and the solution stay in float64). With `prior` (a reference energy)
-    the target is what it leaves."""
+    the target is what it leaves. With `hop_ridge` the ridge of the products of a pair grows with the pair's distance
+    along the tree (ridge_scale)."""
     g = torch.Generator().manual_seed(seed)  # the draws on the CPU: the same samples on every device
     device = torch.device("cpu") if DEVICE.type == "mps" else DEVICE  # the sums in float64: not on mps
     w = {r: [] for r in ridges}
     fit_loss = {r: [] for r in ridges}
+    scale = ridge_scale(ace, hop_ridge).to(device)
     for k in range(len(bins.centres)):
         t0 = time.perf_counter()
         gram = Gram(ace, device, single)
@@ -390,7 +402,7 @@ def fit(ace, ref, bins: Bins, train: torch.Tensor, per_bin: int, batch: int, rid
         del gram  # room for the solution
         for r in ridges:
             m = a.clone()
-            m.diagonal().add_(r * float(a.diagonal().mean()))
+            m.diagonal().add_(r * float(a.diagonal().mean()) * scale)
             torch.linalg.cholesky(m, out=m)  # in place: for a large basis a second copy does not fit
             wk = -torch.cholesky_solve(b[:, None], m)[:, 0]
             del m
@@ -498,6 +510,8 @@ def main() -> None:
     parser.add_argument("--joint-density", type=float, nargs="+", default=None, metavar="N S0",
                         help="the density of every joint's own rotation as a reference energy (joint_density.py): N "
                              "training poses, then the bandwidth S0 (a Brownian time), or one per joint")
+    parser.add_argument("--hop-ridge", type=float, default=0.0, metavar="ALPHA",
+                        help="the ridge of the products of a pair times (its edges along the tree) ** ALPHA")
     parser.add_argument("--load", default=None, help="a .pt file of an earlier fit: evaluate it, fit nothing")
     parser.add_argument("--interp", choices=("linear", "nearest"), default="linear", help="w between bins")
     args = parser.parse_args()
@@ -542,7 +556,8 @@ def main() -> None:
     elif args.joint_density:
         prior = JointDensity.from_poses(train, int(args.joint_density[0]), args.joint_density[1:], args.seed)
     if results is None:
-        results = fit(ace, ref, bins, train, args.per_bin, args.batch, args.ridge, args.seed, args.single, prior)
+        results = fit(ace, ref, bins, train, args.per_bin, args.batch, args.ridge, args.seed, args.single, prior,
+                      args.hop_ridge)
     compare = {Path(r).expanduser().parent.name: load_model(Path(r).expanduser(), device=args.device,
                                                              weights="weights_ema").eval() for r in args.compare}
     for n_ridge, (ridge, result) in enumerate(results.items()):
