@@ -105,6 +105,28 @@ class Embedded(torch.nn.Module):
         self.register_buffer("first", torch.tensor([i == 0 for js in own for i in range(len(js))]))
         n = len(bins.centres)
         self.c = torch.nn.Parameter(torch.zeros(k, n, len(feat)))  # [K, bins, entries]
+        self._dense = {}  # (bin, kind) -> (version of c, matrix): the coefficients of a bin, cached when c is fixed
+        # the products (x_i)_a (x_k)_b as a quadratic form: the entry of a product on owner j is a coefficient of
+        # (x_j)_a' times (x_other)_b', A [K, 19 (j), 9 (a'), 171 (9 other + b')]; the other features as rows of a
+        # matrix [K, P - 13851, 19]
+        prod = basis.product_slice() if getattr(basis, "products", False) else slice(0, 0)
+        f_all, j_all = torch.tensor(feat), torch.tensor(joint)
+        is_prod = (f_all >= prod.start) & (f_all < prod.stop)
+        self.quadratic = bool(is_prod.any())
+        rows = torch.where(f_all >= prod.stop, f_all - (prod.stop - prod.start), f_all)
+        self.register_buffer("lin_entry", torch.nonzero(~is_prod)[:, 0], persistent=False)
+        self.register_buffer("lin_row", rows[~is_prod], persistent=False)
+        self.register_buffer("lin_joint", j_all[~is_prod], persistent=False)
+        q = f_all[is_prod] - prod.start
+        pair, a, b = q // 81, (q % 81) // 9, q % 9
+        pairs = torch.tensor(JOINT_PAIRS, dtype=torch.long)
+        i, k, own = pairs[pair, 0], pairs[pair, 1], j_all[is_prod]
+        first = own == i
+        self.register_buffer("quad_entry", torch.nonzero(is_prod)[:, 0], persistent=False)
+        self.register_buffer("quad_joint", own, persistent=False)
+        self.register_buffer("quad_row", torch.where(first, a, b), persistent=False)
+        self.register_buffer("quad_col", torch.where(first, 9 * k + b, 9 * i + a), persistent=False)
+        self.n_linear = basis.dim - (prod.stop - prod.start)
 
     def init_linear(self, w: torch.Tensor, scale2: float = 1e-3) -> None:
         """phi^(1) = the linear fit w [bins, P] on the first owner of every feature; phi^(2) small."""
@@ -123,34 +145,143 @@ class Embedded(torch.nn.Module):
         return (1 - a) * self.c[:, lo] + a * self.c[:, lo + 1]
 
     def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-        e = self.energy_of_features(self.basis(x), t)
+        e = self.feature_energy(x, t)
         if self.prior is not None:
             e = e + self.prior.energy(x, self.bins.ref.s(t.detach().cpu().double()).to(e))
         return e
 
+    def feature_energy(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        """E~_t [B] without the reference energy (the joint density)."""
+        if self.quadratic:  # the products as a quadratic form of the entries of x, not as columns
+            phi = self.densities_split(self.basis(x, products=False), x.flatten(1), t)
+            e = self.embed(phi, t, x.shape[0]).sum(-1)
+        else:
+            e = self.energy_of_features(self.basis(x), t)
+        return e
+
+    def dense(self, b: int) -> torch.Tensor:
+        """[K, P, 19]: the coefficients of bin b, feature by joint (zero where a feature does not belong to a joint)."""
+        cached = self._dense.get(b)
+        if cached is not None and cached[0] == self.c._version and not self.c.requires_grad:
+            return cached[1]
+        k, p = self.c.shape[0], self.basis.dim
+        kk = torch.arange(k, device=self.c.device).repeat_interleave(len(self.feat))
+        m = torch.zeros(k, p, 19, device=self.c.device, dtype=self.c.dtype).index_put(
+            (kk, self.feat.repeat(k), self.joint.repeat(k)), self.c[:, b].reshape(-1))
+        if not self.c.requires_grad:
+            self._dense[b] = (self.c._version, m)
+        return m
+
+    def _matrices(self, b: int):
+        """(L [K, P - 13851, 19], A [K, 19 * 9, 171]) of bin b: the linear and the quadratic part."""
+        cached = self._dense.get((b, "split"))
+        if cached is not None and cached[0] == self.c._version and not self.c.requires_grad:
+            return cached[1]
+        k, dev, dt = self.c.shape[0], self.c.device, self.c.dtype
+        c = self.c[:, b]  # [K, entries]
+
+        def ks(n):
+            return torch.arange(k, device=dev).repeat_interleave(n)
+
+        n_lin, n_quad = len(self.lin_entry), len(self.quad_entry)
+        lin = torch.zeros(k, self.n_linear, 19, device=dev, dtype=dt).index_put(
+            (ks(n_lin), self.lin_row.repeat(k), self.lin_joint.repeat(k)), c[:, self.lin_entry].reshape(-1))
+        quad = torch.zeros(k, 19, 9, 171, device=dev, dtype=dt).index_put(
+            (ks(n_quad), self.quad_joint.repeat(k), self.quad_row.repeat(k), self.quad_col.repeat(k)),
+            c[:, self.quad_entry].reshape(-1)).reshape(k, 19 * 9, 171)
+        if not self.c.requires_grad:
+            self._dense[(b, "split")] = (self.c._version, (lin, quad))
+        return lin, quad
+
+    def densities_split(self, features: torch.Tensor, m: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        """phi [K, B, 19] from the features without the products [B, P - 13851] and the entries m [B, 171] of x."""
+        lo, a = self._bin_weights(t)
+        mj = m.reshape(len(m), 19, 9)
+        mats = {}  # every bin built once per call
+
+        def part(f, mm, mmj, g):
+            if g not in mats:
+                mats[g] = self._matrices(g)
+            lin, quad = mats[g]
+            h = (mm @ quad.transpose(1, 2)).reshape(quad.shape[0], len(mm), 19, 9)  # [K, n, 19, 9]
+            return f @ lin + (h * mmj[None]).sum(-1)
+
+        return self._grouped(lo, a, features, lambda idx, g: part(features[idx], m[idx], mj[idx], g))
+
+    def _bin_weights(self, t: torch.Tensor):
+        b = self.bins
+        u = b.ref.s(t.detach().cpu().double()).log()  # in float64 on the CPU (mps has no float64)
+        pos = ((u - b.centres[0]) / (b.centres[1] - b.centres[0])).clamp(0, len(b.centres) - 1)
+        lo = pos.floor().long().clamp(max=len(b.centres) - 2)
+        return lo, pos - lo
+
+    def _grouped(self, lo, a, features, part) -> torch.Tensor:
+        """[K, B, 19]: (1 - a) part(bin lo) + a part(bin lo + 1), one call per group of poses with the same lo."""
+        dev = features.device
+        groups = lo.unique().tolist()
+        if len(groups) == 1:
+            g, idx = groups[0], torch.arange(len(lo), device=dev)
+            w = a.to(features)[None, :, None]
+            return (1 - w) * part(idx, g) + w * part(idx, g + 1)
+        parts, order = [], []
+        for g in groups:
+            idx = torch.nonzero(lo == g)[:, 0]
+            w = a[idx].to(features)[None, :, None]
+            idx_d = idx.to(dev)
+            parts.append((1 - w) * part(idx_d, g) + w * part(idx_d, g + 1))
+            order.append(idx)
+        inverse = torch.argsort(torch.cat(order)).to(dev)
+        return torch.cat(parts, dim=1)[:, inverse]
+
+    def densities(self, features: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        """phi [K, B, 19] of all the features [B, P] at times t [B]: the coefficients linear in log s between the bin
+        centres, as coefficients(), by one matrix product per pair of neighbouring bins used."""
+        lo, a = self._bin_weights(t)
+        mats = {}
+
+        def part(idx, g):
+            if g not in mats:
+                mats[g] = self.dense(g)
+            return features[idx] @ mats[g]
+
+        return self._grouped(lo, a, features, part)
+
     def energy_of_features(self, features: torch.Tensor, t: torch.Tensor, per_joint: bool = False) -> torch.Tensor:
         """E~_t [B] (or [B, 19] per joint) from the features B(x) [B, P] of the basis."""
-        f = features[:, self.feat]  # [B, entries]
-        c = self.coefficients(t)  # [K, B, entries]
-        x = features
-        phi = torch.zeros(c.shape[0], x.shape[0], 19, device=x.device, dtype=x.dtype)
-        phi = phi.index_add(2, self.joint, c * f[None])  # [K, B, 19]
+        phi = self.densities(features, t)  # [K, B, 19]
+        energy = self.embed(phi, t, features.shape[0])
+        return energy if per_joint else energy.sum(-1)
+
+    def embed(self, phi: torch.Tensor, t: torch.Tensor, n: int) -> torch.Tensor:
+        """The energy per joint [B, 19] of the densities phi [K, B, 19]."""
         if self.embedding == "fs":
             energy = phi[0] + (torch.sqrt(1 + phi[1:] ** 2) - 1).sum(0)
         else:
             u = (self.bins.ref.s(t.detach().cpu().double()).log() / 4).to(phi)  # the noise level, as RSGM's net_level
             inp = torch.cat([phi[1:].permute(1, 2, 0), u[:, None, None].expand(-1, 19, 1),
-                             self.joint_emb[None].expand(x.shape[0], -1, -1).to(phi)], dim=-1)  # [B, 19, K - 1 + 1 + E]
+                             self.joint_emb[None].expand(n, -1, -1).to(phi)], dim=-1)  # [B, 19, K - 1 + 1 + E]
             energy = phi[0] + self.mlp(inp)[..., 0]
-        return energy if per_joint else energy.sum(-1)
+        return energy
+
+    def compile(self) -> "Embedded":
+        """torch.compile the energy of the features for the scores without a graph (sampling, the likelihood ODE);
+        the scores that are differentiated again (DPS, training) stay eager: compile has no double backward."""
+        self._compiled = torch.compile(self.feature_energy, dynamic=False)
+        return self
 
     def scaled_score(self, x: torch.Tensor, t: torch.Tensor, create_graph: bool = False) -> torch.Tensor:
         """-grad E~_t [B, J, 3] along the tangent directions (the scaled score of RSGM's loss)."""
+        compiled = getattr(self, "_compiled", None)
+        energy = compiled if compiled is not None and not create_graph and not x.requires_grad else self.feature_energy
         with torch.enable_grad():
             delta = torch.zeros(x.shape[0], x.shape[1], 3, device=x.device, dtype=x.dtype, requires_grad=True)
-            e = self(exp_frame(x, delta), t).sum()
+            e = energy(exp_frame(x, delta), t).sum()
             (g,) = torch.autograd.grad(e, delta, create_graph=create_graph)
-        return -g
+        if self.prior is None:
+            return -g
+        s = self.bins.ref.s(t.detach().cpu().double()).to(x.device)
+        graph = x.requires_grad or create_graph  # DPS differentiates the score in x; the prior has no parameters
+        return -g + self.prior.scaled_score(x, s, graph=graph and x.requires_grad)
 
 
 def losses(model, xt, target, t, batch) -> torch.Tensor:

@@ -67,9 +67,9 @@ class JointDensity(torch.nn.Module):
         std = torch.sqrt(-torch.expm1(-s)).to(x)
         return -std * self.log_density(x, s.to(x)).sum(1)
 
-    def scaled_score(self, x: torch.Tensor, s: torch.Tensor) -> torch.Tensor:
-        """-grad E~ref [B, J, 3] along x_j exp(eps e_a), in closed form (no graph)."""
-        with torch.no_grad():
+    def scaled_score(self, x: torch.Tensor, s: torch.Tensor, graph: bool = False) -> torch.Tensor:
+        """-grad E~ref [B, J, 3] along x_j exp(eps e_a), in closed form; with graph=True differentiable in x (DPS)."""
+        with torch.set_grad_enabled(graph and torch.is_grad_enabled()):
             tr = torch.bmm(x.flatten(-2).transpose(0, 1), self.centres)
             k = self.kappa(s).to(x)  # [B, J]
             pi = torch.softmax(0.5 * k.T[..., None] * (tr - 3), dim=-1)  # [J, B, n]

@@ -152,7 +152,16 @@ class WithHarmonics(torch.nn.Module):
         """u [B, 19, 3]: the scaled principal coordinates of the 9 entries of every rotation."""
         return torch.einsum("bjp,jpa->bja", x.flatten(-2) - self.triple_centre.to(x), self.triple_axes.to(x))
 
-    def forward(self, x):
+    def product_slice(self) -> slice:
+        """Where the 81 x 171 products are in the layout of the features (empty without products)."""
+        start = (self.ace.dim + 19 * sum((2 * l + 1) ** 2 for l in self.wigner)
+                 + (19 + len(WIGNER_PAIRS)) * sum((2 * l + 1) ** 2 for l in self.pairs)
+                 + len(OTHER_PAIRS) * sum((2 * l + 1) ** 2 for l in self.all_pairs))
+        return slice(start, start + 81 * len(JOINT_PAIRS) * self.products)
+
+    def forward(self, x, products: bool = True):
+        """The features [B, P]; with products=False without the products (B, P - 13851), which a quadratic form of
+        the entries x.flatten(1) gives instead (embedding.Embedded)."""
         out = [self.ace(x)]
         if self.wigner:
             out.append(wigner_features(x, self.wigner))
@@ -163,7 +172,7 @@ class WithHarmonics(torch.nn.Module):
             g = global_rotations(x)
             rel = g[:, i].transpose(-1, -2) @ g[:, k]
             out += [wigner_d(rel, l).flatten(1) for l in self.all_pairs]
-        if self.products:
+        if self.products and products:
             i, k = (list(v) for v in zip(*JOINT_PAIRS))
             m = x.flatten(-2)  # [B, J, 9]
             out.append((m[:, i][..., :, None] * m[:, k][..., None, :]).flatten(1))
