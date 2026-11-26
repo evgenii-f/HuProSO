@@ -1,8 +1,12 @@
 # Notes for optimising the linear ACE energy
 
+The exact speed-ups (the same energy, a faster code) are done and measured: `docs/experiments/ace/speed.md`; check a
+new one with `python explore/ace_energy/bench.py` against a reference saved with the code before. The notes below are
+changes of the model, left for later.
+
 What the basis could lose, with the measurement behind it, for the time when the model is made faster or smaller. Each
 note says what was measured, what it does not say, and what is still untested. Background and all numbers of the line:
-`docs/experiments/2026-11-23_ace_descriptors.md`. The options `--leave-out` and `--mirror` of `fit.py` used here are on
+`docs/experiments/ace/` (overview in its `README.md`). The options `--leave-out` and `--mirror` of `fit.py` used here are on
 the branch `experimental/ace-radial-ablation` (558c8fb, ec0a108).
 
 Model of notes 1-3: products + joint density, basis 20354, c10, 20000 poses per bin, 16 bins, ridge 1e-3 (validation;
@@ -73,4 +77,4 @@ permutation; 8855 odd directions). `--mirror KAPPA` multiplies the ridge of the 
 - Fit on an RTX-class GPU (workstation2): about 20 s per bin with 6 variants (one solution each) of the 20354 basis,
   30 s with 10. The sums of the products are taken per joint (`Gram`).
 - Inpainting with the energy is 25-32 times slower than with the network (ace session, 200 poses, 20-25 min against
-  0.8 min); the share of the basis, of DPS and of the joint density in this is not profiled.
+  0.8 min), before the speed-ups; per call of the score the share is now in `docs/experiments/ace/speed.md`.
