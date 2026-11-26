@@ -1,5 +1,5 @@
 """The one-point gate of the cluster block of RSGM (branch experimental/cluster-block, `rdw_clusters`;
-docs/experiments/2026-11-23_ace_descriptors.md, section 2026-11-26: ideas from ACE for the network). The plan and the
+docs/experiments/ace/2026-11-26_network_ideas.md, section 2026-11-26: ideas from ACE for the network). The plan and the
 rule, written before the runs, are in ~/data/experiments/clusters_gate/PLAN.md. From the root:
 
     python explore/ace_energy/cluster_gate.py configs --tuning ../HuProSO-cluster/config/completion_tuning

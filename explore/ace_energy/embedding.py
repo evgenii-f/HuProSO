@@ -1,5 +1,5 @@
 """A per-joint ACE energy with a Finnis-Sinclair embedding, trained by denoising score matching (the step after the
-linear energy of fit.py; docs/experiments/2026-11-23_ace_descriptors.md). From the root of the repository:
+linear energy of fit.py; docs/experiments/ace/README.md). From the root of the repository:
 
     python explore/ace_energy/embedding.py --check                     # the energy at init is the linear fit
     python explore/ace_energy/embedding.py --init ~/data/experiments/ace/energy_b_smooth_w123_p123.pt \\

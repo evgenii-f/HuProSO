@@ -1,5 +1,5 @@
 """Mixing the scores of the reference network and a partner, (1 - lam) network + lam partner, by the validation loss in
-the bins below s = 0.04 (docs/experiments/2026-11-23_ace_descriptors.md, section 2026-11-26: ideas from ACE for the
+the bins below s = 0.04 (docs/experiments/ace/2026-11-26_network_ideas.md, section 2026-11-26: ideas from ACE for the
 network). The partner is an energy of fit.py (`--fit`) or another RSGM run with the same isotropic noise (`--run`).
 
 The loss of the mixture is quadratic in lam, so one pass of the predictions gives the whole curve: lam is fitted on the

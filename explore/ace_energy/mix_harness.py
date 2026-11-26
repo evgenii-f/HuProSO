@@ -1,5 +1,5 @@
 """The harness of generate.py with a mixed score below S_MAX: (1 - LAM) network + LAM partner, the partner an energy
-(`energy`, the fit given to generate.py) or another RSGM run (docs/experiments/2026-11-23_ace_descriptors.md, section
+(`energy`, the fit given to generate.py) or another RSGM run (docs/experiments/ace/2026-11-26_network_ideas.md, section
 2026-11-26: ideas from ACE for the network). The first three arguments are LAM, S_MAX and the partner; the rest goes to
 generate.py. From the root:
 

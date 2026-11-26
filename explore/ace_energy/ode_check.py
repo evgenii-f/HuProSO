@@ -1,5 +1,5 @@
 """Is the ACE energy a -log p? Its differences against the log-likelihood of its own probability flow ODE, and against
-the network's, on real noised poses (docs/experiments/2026-11-23_ace_descriptors.md). From the root of the repository:
+the network's, on real noised poses (docs/experiments/ace/README.md). From the root of the repository:
 
     python explore/ace_energy/ode_check.py --fit ~/data/experiments/ace/energy_b_smooth_w123_p123.pt --poses 200
 

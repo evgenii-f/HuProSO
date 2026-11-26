@@ -1,4 +1,4 @@
-"""Where the linear ACE energy falls short of the network (docs/experiments/2026-11-23_ace_descriptors.md, section
+"""Where the linear ACE energy falls short of the network (docs/experiments/ace/README.md, section
 2026-11-26). Four analyses, from the root of the repository, on the CPU:
 
     python explore/ace_energy/diagnose.py completion            # completion runs of complete.py --out, side by side

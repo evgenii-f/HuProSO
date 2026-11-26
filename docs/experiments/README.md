@@ -9,7 +9,9 @@ A report: the question, a summary with the answer, the setup (data, models, sett
 numbers, the conclusions, what it does not show, and where the runs and caches are. Settings chosen on validation are
 reported with the rule that chose them; a test is run once. When to write one and the checklist are in `CLAUDE.md`
 and the skill `.claude/skills/experiment-report/SKILL.md` (agents use it; anyone can follow it). A line of work keeps
-one report: a later phase adds a dated section and updates the summary.
+one report: a later phase adds a dated section and updates the summary. A long line may instead keep a folder
+(`ace/`): its `README.md` is the one report (question, where the line stands, a row per phase) and each phase is a
+dated file next to it; the index links the folder's `README.md`.
 
 | date | report | in one line |
 |---|---|---|
@@ -24,4 +26,4 @@ one report: a later phase adds a dated section and updates the summary.
 | 2026-11-16 | [IGSO(3) noise of RSGM on the GPU](2026-11-16_igso3_noise_on_gpu.md) | The noise drawn on the CPU was the bottleneck: on the GPU a training step is 6-10x faster on an RTX 4090 and inpainting without guidance 6-8x; loss, validation loss and inpainting metrics unchanged |
 | 2026-11-16 | [Motion denoising: RSGM against DPoser and PoseD-Flow](2026-11-16_motion_denoising_rsgm_vs_dposer.md) | PoseD-Flow's Tab. 3 protocol, test of 190 HumanEva chunks: tuned alike, RSGM 1536x6 with SDS ties DPoser in MPJPE with half the steps (−0.02 / −0.10 mm) and beats it by 0.19 mm at the same steps; MPVPE better at 40 mm, level at 100 mm; PoseD-Flow 0.9 / 5.2 mm behind; D-Flow does not suit diffusion priors; closed for now, HPS open |
 | 2026-11-18 | [Per-joint noise in motion denoising](2026-11-18_denoising_per_joint_noise.md) | Negative on validation: tuned, abl_residual_aniso 19.47 / 32.68 mm against isotropic abl_residual 18.63 / 30.83 (40 / 100 mm); the SDS of denoising now uses the model's per-joint noise |
-| 2026-11-23 | [ACE descriptors of a pose](2026-11-23_ace_descriptors.md) | Negative as an input of the score network (ace_RDW: inpainting mean 89.36 against 86.64 mm). As an energy: linear with products of local rotations and joint densities, Wasserstein 16.04° against 14.93° for fact_RDW (base linear 18.24°, MLP embedding 16.51°; 1000 validation samples), a plateau; completion with inpainting 97.49 against 85.23 mm (old linear 128.16), the products carry it; the energy ranks the network's hypotheses to 79.32 mm; the gap is in poses far from train, a plateau of the linear family; for the network: mixing its score with the energy lowers the loss as a second network does (harness unchanged), a cluster block on fact_RDW fails its gate |
+| 2026-11-23 | [ACE energy (folder)](ace/README.md) | Negative as an input of the score network (ace_RDW: inpainting mean 89.36 against 86.64 mm). As an energy: linear with products of local rotations and joint densities (P+L) on a plateau, Wasserstein 15.93° against 14.86° for fact_RDW, inpainting 97.49 against 85.23 mm, ranks the network's hypotheses to 79.32 mm; an MLP embedding on P+L improves generation (15.31°, loss 6.090 against 5.951) and completion by 1.8 mm, below its rule; exact speed-ups of the score 2-4x; mixing with the network deferred, a cluster block on fact_RDW fails its gate |
