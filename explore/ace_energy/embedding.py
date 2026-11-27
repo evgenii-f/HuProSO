@@ -61,12 +61,13 @@ def owners(basis: WithHarmonics) -> list:
         return sorted({o for o in (owner(p) for p in points) if o is not None})
 
     out = []
-    pair_owners = [both(j, k) for j, k in ace.pairs]
-    out += pair_owners * ace.radial  # T_1..T_radial, each a block over the pairs
-    tri = [[owner(j)] if owner(j) is not None else both(k, q) for k, j, q in ace.triples]
-    out += tri * (ace.angular * ace.triple_radial ** 2)
-    if ace.twist_joints:
-        out += [[LEARNED.index(j)] for j in ace.twist_joints] * (2 * ace.twist)
+    if getattr(basis, "descriptors", True):  # fit.py --no-descriptors: the layout starts with the harmonics
+        pair_owners = [both(j, k) for j, k in ace.pairs]
+        out += pair_owners * ace.radial  # T_1..T_radial, each a block over the pairs
+        tri = [[owner(j)] if owner(j) is not None else both(k, q) for k, j, q in ace.triples]
+        out += tri * (ace.angular * ace.triple_radial ** 2)
+        if ace.twist_joints:
+            out += [[LEARNED.index(j)] for j in ace.twist_joints] * (2 * ace.twist)
     for l in basis.wigner:  # D^l(x_j): [19, 2l+1, 2l+1]
         out += [[j] for j in range(19) for _ in range((2 * l + 1) ** 2)]
     for l in basis.pairs:  # D^l(G_j) of every joint
