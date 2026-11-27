@@ -24,6 +24,22 @@ hypervolume over APD 4.0-8.5 cm (band mean in mm, lower is better):
 - **Hard poses (top 5% for all seven compared rows)** have 2-2.5 times the average error; which poses are hard depends
   mostly on the procedure; on them the diverse rows (DPoser t28, RSGM inpainting t108) give the best best of 10.
 
+- **The training data covers the held-out poses as well at c10 as in full (section 17)**: the nearest training
+  pose of a validation or test pose is 1-13% closer in the full split; the hard poses are 1.7-2.3 times farther from
+  the data than the rest in both, so reweighting the training poses cannot help them. (The last part is corrected on
+  2026-11-25, see section 17.)
+
+- **State on 2026-11-26 (section 18).** Base RSGM: `fact_RDW` β 0, one network for every protocol. Its fronts on
+  the test: inpainting 90.05 mm, D-Flow 91.53 (DPoser's optimization 86.85, PoseD-Flow 93.28). By APD, DPoser's
+  optimization and PoseD-Flow lead below 6 cm, RSGM inpainting at 6-6.5 cm (84.61 mm), DPoser's optimization from
+  6.5 to 8 cm; one training seed per network.
+
+- **Three training seeds (section 19, test).** The place holds for every seed: inpainting band mean 89.90-90.03 mm
+  (DPoser's optimization 86.85, DPoser inpainting 91.71); generation with the model's own sampler: at 100 steps FID
+  0.0121-0.0123 (DPoser 1000 steps 0.0114, PoseD-Flow 0.0130), at 500 steps better than DPoser in Wasserstein,
+  recall and precision (16.05 / 11.35 / 12.13 deg against 16.21 / 11.42 / 12.42) and worse in FID; Heun 50 calls
+  understates generation (W 17.07); denoising MPJPE 17.71-17.74 / 28.55-28.57 mm, level with the tuned DPoser.
+
 The dated bullets below are the history that led there.
 
 - **Best RSGM row: 512×4 with D-Flow and Heun EDM inside, 50 network calls**: best of 10 49.92 (PoseD-Flow 50.26,
@@ -41,7 +57,8 @@ The dated bullets below are the history that led there.
 
 - **2026-11-15, inpainting (validation, section 10)**: completing by the whole reverse process of RSGM, with DPS
   guidance and RePaint resampling, beats D-Flow on all three metrics at once (100 validation poses: 86.68 / 48.19 mm,
-  APD 6.42 cm against 90.88 / 52.40 / 6.08), 1.4 times faster; 3.4 mm behind DPoser in the mean, ahead in best of 10
+  APD 6.42 cm against 90.88 / 52.40 / 6.08), 1.4 times faster on the Mac (on the test, with the noise on the GPU,
+  about 10 times: section 18); 3.4 mm behind DPoser in the mean, ahead in best of 10
   and APD. **The gain is the procedure, not the prior**: the same inpainting on DPoser c10 gives 87.60 / 47.52 / 6.61,
   on par with RSGM. The claim of the bullet above ("the remaining gap is the model") is thereby revised: at an equal
   procedure the two priors are equal; DPoser's own optimization is still the best mean and 15 times faster.
@@ -858,6 +875,259 @@ the lowest DPoser's method against PoseD-Flow on the arms (26%) and against RSGM
 The notebook browses them: pick "hard for all" (and "previous hard") steps through the common set of the chosen
 occlusion in the order of the mean rank.
 
+## 17. 2026-11-21: Do the training poses cover the held-out poses? (validation and test)
+
+Question: would another composition of the training data help (a selection of the frames by how far they are from
+the poses already taken, hard example mining, prioritized sampling)? Such schemes reweight the poses in the data; they
+can only help if c10 misses poses that the full split has, or if the hard poses are underweighted rather than absent.
+
+For every query pose the nearest training pose is found in the chordal metric on SO(3)^21 (sum over the joints of
+||R - R'||_F^2, the largest inner product of the flattened matrices), once over the whole pose and once over the
+joints hidden by each occlusion; the distance is the RMS geodesic angle over those joints of the nearest pose,
+sqrt(mean_j theta_j^2), in degrees. Training sets: full (PoseD-Flow's train split, 18.6M poses), c10 (every 10th,
+1.86M, the set of the c10 runs) and c100 (every 100th). Queries: the 1000 validation poses of `valid_poses` (seed 0)
+and the 5000 test poses of the protocol. `explore/evaluation/data_coverage/coverage.py`, Mac (MPS), about 9.5 hours
+(two passes over the full split).
+
+Median / 90% / 99% of the angle to the nearest training pose (deg):
+
+| queries | part | full | c10 | c100 | c10 / full (median) |
+|---|---|---|---|---|---|
+| valid 1000 | pose | 10.41 / 16.51 / 22.18 | 10.56 / 16.72 / 22.36 | 11.18 / 17.91 / 23.25 | 1.01 |
+| valid 1000 | left_leg | 2.22 / 4.44 / 7.63 | 2.47 / 4.90 / 8.15 | 2.96 / 5.83 / 9.24 | 1.11 |
+| valid 1000 | legs | 4.40 / 7.83 / 13.08 | 4.67 / 8.05 / 13.25 | 5.24 / 8.98 / 14.77 | 1.06 |
+| valid 1000 | arms | 8.90 / 15.34 / 21.73 | 9.12 / 15.62 / 22.04 | 9.89 / 17.16 / 22.87 | 1.02 |
+| valid 1000 | trunk | 3.90 / 7.82 / 13.10 | 4.09 / 8.05 / 13.14 | 4.73 / 9.13 / 14.98 | 1.05 |
+| test 5000 | pose | 9.54 / 16.26 / 20.47 | 9.75 / 16.52 / 20.59 | 10.45 / 17.63 / 22.29 | 1.02 |
+| test 5000 | left_leg | 2.51 / 4.82 / 8.77 | 2.85 / 5.32 / 9.50 | 3.48 / 6.36 / 11.25 | 1.13 |
+| test 5000 | legs | 4.87 / 8.94 / 14.19 | 5.14 / 9.39 / 14.84 | 5.89 / 10.40 / 16.48 | 1.06 |
+| test 5000 | arms | 7.72 / 13.79 / 18.49 | 7.94 / 14.21 / 19.00 | 8.78 / 15.64 / 20.28 | 1.03 |
+| test 5000 | trunk | 3.81 / 7.61 / 11.00 | 4.06 / 7.96 / 11.61 | 4.80 / 8.86 / 12.78 | 1.07 |
+
+Ten times more poses bring the nearest pose 0.1-0.3 deg closer in the median and 0.1-0.7 deg at the 99th
+percentile: the distance is set by the other subjects and datasets of the held-out splits, not by how densely the
+training sequences are sampled in time. The arms are the least covered part (8-9 deg against 2-5 for legs and
+trunk), as they are the occlusion with the largest gap in the mean (sections 15-16).
+
+Hard poses of the test (descriptive, nothing is chosen on them): the top 5% per occlusion by the mean rank over all
+71 cached test rows with 5000 poses (`hard_poses` as in section 16, but over every row rather than the seven compared
+ones). Median angle of the hidden part to the nearest training pose (deg), and the Spearman correlation of that angle
+with the mean rank over all 5000 poses:
+
+| occlusion | hard, full | rest, full | hard, c10 | rest, c10 | Spearman (c10) |
+|---|---|---|---|---|---|
+| left_leg | 5.18 | 2.46 | 5.59 | 2.78 | 0.56 |
+| legs | 10.96 | 4.78 | 11.55 | 5.04 | 0.76 |
+| arms | 12.99 | 7.60 | 13.37 | 7.84 | 0.65 |
+| trunk | 7.43 | 3.73 | 7.76 | 3.96 | 0.43 |
+
+The hard poses are 1.7-2.3 times farther from the training data than the rest, and the distance predicts the
+difficulty (Spearman 0.43-0.76); the full split brings them only 0.3-0.6 deg closer than c10.
+
+**Conclusions.**
+
+1. c10 covers the validation and test poses as well as the full split does (within 1-13% in the median). This agrees
+   with full data giving RSGM only 0.5-1 mm: the amount of training poses is not what limits completion.
+2. The hard poses of completion are poses whose hidden part has no close configuration in PoseD-Flow's training
+   data, in c10 and in the full split alike: completing them is extrapolation, not a pose underweighted in training.
+3. So a selection or reweighting of the training poses (frames far from the running mean or from the poses taken,
+   hard example mining, prioritized sampling) has nothing to add for completion: it only moves weight among poses that
+   are there. Dropped without training. What could help the hard poses is other data (other datasets, augmentation)
+   or how the model extrapolates (the network and the noise, the score network report).
+
+**Correction, 2026-11-25** (`2026-11-22_data_weighting.md`, branch `experimental/data-weighting`): conclusions 2 and 3
+go too far. Models trained with rarity weights (β 3.3) were tested: with D-Flow the band mean is 3.8 mm lower than with
+uniform sampling (91.53 → 87.76 mm, test), with inpainting and SDS there is no difference in the band mean. On training
+poses, the rarest fifth has 3.3 times the inpainting error of the most common fifth (91.9 against 27.7 mm), and the
+weights lower it by 10.8 mm, so part of the difficulty is underfitting. Extrapolation remains: at the same rarity
+validation is harder than training (85.6 against 72.9 mm at 11-15 deg). The weights cost generation (Wasserstein 14.52 →
+17.31 deg), so uniform sampling is kept; weighting for D-Flow is left open.
+
+## 18. 2026-11-26: Where the fronts stand over APD (test, the state of this stage)
+
+**State of this stage.** The base RSGM is `fact_RDW` β 0 (512×4 residual, dropout 0.1, width 1024, c10, uniform
+sampling, seed 10): the decision of the data weighting report, one model for every protocol. β 3.3 is not a base
+model: it gains only in D-Flow and costs generation (Wasserstein 14.52 → 17.31 deg). No new run; the table reads the
+test points already run (5000 poses, K = 10), one training seed per network.
+
+A front has no single APD: it is a staircase of 6-9 test points. The columns "≥ a" give the lowest test mean (mm)
+among the points of the front with APD ≥ a cm; the band mean is the average of this staircase over 4.0-8.5, and "–"
+(no point that diverse) counts as the reference 115 mm there. Points chosen on validation by the rule of section 15;
+the `fact_RDW` fronts by the same rule over its own Optuna studies (120 trials inpainting and SDS, 60 D-Flow; data
+weighting report, section 3). The rows "RSGM family" are the fronts of section 15 over all RSGM networks; a front of
+one network is not directly comparable with a front over several.
+
+| front | band mean | HV best of 10 | APD of points | ≥ 4.0 | ≥ 5.0 | ≥ 6.0 | ≥ 6.5 | ≥ 7.0 | ≥ 7.5 | ≥ 8.0 | ≥ 8.5 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| DPoser, own optimization | **86.85** | **82.04** | 4.16-8.35 | 79.6 | **79.6** | 88.0 | 88.0 | **88.0** | **90.7** | **94.7** | – |
+| RSGM `fact_RDW` β 0, inpainting | 90.05 | 76.43 | 6.36-8.55 | 84.6 | 84.6 | **84.6** | 90.1 | 91.1 | 99.2 | 99.2 | **104.8** |
+| RSGM `fact_RDW` β 0, D-Flow | 91.53 | 75.76 | 4.34-8.61 | 84.5 | 88.7 | 88.7 | 88.7 | 92.4 | 93.5 | 103.3 | 103.3 |
+| DPoser, inpainting | 91.71 | 72.73 | 6.38-8.73 | 84.9 | 84.9 | 84.9 | **87.3** | 92.7 | 98.0 | 110.0 | 110.0 |
+| PoseD-Flow, D-Flow | 93.28 | 59.11 | 4.09-8.07 | **79.3** | 81.4 | 88.7 | 88.7 | 92.7 | 105.6 | 105.6 | – |
+| RSGM `fact_RDW` β 0, SDS | 96.67 | 49.30 | 4.50-9.10 | 92.0 | 93.0 | 94.3 | 97.5 | 97.5 | 99.5 | 101.9 | 104.9 |
+| RSGM family, inpainting | 90.05 | 74.78 | 6.44-8.46 | 85.3 | 85.3 | 85.3 | 87.6 | 88.6 | 97.5 | 97.5 | – |
+| RSGM family, D-Flow | 92.91 | 71.64 | 4.70-8.55 | 88.4 | 89.0 | 90.9 | 91.4 | 91.4 | 97.4 | 99.8 | 102.0 |
+| RSGM family, DPoser's optimization | 96.69 | 50.14 | 5.00-9.11 | 91.0 | 91.0 | 95.6 | 96.9 | 98.0 | 100.9 | 103.0 | 105.8 |
+
+Sources: the `fact_RDW` rows from `~/data/experiments/data_weighting/test_fast.log` and `test_dflow.log`, the other
+rows from the points of section 15.
+
+**Reading.**
+
+1. **Low diversity (APD 4-6 cm) belongs to DPoser's optimization and PoseD-Flow** (79-81 mm). RSGM D-Flow is 4-5 mm
+   behind there, and inpainting (RSGM and DPoser alike) does not reach below 6.3 cm.
+2. **Around 6-6.5 cm the best point is RSGM inpainting** (`fact_RDW` t99, 84.61 mm at 6.36 cm, best of 10 46.31 mm),
+   level with DPoser inpainting (84.88 at 6.38).
+3. **From 6.5 to 8 cm DPoser's optimization leads again**, by 2-5 mm over the best RSGM front; RSGM D-Flow is 2.8 mm
+   behind at APD ≥ 7.5.
+4. **At APD ≥ 8.5 cm only the RSGM fronts and DPoser inpainting have points**, so part of the band mean of DPoser's
+   optimization and PoseD-Flow is the reference 115 mm of an empty end, as noted in section 15.
+5. One training seed per network, one test run per point: differences below about 1-1.5 mm between fronts are not
+   evidence (the seeds of `fact_RDW` differ by up to 1.4 mm in SDS on validation, score report section 21).
+
+**Cost on the test.** The minutes per occlusion that the same runs logged (5000 poses, K = 10, one GPU of a
+workstation, `test_fast.log` and `test_dflow.log`; the two logs were not checked to have run on the same GPU under the
+same load, so the ratios are an order of magnitude, not a measurement):
+
+| procedure on `fact_RDW` β 0 | test points | min per occlusion | against D-Flow |
+|---|---|---|---|
+| D-Flow (Heun EDM, 50 network calls per ODE) | 8 | 9.9-14.8 | 1× |
+| inpainting | 6 | 0.4-3.7 (most 0.7-1.5) | about 4-37×, typically ~10× |
+| SDS (DPoser's optimization) | 9 | 0.6-1.3 | about 10-20× |
+
+Inpainting is about ten times faster than D-Flow on the test; the slowest inpainting point (t99, the most resampling)
+only 3-4 times. PoseD-Flow's own D-Flow solves its ODE with 200 network calls instead of 50, so against it the gap is
+larger; its time is not in these logs. The "1.4 times faster" of section 10 was measured on the Mac (MPS) before the
+IGSO(3) noise moved to the GPU, when inpainting was bound by the noise drawn on the CPU, for one heavy variant against
+D-Flow; it does not hold for the test points.
+
+## 19. 2026-11-26: Three training seeds of the base RSGM, all protocols (test)
+
+**Question.** Section 18 rests on one training seed. Does the base RSGM (`fact_RDW` β 0) keep its place against the
+leaders across training seeds, in completion, generation and motion denoising?
+
+**Setup.** Three trainings of the same configuration: s10
+(`~/data/experiments/factorial/rsgm_posedflow_fact_RDW_s10/run_0001`), s11 (`.../rsgm_posedflow_fact_RDW_s11/run_0001`),
+s12 (`.../rsgm_posedflow_rdw_s12/run_0001`, `scripts/train_rsgm_posedflow.py --config rdw --seeds 12`, settings equal
+to those of s10). The plan and its rule were written before any run (`~/data/experiments/seeds_rdw/PLAN.md`):
+
+1. gate on validation: a seed is broken if its inpainting mean is more than 3 mm or its Wasserstein more than 0.5 deg
+   above that of s10;
+2. every seed is reported; no setting is chosen on the test, each row runs once;
+3. against a leader, "better" or "worse" only if all three seeds are; otherwise "on par within the seeds".
+
+The leaders: completion, DPoser's own optimization and DPoser inpainting (section 15); generation, DPoser full with
+1000 steps and PoseD-Flow midpoint 100; denoising, DPoser tuned and PoseD-Flow (motion denoising report). D-Flow is
+not part of it (dropped). Settings are the ready ones of s10: the test points of section 18 for inpainting (6) and
+SDS (9), the same points for s11 and s12 (`points_seeds.yaml`); the SDS settings `ours` for denoising. All runs on
+workstation1 and workstation2 with `scripts/evaluate.py` of `dev` (340cf3d).
+
+**Gate (validation).** Inpainting at the point t91 on 1000 validation poses, generation with Heun on 8601:
+
+| seed | mean (mm) | best of 10 (mm) | APD (cm) | W (deg) |
+|---|---|---|---|---|
+| s10 | 88.77 | 48.85 | 6.47 | 15.24 |
+| s11 | 88.96 | 48.96 | 6.50 | 15.30 |
+| s12 | 89.49 | 49.61 | 6.49 | 15.30 |
+
+No seed is broken (at most +0.72 mm and +0.06 deg).
+
+### Completion (test, 5000 poses, K = 10)
+
+Band mean (mm, lower is better) and hypervolume of best of 10 (higher is better) over APD 4.0-8.5 cm, as in
+section 15:
+
+| front | band mean s10 / s11 / s12 | HV best of 10 s10 / s11 / s12 | APD of points (cm) |
+|---|---|---|---|
+| RSGM `fact_RDW` β 0, inpainting | 90.03 / 89.94 / 89.90 | 76.45 / 76.85 / 76.47 | 6.36-8.66 |
+| RSGM `fact_RDW` β 0, SDS | 96.67 / 94.23 / 94.74 | 49.32 / 54.38 / 51.84 | 4.47-9.12 |
+| DPoser, own optimization | 86.85 | 82.04 | 4.16-8.35 |
+| DPoser, inpainting | 91.71 | 72.73 | 6.38-8.73 |
+| PoseD-Flow, D-Flow | 93.28 | 59.11 | 4.09-8.07 |
+
+The seed-to-seed range is 0.13 mm for inpainting and 2.4 mm for SDS. By the rule: inpainting is better than DPoser
+inpainting and PoseD-Flow and worse than DPoser's own optimization, in both measures; SDS is worse than DPoser's own
+optimization. (s10 gives 90.03 / 76.45 here against 90.05 / 76.43 in section 18: the log rounds to 0.01 mm.)
+
+### Generation (test, 54200 poses)
+
+The plan named Heun EDM with 50 network calls (`--like heun`), the fast sampler of the protocol. The leaders sample
+with far more: DPoser 1000 steps, PoseD-Flow midpoint 100 (200 calls). Before any number of the own sampler was seen,
+the plan was extended (addendum of `PLAN.md`): the model's own sampler (Euler-Maruyama of `config.yaml`) at 100
+steps, and a curve over 100, 300, 500 and 1000 steps, reported as it is, nothing chosen. FID with their statistics
+of the test split, APD in cm, Wasserstein, recall and precision in deg per joint (lower is better):
+
+| model | sampler, steps | FID | APD | W | recall | precision |
+|---|---|---|---|---|---|---|
+| `fact_RDW` s10 / s11 / s12 | Heun, 25 (50 calls) | 0.0152 / 0.0153 / 0.0153 | 16.03-16.08 | 17.04 / 17.10 / 17.07 | 11.68 / 11.67 / 11.67 | 13.67 / 13.72 / 13.71 |
+| `fact_RDW` s10 / s11 / s12 | own, 100 | 0.0121 / 0.0123 / 0.0122 | 14.91-14.92 | 16.34 / 16.34 / 16.32 | 11.57 / 11.60 / 11.62 | 12.47 / 12.48 / 12.49 |
+| `fact_RDW` s10 / s11 / s12 | own, 300 | 0.0139 / 0.0136 / 0.0139 | 14.49-14.53 | 16.09 / 16.10 / 16.09 | 11.47 / 11.46 / 11.43 | 12.16 / 12.19 / 12.18 |
+| `fact_RDW` s10 / s11 / s12 | own, 500 | 0.0134 / 0.0132 / 0.0134 | 14.46-14.50 | 16.05 / 16.05 / 16.06 | 11.33 / 11.34 / 11.37 | 12.12 / 12.12 / 12.16 |
+| `fact_RDW` s10 / s11 / s12 | own, 1000 | 0.0137 / 0.0134 / 0.0135 | 14.36-14.42 | 16.04 / 16.02 / 16.03 | 11.21 / 11.31 / 11.36 | 12.07 / 12.10 / 12.14 |
+| DPoser full | own, 1000 | 0.0114 | 15.11 | 16.21 | 11.42 | 12.42 |
+| PoseD-Flow | midpoint, 100 | 0.0130 | 15.41 | 16.82 | 11.55 | 13.08 |
+| real train poses | - | 0.0122 | 15.56 | - | - | - |
+
+The seeds differ by at most 0.0003 in FID and 0.15 deg in recall. Log-likelihood (nats, probability flow, the same for
+every sampler): 144.53 / 144.18 / 143.88.
+
+- **Heun hurts this model.** At 50 calls the samples are too wide (APD 16.0 cm, above the 15.7 of the real test
+  poses), and every seed is worse than both leaders in every measure. The own sampler at 100 steps on the same
+  network: FID 0.0152 → 0.0122, W 17.07 → 16.33, precision 13.70 → 12.48.
+- **More steps narrow the samples.** APD falls from 14.9 to 14.4 cm; Wasserstein, recall and precision improve, FID
+  gets worse. Most of the change is between 100 and 300 steps; 500 and 1000 are a plateau.
+- **Verdict by the rule, per budget.** Against DPoser 1000: FID worse at every budget; at 100 steps all four
+  measures worse; W and precision better from 300 steps, recall better from 500 (11.33-11.37 against 11.42).
+  Against PoseD-Flow: at 100 steps FID, W and precision better, recall worse; from 300 steps W, recall and precision
+  better, FID worse. All three seeds agree in every cell, so no cell is "on par".
+- **The FID gap is below the floor of the training data.** The real training poses score 0.0122; DPoser's 0.0114 is
+  below them, so a difference of FID in this range does not say which model is closer to the test poses.
+- **Validation (s10 only) shows the same curve**: at 100 / 300 / 500 / 1000 steps W 14.52 / 14.41 / 14.37 / 14.39,
+  precision 11.83 / 11.53 / 11.47 / 11.42, recall 11.86 / 11.74 / 11.72 / 11.72, FID_val 0.0364 / 0.0425 / 0.0421 /
+  0.0443; DPoser 14.39 / 11.69 / 11.76 / 0.0379, PoseD-Flow 14.90 / 12.36 / 11.82 / 0.0342 (8601 poses). Heun gives the
+  lowest FID_val (0.0327-0.0333 over the seeds) at the worst W (15.24-15.30).
+
+### Motion denoising (test, 190 HumanEva chunks)
+
+MPJPE / MPVPE in mm, SDS settings `ours`:
+
+| model | 40 mm | 100 mm |
+|---|---|---|
+| `fact_RDW` s10 | 17.74 / 31.23 | 28.55 / 41.37 |
+| `fact_RDW` s11 | 17.74 / 31.12 | 28.57 / 41.34 |
+| `fact_RDW` s12 | 17.71 / 31.03 | 28.57 / 41.32 |
+| DPoser, its own method, tuned | 17.75 / 31.49 | 28.69 / 41.16 |
+| DPoser, its own method | 17.89 / 30.74 | 29.10 / 40.92 |
+| PoseD-Flow (D-Flow) | 18.62 / 31.76 | 33.77 / 55.04 |
+
+By the rule: in MPJPE better than both DPoser rows at both noise levels, by 0.01-0.55 mm (against the tuned one only
+0.01-0.14 mm); in MPVPE better than the tuned DPoser at 40 mm, worse than
+both at 100 mm; better than PoseD-Flow in every number.
+
+**Conclusions.**
+
+1. The place of the base RSGM does not depend on the training seed: the seeds differ by 0.13 mm in the inpainting
+   band mean, 0.0003 in FID and 0.03 mm in denoising MPJPE. Only SDS spreads (2.4 mm).
+2. One network serves every protocol. With inpainting it is the second completion front, behind only DPoser's own
+   optimization (3.1 mm band mean, 5.2-5.6 HV). With its own sampler it generates at the level of the leaders: at 300-500
+   steps better than DPoser in Wasserstein, recall and precision, worse in FID. In denoising it is level with the tuned
+   DPoser.
+3. The fast Heun sampler is not the generation sampler of this model; the generation rows of `--like heun` understate
+   it.
+4. Which number of steps to use is not chosen here: on validation it is a trade between FID and the distances (W,
+   precision), and no rule was fixed for it.
+
+**Not shown.** The test points and SDS settings were chosen on s10, which favours s10 a little (it is not ahead
+anyway). One sample of 54200 poses per generation row; the repeat spread of the protocol (DPoser 0.0006 in FID, 0.03
+deg in W) is of the order of the seed spread. DPoser is trained on the full data, our seeds on c10. D-Flow not
+run.
+
+**Where.** Plan, logs and validation reports in `~/data/experiments/seeds_rdw/` (`PLAN.md`, `phase1.log`, `test.log`,
+`leaders_valid.log`, `generation_own.log`, `generation_steps.log`, `valid/`); the front table by
+`explore/evaluation/completion_diagnostics/seeds_fronts.py`; generation caches on workstation2 and workstation1 in
+`~/data/experiments/posedflow_comparison/cache` (rows `fact_RDW_s1{0,1}`, `rdw_s12`, `*_n{300,500,1000}`); the leaders'
+validation targets in `config/references/posedflow.yaml`.
+
 ## What it does not show
 
 - One training seed per likelihood run, one Pareto study (on the old 512×4 std model); SDS settings were not retuned
@@ -872,10 +1142,18 @@ occlusion in the order of the mean rank.
   inpainting). The best of 10 hypervolume is that of the points chosen by the mean, not of a front of best of 10.
 - The validation poses are harder than the test poses, so single points move between the splits by several mm
   (section 14); the comparison relies on the fronts.
-- One training seed per network; the families pool networks of c10 and full training data.
+- One training seed per network; the families pool networks of c10 and full training data. (Section 19 has three
+  seeds for `fact_RDW` β 0, with the points chosen on s10.)
+- Section 17: coverage in one metric (the chordal metric of the joint rotations, not joint positions); the hard
+  poses are those of the methods compared, so a distance from the data and a weakness of all methods are not
+  separated; only PoseD-Flow's training split, no other datasets.
 
 ## Where things are
 
+- Three seeds (section 19): `~/data/experiments/seeds_rdw/` (plan, logs), the fronts by
+  `explore/evaluation/completion_diagnostics/seeds_fronts.py`.
+- Coverage (section 17): `explore/evaluation/data_coverage/coverage.py`, the result in
+  `~/data/experiments/data_coverage/coverage.pt` (tables again by `--report-only`), the log `coverage.log` next to it.
 - Rows of the test: `~/data/experiments/completion/cache/<row>/{<occlusion>.pt, <occlusion>_metrics.pt}`; the rows of
   `scripts/evaluate_completion.py` and of `explore/evaluation/completion_diagnostics/{sds_test,dflow_test_extra}.py`.
 - Optuna: `~/data/experiments/completion/optuna/*.db`, configurations in `config/completion_tuning/*.yaml`;

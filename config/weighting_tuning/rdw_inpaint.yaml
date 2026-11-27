@@ -1,0 +1,31 @@
+# Sampling weights of fact_RDW: the generation (Wasserstein) against inpainting (HV of best of 10). Validation only.
+# The six inpainting settings are ready ones: three of the front of beta 0 (t40, t111, t56 of
+# rsgm_inpaint_mean_apd_rdw_b0), three of that of beta 3.3 (t55, t106, t47 of rsgm_inpaint_mean_apd_rdw_b3p3).
+# Rule, fixed before the study: on the front, the trial with the best inpaint.hv_best among those whose Wasserstein is
+# at most 0.5 deg worse than that of the beta 0 trial (14.52).
+train: {config: rdw}
+seed: 10
+sampler: own
+completion:
+  inpaint:
+    poses: 500
+    points:
+      - {schedule: edm, steps: 100, guidance: 0.11322314093586029, resample: 5, replace: false}
+      - {schedule: edm, steps: 400, guidance: 0.07276618045472788, resample: 2, replace: false}
+      - {schedule: edm, steps: 200, guidance: 0.09131894730955248, resample: 1, replace: false}
+      - {schedule: edm, steps: 400, guidance: 0.05685162816645279, resample: 5, replace: false}
+      - {schedule: edm, steps: 200, guidance: 0.08185922150523153, resample: 3, replace: false}
+      - {schedule: edm, steps: 200, guidance: 0.08076356101688119, resample: 2, replace: false}
+objectives: [generation.wasserstein, inpaint.hv_best]
+n_trials: 24
+params:
+  beta: {low: 0.0, high: 3.5}
+  w_min: {low: 0.1, high: 1.0, log: true}
+  w_max: {low: 2.0, high: 10.0, log: true}
+known:
+  - {beta: 0.0, w_min: 0.1, w_max: 10.0, run: ~/data/experiments/factorial/rsgm_posedflow_fact_RDW_s10/run_0001}
+  - {beta: 0.6, w_min: 0.1, w_max: 10.0, run: ~/data/experiments/data_weighting/rsgm_posedflow_rdw_b0.6_s10/run_0001}
+  - {beta: 1.163, w_min: 0.1, w_max: 10.0, run: ~/data/experiments/data_weighting/rsgm_posedflow_rdw_soft_s10/run_0001}
+  - {beta: 1.8, w_min: 0.1, w_max: 10.0, run: ~/data/experiments/data_weighting/rsgm_posedflow_rdw_b1.8_s10/run_0001}
+  - {beta: 2.5177, w_min: 0.1, w_max: 10.0, run: ~/data/experiments/data_weighting/rsgm_posedflow_rdw_strong_s10/run_0001}
+  - {beta: 3.3, w_min: 0.1, w_max: 10.0, run: ~/data/experiments/data_weighting/rsgm_posedflow_rdw_b3.3_s10/run_0001}

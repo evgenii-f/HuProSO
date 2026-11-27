@@ -15,8 +15,7 @@ float32 matrix products of the network on cuda in TF32 (faster, with a 10-bit ma
 
 sample_weights (with data_on_device): a file with a tensor [N] of non-negative weights, one per training pose in the
 order of the dataset; every pass draws N poses with replacement, pose i with probability w_i / sum w, instead of a
-permutation (docs/experiments: the data-weighting study). The loss is not reweighted: the model learns the weighted
-distribution.
+permutation (docs/data_weighting.md). The loss is not reweighted: the model learns the weighted distribution.
 """
 import copy
 import json
@@ -195,8 +194,10 @@ class DeviceLoader:
             if not shuffle or len(weights) != len(data) or not bool((weights >= 0).all()) or not weights.sum() > 0:
                 raise ValueError(f"sample weights need shuffling and {len(data)} non-negative weights, not all zero; "
                                  f"got {len(weights)}.")
+            # float64: in float32 a pose is narrower than the spacing of the numbers in [0.5, 1) from a million poses on,
+            # and the numbers of torch.rand are no finer, so light poses are never drawn. MPS has no float64: the CPU
             cdf = weights.cumsum(0)
-            self.cdf = (cdf / cdf[-1]).float().to(device)
+            self.cdf = (cdf / cdf[-1]).to("cpu" if torch.device(device).type == "mps" else device)
 
     def __len__(self) -> int:
         return math.ceil(len(self.data) / self.batch_size)
@@ -204,8 +205,8 @@ class DeviceLoader:
     def __iter__(self):
         n = len(self.data)
         if self.cdf is not None:  # n draws with replacement by the inverse of the cumulative weights
-            u = torch.rand(n, device=self.data.device)
-            order = torch.searchsorted(self.cdf, u, right=True).clamp_max(n - 1)
+            u = torch.rand(n, dtype=torch.float64, device=self.cdf.device)
+            order = torch.searchsorted(self.cdf, u, right=True).clamp_max(n - 1).to(self.data.device)
         else:
             order = torch.randperm(n, device=self.data.device) if self.shuffle else None
         for i in range(0, n, self.batch_size):

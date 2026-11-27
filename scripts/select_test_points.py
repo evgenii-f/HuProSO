@@ -21,11 +21,21 @@ THE RULE (written 2026-11-19, before any of these points ran on the test):
     between the staircase of the points and the reference, over APD 4.0-8.5 cm, against mean MPVPE 115 mm and,
     apart, best of 10 65 mm (HV_REFERENCE); with the test values of the same points.
 
+THE DATA-WEIGHTING FRONTS (added 2026-11-24, before any of their points ran on the test): the studies rsgm_*_rdw_<b>
+(fact_RDW trained with uniform sampling, b0, and with rarity sampling, b3p3; inpaint, sds and dflow) are the families
+"RDW b0" and "RDW b3p3", apart from RSGM, so the fronts above keep the points chosen for them. The rule for their points
+is the one above, with one addition fixed here: on the test RDW b3p3 is better than RDW b0 in a method if the band mean
+(115 mm - hypervolume / 4.5 cm) of its points is lower by at least 1 mm and its hypervolume of best of 10 is not
+lower; worse if the band mean is higher by at least 1 mm; otherwise no difference. This is the rule that was fixed
+before the validation fronts were looked at (2026-11-24); there D-Flow and SDS came out better and inpaint without a
+difference.
+
 A point whose spec equals that of a row of evaluate_completion.MODELS keeps the label of that row (its test is in the
 cache already). The other labels: "<family> <run folder>, <study> t<trial>".
 """
 import argparse
 import json
+import re
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -41,7 +51,13 @@ from hp.evaluation.fronts import APD_RANGE, TEST_POINTS, spanning  # noqa: E402
 OUT = Path(__file__).resolve().parents[1] / "config" / "completion_test_points.yaml"
 
 
-def family_of(model: str) -> str:
+WEIGHTING = re.compile(r"_rdw_(b[0-9p]+)$")  # the studies of data weighting: a family of their own (see above)
+
+
+def family_of(model: str, study: str = "") -> str:
+    match = WEIGHTING.search(study)
+    if match:
+        return f"RDW {match.group(1)}"
     if model.endswith(".ckpt"):
         return "PoseD-Flow"
     return "DPoser" if Path(model).parent.name.startswith("dposer") else "RSGM"
@@ -74,7 +90,7 @@ def candidates(study_dir: Path) -> dict:
                 a = averages(t)
                 if any(v != v for v in a.values()):  # nan: an occlusion missing
                     continue
-                out[family_of(config["model"]), config["method"]].append(dict(
+                out[family_of(config["model"], summary.study_name), config["method"]].append(dict(
                     study=summary.study_name, trial=t.number, **{k: round(v, 3) for k, v in a.items()},
                     minutes=t.user_attrs.get("minutes"), host=t.user_attrs.get("host"),
                     spec=spec_of(config, t.params)))

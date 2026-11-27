@@ -613,6 +613,21 @@ def test_the_device_loader_refuses_bad_weights():
         DeviceLoader(data, 2, False, "cpu", weights=torch.ones(4))
 
 
+def test_the_weighted_draws_resolve_every_pose_of_a_large_set():
+    n = 4_000_000  # in float32 neighbouring cumulative weights near 1 would coincide here
+    data = type("Poses", (), {"data": torch.zeros(n, 1), "__len__": lambda self: n})()
+    weights = torch.ones(n)
+    weights[:n // 2] = 0.01  # light poses, 1 in 100 of the heavy ones
+    cdf = DeviceLoader(data, 4096, True, "cpu", weights=weights).cdf
+    p = torch.diff(cdf, prepend=torch.zeros(1, dtype=cdf.dtype))
+    assert cdf.dtype == torch.float64 and (p > 0).all()
+    torch.testing.assert_close(p, weights.double() / weights.double().sum(), rtol=1e-6, atol=1e-13)
+    torch.manual_seed(0)
+    loader = DeviceLoader(data, 4096, True, "cpu", weights=weights)
+    order = torch.searchsorted(loader.cdf, torch.rand(n, dtype=torch.float64), right=True)
+    assert abs((order < n // 2).double().mean().item() - 0.01 / 1.01) < 2e-4
+
+
 def test_sample_weights_need_data_on_device(make_gaussian, tmp_path):
     torch.save(torch.ones(64), tmp_path / "w.pt")
     with pytest.raises(ValueError, match="data_on_device"):

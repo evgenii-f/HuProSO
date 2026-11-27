@@ -1,0 +1,21 @@
+# TEMPLATE: the search of the settings of D-Flow of one RSGM, as in the study of the reference fact_RDW (60 trials,
+# 15 h; the chosen trial was the 48th, so fewer trials are not enough, and there is no grid). Used by
+# `scripts/evaluate.py all --tune dflow=study`, which fills in the model, or copied by hand to <name>.yaml.
+# Rule (as in config/references/posedflow.yaml): the lowest mean among the points with APD >= 6.40 cm.
+# model: ~/data/experiments/<run>/run_0001
+method: dflow
+objective: mean_apd
+poses: 1000
+n_trials: 60
+params:
+  lr: {low: 0.01, high: 0.3, log: true}
+  running_weight: {low: 0.00001, high: 0.1, log: true}
+  steps: [50, 100, 200, 300]
+fixed:
+  ode_steps: 25
+  sampler: heun
+  schedule: edm
+first:
+  - {lr: 0.1, running_weight: 0.001, steps: 200}
+  - {lr: 0.1, running_weight: 0.001, steps: 50}
+  - {lr: 0.03, running_weight: 0.001, steps: 100}
