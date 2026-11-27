@@ -1413,6 +1413,45 @@ of the data-weighting line: generation is much worse (Wasserstein +2.8 / +3.2 de
 poses; the log-likelihood of validation poses is 0.26 nats higher; in denoising MPVPE is 0.40 / 0.62 mm better (40 / 100
 mm, both seeds), MPJPE within 0.1 mm. The predicted better recall and lower likelihood did not happen.
 
+## 23. 2026-11-27: Do the effects of the factorial hold in a deeper network? (plan, written before any run)
+
+Question: the factorial of section 13 used 2 blocks (5 layers, 1.2-4.4M parameters), and width was not saturated
+(2048 still helped). Do its findings carry over to 5 blocks (11 layers)? The deep networks of section 6 (256 x 8) and
+the 1536 x 6 MLP were not better in inpainting, but they had neither dropout nor per-joint noise.
+
+Design: 11 cells of the factorial with `net_blocks=5`, everything else as the cell (`fact_d5_<letters>` in
+`scripts/train_rsgm_posedflow.py`, lr 2e-3 as `abl_base`, seed 10, c10, 30k x 4096, data on the device), under
+`~/data/experiments/factorial_depth`:
+
+| width | cells | depth-2 twins (exist) |
+|---|---|---|
+| 512 | R, RD, RN, RA, RAD | fact_R, fact_RD, fact_RN, fact_RA, fact_RAD |
+| 1024 | RW, RDW, RNW, RAW, RADW | fact_RW, fact_RDW, fact_RNW, fact_RAW, fact_RADW |
+| 1024, control without residual | DW | fact_DW (pair at depth 5: RDW) |
+
+Responses: all parts of `scripts/evaluate_factorial.py` (generation with both samplers, inpainting at the fixed point
+INPAINT, the hybrid and the trajectory), validation only, as section 13.
+
+Hypotheses and what each pair tests (one seed per cell, so an effect here is a difference of two runs, SE about 1 mm in
+the inpainting mean, 0.15 mm in best of 10, 0.002 in FID_val with Heun, 3 mm in the hybrid):
+
+| # | finding at depth 2 (section 13) | pairs at depth 5 |
+|---|---|---|
+| H1 | width helps inpainting (-2.0 mm) and generation (FID_val -0.007) | X vs XW for X in R, RD, RN, RA, RAD |
+| H2 | dropout helps only with residual or width | R vs RD, RW vs RDW |
+| H3 | residual with LayerNorm is worse than residual | R vs RN, RW vs RNW |
+| H4 | per-joint noise: hybrid -15 mm, inpainting best of 10 +1.3 mm, FID_val +0.008 | R vs RA, RD vs RAD (and with W) |
+| H5 | depth itself | every cell vs its depth-2 twin |
+| H6 | residual matters more when deeper | DW vs RDW at depth 5 against the same pair at depth 2 |
+
+Rule, fixed now: a finding holds if the effect at depth 5 has the same sign and at least half the size of the
+depth-2 effect, averaged over the pairs that test it; it is reversed if the sign differs and the difference exceeds 2
+mm in the inpainting mean, 0.5 mm in best of 10, 0.005 in FID_val with Heun or 6 mm in the hybrid mean; else it is
+unresolved. Small effects of section 13 (N and D in inpainting, 0.4-0.8 mm) are expected to stay unresolved with one
+seed. The comparisons are at the fixed inpainting point, so networks of different spread are compared at different
+APD, as in section 13; the APD is reported next to every pair. A cell whose training diverges at lr 2e-3 (loss NaN or
+validation loss above its depth-2 twin's at 30k) is rerun at 1e-3 and marked.
+
 ## Conclusions
 
 1. Residual connections or LayerNorm are what a score network on SO(3) needs for score distillation at small noise:
