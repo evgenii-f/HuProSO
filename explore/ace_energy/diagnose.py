@@ -63,6 +63,8 @@ COMPLETION = {  # name: complete.py --out file in FOLDER
     "MLP K8": "diag5/inpaint_mlp_pl_k8.pt", "MLP K8 no-DPS": "diag5/nodps_mlp_pl_k8.pt",
     "MLP K8 SDS": "diag5/sds_mlp_pl_k8.pt", "linear Adam": "diag5/inpaint_lin_pl_adam.pt",
     "linear Adam no-DPS": "diag5/nodps_lin_pl_adam.pt", "linear Adam SDS": "diag5/sds_lin_pl_adam.pt",
+    "compact": "diag6/inpaint_min_bf_w123.pt", "compact at s < 0.04": "diag6/band_low_min_bf_w123.pt",
+    "compact at s >= 0.04": "diag6/band_high_min_bf_w123.pt",
 }
 DIFFS = [("products 1e-4", "old base"), ("base + pairs 1e-4", "old base"), ("base + limits 1e-4", "old base"),
          ("P+L 1e-4", "products 1e-4"), ("P+L 1e-3", "P+L 1e-4"), ("P+L 1e-2", "P+L 1e-3"),
@@ -71,7 +73,9 @@ DIFFS = [("products 1e-4", "old base"), ("base + pairs 1e-4", "old base"), ("bas
          ("P+L no-DPS", "P+L 1e-3"), ("P+L SDS", "P+L 1e-3"), ("t5 SDS", "t5"),
          ("MLP K8", "P+L 1e-3"), ("MLP K8", "linear Adam"), ("linear Adam", "P+L 1e-3"), ("MLP K8", "t5"),
          ("MLP K8 SDS", "P+L SDS"), ("MLP K8 SDS", "linear Adam SDS"), ("MLP K8 no-DPS", "P+L no-DPS"),
-         ("MLP K8 no-DPS", "linear Adam no-DPS"), ("MLP K8 SDS", "MLP K8"), ("MLP K8 no-DPS", "MLP K8")]
+         ("MLP K8 no-DPS", "linear Adam no-DPS"), ("MLP K8 SDS", "MLP K8"), ("MLP K8 no-DPS", "MLP K8"),
+         ("compact", "P+L 1e-3"), ("compact", "network"), ("compact at s < 0.04", "network"),
+         ("compact at s >= 0.04", "network")]
 FITS = {"P+L 1e-3": "energy_b_rich_products_jd_r0.001.pt", "t5": "energy_b_rich_products_jd_t5_r0.001.pt",
         "P+L 1e-2": "energy_b_rich_products_jd_r0.01.pt", "100k": "energy_b_rich_products_jd_100k_r0.001.pt",
         "old base": "energy_b_smooth_w123_p123.pt"}
