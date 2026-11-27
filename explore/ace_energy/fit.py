@@ -128,12 +128,15 @@ class WithHarmonics(torch.nn.Module):
     rotations, of all 171 pairs. `triples` (a dict with reach, centre, axes of `triple_coordinates`): the products
     u_ia u_jb u_kc of the three principal local coordinates of three joints near one another (joint_triples), and, with
     its key squares (a tree distance), the products of a quadratic form u_ia u_ib of one joint with u_kc of another and
-    the other way round, for the pairs at most that far apart: the second order of one joint in a pair."""
+    the other way round, for the pairs at most that far apart: the second order of one joint in a pair. Without
+    `descriptors` the basis has no descriptors of `ace` (the layout starts with the harmonics)."""
 
     def __init__(self, ace, wigner: Sequence[int], pairs: Sequence[int], all_pairs: Sequence[int] = (),
-                 products: bool = False, triples: dict = None):
+                 products: bool = False, triples: dict = None, descriptors: bool = True):
         super().__init__()
         self.ace, self.wigner, self.pairs = ace, tuple(wigner), tuple(pairs)
+        self.descriptors = bool(descriptors)
+        self.n_descriptors = ace.dim if self.descriptors else 0
         self.all_pairs, self.products = tuple(all_pairs), bool(products)
         self.triples = triples
         self.triple_joints = joint_triples(int(triples["reach"])) if triples else []
@@ -145,7 +148,7 @@ class WithHarmonics(torch.nn.Module):
         self.sparse_dim = (81 * len(JOINT_PAIRS) * self.products + TRIPLE_DIM * len(self.triple_joints)
                            + SQUARE_DIM * len(self.square_pairs))
         size = lambda degrees: sum((2 * l + 1) ** 2 for l in degrees)  # noqa: E731
-        self.dim = (ace.dim + 19 * size(self.wigner) + (19 + len(WIGNER_PAIRS)) * size(self.pairs)
+        self.dim = (self.n_descriptors + 19 * size(self.wigner) + (19 + len(WIGNER_PAIRS)) * size(self.pairs)
                     + len(OTHER_PAIRS) * size(self.all_pairs) + self.sparse_dim)
 
     def local_coordinates(self, x: torch.Tensor) -> torch.Tensor:
@@ -154,7 +157,7 @@ class WithHarmonics(torch.nn.Module):
 
     def product_slice(self) -> slice:
         """Where the 81 x 171 products are in the layout of the features (empty without products)."""
-        start = (self.ace.dim + 19 * sum((2 * l + 1) ** 2 for l in self.wigner)
+        start = (self.n_descriptors + 19 * sum((2 * l + 1) ** 2 for l in self.wigner)
                  + (19 + len(WIGNER_PAIRS)) * sum((2 * l + 1) ** 2 for l in self.pairs)
                  + len(OTHER_PAIRS) * sum((2 * l + 1) ** 2 for l in self.all_pairs))
         return slice(start, start + 81 * len(JOINT_PAIRS) * self.products)
@@ -162,7 +165,7 @@ class WithHarmonics(torch.nn.Module):
     def forward(self, x, products: bool = True):
         """The features [B, P]; with products=False without the products (B, P - 13851), which a quadratic form of
         the entries x.flatten(1) gives instead (embedding.Embedded)."""
-        out = [self.ace(x)]
+        out = [self.ace(x)] if self.descriptors else []
         if self.wigner:
             out.append(wigner_features(x, self.wigner))
         if self.pairs:
@@ -192,7 +195,8 @@ class WithHarmonics(torch.nn.Module):
 def harmonic_basis(settings: dict, triples: dict = None) -> WithHarmonics:
     """The basis of a fit from its settings (the arguments of this script) and, if it has triples, what they need."""
     return WithHarmonics(AceFeatures(smooth=not settings.get("plain", False)), settings.get("wigner", []),
-                         settings.get("pairs", []), settings.get("all_pairs", []), settings.get("products", False), triples)
+                         settings.get("pairs", []), settings.get("all_pairs", []), settings.get("products", False), triples,
+                         not settings.get("no_descriptors", False))
 
 
 def draw(ref, x0: torch.Tensor, t: torch.Tensor, generator=None):
@@ -239,7 +243,7 @@ class Gram:
         if not self.sparse:
             self.base = ace
             return
-        self.base = WithHarmonics(ace.ace, ace.wigner, ace.pairs, ace.all_pairs)
+        self.base = WithHarmonics(ace.ace, ace.wigner, ace.pairs, ace.all_pairs, descriptors=ace.descriptors)
         n_products = 81 * len(JOINT_PAIRS) * ace.products
         self.columns, self.pairs, self.triples, self.squares = [], [], [], []
         n_triples = TRIPLE_DIM * len(ace.triple_joints)
@@ -510,6 +514,8 @@ def main() -> None:
     parser.add_argument("--joint-density", type=float, nargs="+", default=None, metavar="N S0",
                         help="the density of every joint's own rotation as a reference energy (joint_density.py): N "
                              "training poses, then the bandwidth S0 (a Brownian time), or one per joint")
+    parser.add_argument("--no-descriptors", action="store_true",
+                        help="with --wigner or --pairs: the basis without the descriptors (harmonics, products, ...)")
     parser.add_argument("--hop-ridge", type=float, default=0.0, metavar="ALPHA",
                         help="the ridge of the products of a pair times (its edges along the tree) ** ALPHA")
     parser.add_argument("--load", default=None, help="a .pt file of an earlier fit: evaluate it, fit nothing")
@@ -534,6 +540,8 @@ def main() -> None:
         ace = harmonic_basis(vars(args), triples)
     elif args.all_pairs or args.products or args.triples or args.squares:
         parser.error("--all-pairs, --products, --triples and --squares need --wigner or --pairs.")
+    if args.no_descriptors and not (args.wigner or args.pairs):
+        parser.error("--no-descriptors needs --wigner or --pairs.")
     ace = ace.to(DEVICE)
     valid = load_reference("valid", ROTATIONS, SPLIT)
     valid = valid[torch.randperm(len(valid), generator=torch.Generator().manual_seed(0))[:args.valid]]
