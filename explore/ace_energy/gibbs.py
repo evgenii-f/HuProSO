@@ -17,6 +17,7 @@ From the root of the repository:
     python explore/ace_energy/gibbs.py --check
     python explore/ace_energy/gibbs.py --generate --sweeps 200 1000
     python explore/ace_energy/gibbs.py --inpaint --sweeps 50 200 1000 --out ~/data/experiments/ace/pl/inpaint_gibbs.pt
+    python explore/ace_energy/gibbs.py --fit ~/data/experiments/ace/pl/energy_bm_w123.pt --generate --sweeps 1000 3000 --device cuda:0
 """
 import argparse
 import sys
@@ -153,7 +154,7 @@ def load(path: str) -> PairwiseFisher:
     return model.requires_grad_(False)
 
 
-def generate(model, sweeps_list, n: int, batch: int, out) -> None:
+def generate(model, sweeps_list, n: int, batch: int, out, dev=torch.device("cpu")) -> None:
     from generate import N_CONTRAST, joint_metrics  # noqa: E402
     from fit import REFERENCE, ROTATIONS, SPLIT  # noqa: E402
     from hp.evaluation.completion import build  # noqa: E402
@@ -176,9 +177,9 @@ def generate(model, sweeps_list, n: int, batch: int, out) -> None:
     print(f"| train poses | – | – | – | {m['fid']:.4f} | {m['apd']:.2f} | {m['dnn']:.4f} | – |", flush=True)
     for sweeps in sweeps_list:
         t0 = time.perf_counter()
-        gen = torch.Generator().manual_seed(0)
+        gen = torch.Generator(device=dev).manual_seed(0)
         poses = gibbs(model, uniform(n * J, gen).reshape(n, J, 3, 3), range(J), sweeps, gen,
-                      trace={1, 10, sweeps // 2, sweeps}).float()
+                      trace={1, 10, sweeps // 2, sweeps}).float().cpu()
         pieces = iter(poses.split(batch))
         holder.sample = lambda k, cond=None: next(pieces)
         report = evaluate(holder, valid, cfg)
@@ -191,7 +192,7 @@ def generate(model, sweeps_list, n: int, batch: int, out) -> None:
             torch.save(poses, Path(out).expanduser().with_name(f"{Path(out).stem}_{sweeps}.pt"))
 
 
-def inpaint(model, sweeps_list, poses: int, out) -> None:
+def inpaint(model, sweeps_list, poses: int, out, dev=torch.device("cpu")) -> None:
     from hp.evaluation.completion import KEEP, OCCLUSIONS, TOES, Body, at_rest, metrics, summary, valid_poses
 
     gt, body = valid_poses(n=1000)[:poses], Body()
@@ -202,10 +203,10 @@ def inpaint(model, sweeps_list, poses: int, out) -> None:
         for occ, hidden21 in OCCLUSIONS.items():
             t0 = time.perf_counter()
             free = [i for i, j in enumerate(KEEP) if j in hidden21]
-            gen = torch.Generator().manual_seed(0)
-            x = gt[:, KEEP].double().repeat_interleave(k, 0)  # [N * K, 19, 3, 3], pose by pose
+            gen = torch.Generator(device=dev).manual_seed(0)
+            x = gt[:, KEEP].double().repeat_interleave(k, 0).to(dev)  # [N * K, 19, 3, 3], pose by pose
             x[:, free] = uniform(len(x) * len(free), gen).reshape(len(x), len(free), 3, 3)
-            x = gibbs(model, x, free, sweeps, gen)
+            x = gibbs(model, x, free, sweeps, gen).cpu()
             pred = gt[:, None].repeat(1, k, 1, 1, 1)
             pred[:, :, KEEP] = x.float().reshape(poses, k, J, 3, 3)
             hidden_toes = [t for t in TOES if t in hidden21]
@@ -241,15 +242,17 @@ def main() -> None:
     parser.add_argument("--batch", type=int, default=500)
     parser.add_argument("--poses", type=int, default=200)
     parser.add_argument("--out", default=None)
+    parser.add_argument("--device", default="cpu", help="where the chains run (the metrics on the CPU)")
     args = parser.parse_args()
     if args.check:
         check()
         return
-    model = load(args.fit)
+    dev = torch.device(args.device)
+    model = load(args.fit).to(dev)
     if args.generate:
-        generate(model, args.sweeps, args.samples, args.batch, args.out)
+        generate(model, args.sweeps, args.samples, args.batch, args.out, dev)
     if args.inpaint:
-        inpaint(model, args.sweeps, args.poses, args.out)
+        inpaint(model, args.sweeps, args.poses, args.out, dev)
 
 
 if __name__ == "__main__":
