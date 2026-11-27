@@ -32,6 +32,7 @@ Rows 1-3 are from one harness run (1000 samples) and one completion run (200 pos
 - **Completion settings** are not the gap: tuning inpainting for P+L gains 0.3 mm over t81 (20 trials, 500 poses).
 - **Small noise:** far from the data the noise levels of the energies disagree by hundreds of nats; a Fokker-Planck
   term makes them agree but leaves the holes and makes completion 7 mm worse (closed in that form).
+- **2026-11-27, where the gap is made:** with the energy only at s < 0.04 (the network above) inpainting keeps 92% of the gap, at s ≥ 0.04 the linear energy is as good as the network (+0.2 mm); a compact pairwise matrix Fisher basis keeps generation, not completion ([compact basis](2026-11-27_compact_fisher_basis.md)).
 - **Next:** a joint Optuna study of the embedding and the basis (to be announced before it starts), chosen by
   Wasserstein on validation; then completion of the winner once. The code was made faster for it first.
 - **Deferred:** mixing the scores of the energy and the network (end of the line); changes of the model that make it
@@ -48,6 +49,7 @@ Rows 1-3 are from one harness run (1000 samples) and one completion run (200 pos
 | 2026-11-26 | [MLP embedding on P+L](2026-11-26_mlp_embedding.md) | Loss 6.090, Wasserstein 15.31° against 15.93° (network 14.86°); a linear control trained alike does not move; completion −1.8 mm, below the rule |
 | 2026-11-26 | [Tuning inpainting; the energy of the truth](2026-11-26_completion_tuning_and_truth_energy.md) | Optuna on inpainting with P+L: 98.43 against 98.73 mm at t81, closed; the energies prefer the network's hypotheses to their own at s ≥ 0.02, not at s = 0.002; splits on hard poses come from the sampler or the clean end, to be told apart by noise bands |
 | 2026-11-27 | [A Fokker-Planck term](2026-11-27_fokker_planck.md) | The levels of s disagree far from the data by hundreds of nats; the heat equation as a training term cuts that 3–5 times at the same loss, but the holes stay and inpainting is +7.1 mm worse than without it: negative |
+| 2026-11-27 | [A compact pairwise matrix Fisher basis](2026-11-27_compact_fisher_basis.md) | Products + D^{1,2,3}(x_j) + limits without descriptors (15,428 features) keep generation (16.14° against 16.04°) at half the score time, but inpainting is +1.1 mm (best of 10 +1.7 mm, fails); D^1 alone fails (18.81°); noise bands: 92% of the completion gap is made at s < 0.04; hard joint limits, estimated from the completed poses (not built), would be worth ≤ 1.5 mm |
 | 2026-11-26 | [Speed of the score](speed.md) | Exact speed-ups: on the GPU the MLP score 30 → 7 ms, a training step 52 → 26 ms, DPS 59 → 32 ms (500 poses); DPS is what is left |
 
 ## Decisions
