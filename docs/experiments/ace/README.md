@@ -33,6 +33,11 @@ Rows 1-3 are from one harness run (1000 samples) and one completion run (200 pos
 - **Small noise:** far from the data the noise levels of the energies disagree by hundreds of nats; a Fokker-Planck
   term makes them agree but leaves the holes and makes completion 7 mm worse (closed in that form).
 - **2026-11-27, where the gap is made:** with the energy only at s < 0.04 (the network above) inpainting keeps 92% of the gap, at s ≥ 0.04 the linear energy is as good as the network (+0.2 mm); a compact pairwise matrix Fisher basis keeps generation, not completion ([compact basis](2026-11-27_compact_fisher_basis.md)).
+- **2026-11-27, the Fisher energy without noise** (branch `experimental/fisher-energy`): the pairwise matrix Fisher
+  energy trained by maximum likelihood has no holes (its Gibbs completions sit at the energy of the truth) and is the
+  best judge of the network's hypotheses (76.43 mm against 81.10 for P+L), but as a completer it is at 112.87 mm and
+  as a generator at 21.52°; one-body D^{2,3} terms help generation only ([Fisher, ML and Gibbs](2026-11-27_fisher_boltzmann.md)).
+  Next there, to be discussed: pair terms of higher degree.
 - **Next:** a joint Optuna study of the embedding and the basis (to be announced before it starts), chosen by
   Wasserstein on validation; then completion of the winner once. The code was made faster for it first.
 - **Deferred:** mixing the scores of the energy and the network (end of the line); changes of the model that make it
@@ -50,6 +55,7 @@ Rows 1-3 are from one harness run (1000 samples) and one completion run (200 pos
 | 2026-11-26 | [Tuning inpainting; the energy of the truth](2026-11-26_completion_tuning_and_truth_energy.md) | Optuna on inpainting with P+L: 98.43 against 98.73 mm at t81, closed; the energies prefer the network's hypotheses to their own at s ≥ 0.02, not at s = 0.002; splits on hard poses come from the sampler or the clean end, to be told apart by noise bands |
 | 2026-11-27 | [A Fokker-Planck term](2026-11-27_fokker_planck.md) | The levels of s disagree far from the data by hundreds of nats; the heat equation as a training term cuts that 3–5 times at the same loss, but the holes stay and inpainting is +7.1 mm worse than without it: negative |
 | 2026-11-27 | [A compact pairwise matrix Fisher basis](2026-11-27_compact_fisher_basis.md) | Products + D^{1,2,3}(x_j) + limits without descriptors (15,428 features) keep generation (16.14° against 16.04°) at half the score time, but inpainting is +1.1 mm (best of 10 +1.7 mm, fails); D^1 alone fails (18.81°); noise bands: 92% of the completion gap is made at s < 0.04; hard joint limits, estimated from the completed poses (not built), would be worth ≤ 1.5 mm |
+| 2026-11-27 | [The Fisher energy by likelihood, sampled by Gibbs](2026-11-27_fisher_boltzmann.md) | Pseudo-likelihood ranks the network's hypotheses (77.83 mm) but has a hole in the arms (Gibbs inpainting 166.75 mm); maximum likelihood (PCD) closes it: inpainting 114.10 mm, Wasserstein 23.13°; one-body D^{2,3} with converged chains (3000 sweeps): 21.52°, inpainting 112.87 mm (−1.23, n.s.), ranking 76.43 mm, the best of the line; refinement of the network's hypotheses and a mixture of linear energies fail their rules |
 | 2026-11-26 | [Speed of the score](speed.md) | Exact speed-ups: on the GPU the MLP score 30 → 7 ms, a training step 52 → 26 ms, DPS 59 → 32 ms (500 poses); DPS is what is left |
 
 ## Decisions
@@ -64,6 +70,9 @@ Rows 1-3 are from one harness run (1000 samples) and one completion run (200 pos
 - 2026-11-26: tuning completion settings for the energy is closed (t81 kept); the check on poses 500–999 not run.
 - 2026-11-27: the Fokker-Planck term at isotropic points is closed (completion +7.1 mm); ideas for the linear model
   next.
+- 2026-11-27: no mixture of linear energies (the probe fails its rule); mixtures, ensembles and products with the
+  network deferred until the Fisher model is exhausted (user's decision). The Fisher energy is trained by maximum
+  likelihood; refinement of the network's hypotheses by its conditionals is closed.
 
 ## Where things are
 
