@@ -22,6 +22,18 @@ phi^(2) small; then the energy starts as that linear fit (--check verifies it on
 joint density (fit.py --joint-density) keeps it as a fixed reference energy. "--embedding fs --k 1" has no embedding:
 the linear energy, trained by Adam from the fit (the control of an embedding).
 
+--residual adds a network to the energy, the energy head of RSGM (docs/experiments/ace/): E~_t(x) = E~_lin(x, t) +
+R(x, t), with R the TimeResNet of the reference network fact_RDW (width 1024, 2 blocks, SiLU, dropout 0.1, t at the
+input) but one scalar output, its last layer zero at init (the energy starts as the fit); the scaled score is
+-grad E~_t as before, so the network is conservative and has a density at every t. --no-linear drops the features and
+the joint density: R alone (the control). The training settings of fact_RDW: --steps 30000 --batch 4096 --optimizer
+adamw --lr-net 2e-3 --weight-decay 1e-5 --schedule step --clip 1 --ema 0.999 (the EMA weights are evaluated and
+saved). From the root:
+
+    python explore/ace_energy/embedding.py --init ~/data/experiments/ace/energy_b_rich_products_jd_r0.001.pt --k 1 \
+        --residual --steps 30000 --batch 4096 --optimizer adamw --lr-net 2e-3 --weight-decay 1e-5 --schedule step \
+        --clip 1 --ema 0.999 --device cuda:0 --out ~/data/experiments/ace/energy_head_pl.pt
+
 --fp-weight L adds L times the Fokker-Planck term of fokker_planck.py (the levels of s tied by the heat equation) on
 --fp-points training poses per step; --fp-check prints the term at init and its estimate against exact differences.
 """
@@ -43,6 +55,7 @@ from hp.evaluation.data import load_reference  # noqa: E402
 from hp.models.ace_features import LEARNED  # noqa: E402
 from hp.models.io import load_model  # noqa: E402
 from hp.models.rsgm import exp_frame  # noqa: E402
+from hp.models.score_nets import TimeResNet  # noqa: E402
 from hp.models.so3_harmonics import PAIR_INDEX  # noqa: E402
 from fokker_planck import FokkerPlanck  # noqa: E402
 from joint_density import JointDensity  # noqa: E402
@@ -91,11 +104,18 @@ class Embedded(torch.nn.Module):
     at init (so the energy starts as phi^(1), the linear fit)."""
 
     def __init__(self, basis, bins: Bins, own: list, k: int = 2, embedding: str = "fs", hidden: int = 64,
-                 joint_dim: int = 8):
+                 joint_dim: int = 8, residual: bool = False, linear: bool = True, net_width: int = 1024,
+                 net_blocks: int = 2, dropout: float = 0.1):
         super().__init__()
         if embedding not in ("fs", "mlp"):
             raise ValueError(f"Unknown embedding '{embedding}'. Use 'fs' or 'mlp'.")
+        if not (linear or residual):
+            raise ValueError("an energy needs the features (linear) or the network (residual)")
         self.basis, self.bins, self.embedding = basis, bins, embedding
+        self.linear = linear
+        # R(x, t): the TimeResNet of fact_RDW (t at the input as a scalar, no norm), one output, last layer zero
+        self.net = (TimeResNet(9 * 19, 1, net_width, net_blocks, 256, dropout, "input", "scalar", True, False, True)
+                    if residual else None)
         self.prior = None  # a reference energy (joint_density.JointDensity), added to the energy of the features
         if embedding == "mlp":
             self.joint_emb = torch.nn.Parameter(0.1 * torch.randn(19, joint_dim))
@@ -157,13 +177,21 @@ class Embedded(torch.nn.Module):
         return e
 
     def feature_energy(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-        """E~_t [B] without the reference energy (the joint density)."""
-        if self.quadratic:  # the products as a quadratic form of the entries of x, not as columns
-            phi = self.densities_split(self.basis(x, products=False), x.flatten(1), t)
-            e = self.embed(phi, t, x.shape[0]).sum(-1)
-        else:
-            e = self.energy_of_features(self.basis(x), t)
+        """E~_t [B] without the reference energy (the joint density), with the network R when there is one."""
+        e = 0
+        if self.linear:
+            if self.quadratic:  # the products as a quadratic form of the entries of x, not as columns
+                phi = self.densities_split(self.basis(x, products=False), x.flatten(1), t)
+                e = self.embed(phi, t, x.shape[0]).sum(-1)
+            else:
+                e = self.energy_of_features(self.basis(x), t)
+        if self.net is not None:
+            e = e + self.net(x.flatten(1), t.to(x.dtype))[:, 0]
         return e
+
+    def residual_energy(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        """R(x, t) [B] alone (0 without a network)."""
+        return torch.zeros(len(x), device=x.device) if self.net is None else self.net(x.flatten(1), t.to(x.dtype))[:, 0]
 
     def dense(self, b: int) -> torch.Tensor:
         """[K, P, 19]: the coefficients of bin b, feature by joint (zero where a feature does not belong to a joint)."""
@@ -400,6 +428,18 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--out", default=None)
     parser.add_argument("--check", action="store_true", help="only: the energy at init against the linear fit")
+    parser.add_argument("--residual", action="store_true", help="add the network R(x, t) (the energy head)")
+    parser.add_argument("--no-linear", action="store_true", help="R alone: no features, no joint density")
+    parser.add_argument("--net-width", type=int, default=1024)
+    parser.add_argument("--net-blocks", type=int, default=2)
+    parser.add_argument("--dropout", type=float, default=0.1)
+    parser.add_argument("--lr-net", type=float, default=2e-3, help="learning rate of R (--lr: of the features)")
+    parser.add_argument("--optimizer", choices=("adam", "adamw"), default="adam")
+    parser.add_argument("--weight-decay", type=float, default=0.0, help="of R (adamw)")
+    parser.add_argument("--schedule", choices=("cosine", "step"), default="cosine",
+                        help="step: lr halved at 70%% of the steps (fact_RDW)")
+    parser.add_argument("--clip", type=float, default=None, help="clip of the gradient norm")
+    parser.add_argument("--ema", type=float, default=None, help="EMA decay; the EMA weights are evaluated and saved")
     parser.add_argument("--fp-weight", type=float, default=0.0, help="weight of the Fokker-Planck term (0: none)")
     parser.add_argument("--fp-points", type=int, default=256, help="training poses per step for the term")
     parser.add_argument("--fp-probes", type=int, default=2, help="Hutchinson probes of the Laplacian")
@@ -416,10 +456,15 @@ def main() -> None:
     basis = harmonic_basis(s, saved.get("triples"))
     bins = Bins(ref, ref.loss_t_min, s["bins"])
     assert torch.equal(saved["edges"], bins.edges)
-    model = Embedded(basis, bins, owners(basis), k=args.k, embedding=args.embedding, hidden=args.hidden).to(device)
+    model = Embedded(basis, bins, owners(basis), k=args.k, embedding=args.embedding, hidden=args.hidden,
+                     residual=args.residual or args.no_linear, linear=not args.no_linear, net_width=args.net_width,
+                     net_blocks=args.net_blocks, dropout=args.dropout).to(device)
     model.init_linear(saved["w"])
-    if "prior" in saved:  # the joint density of the fit, a fixed reference energy (not trained)
+    if "prior" in saved and not args.no_linear:  # the joint density of the fit, a fixed reference energy (not trained)
         model.prior = JointDensity(saved["prior"]["centres"], saved["prior"]["s0"]).to(device)
+    if model.net is not None:
+        print(f"network R: {sum(p.numel() for p in model.net.parameters()):,} parameters; features: "
+              f"{model.linear}", flush=True)
     print(f"{basis.dim} features, {model.c.numel():,} coefficients ({model.c.shape[2]} joint-feature entries x "
           f"{model.c.shape[1]} bins x K = {model.c.shape[0]})", flush=True)
 
@@ -431,10 +476,14 @@ def main() -> None:
     xv_d, tv_d = xv.float().to(device), tv.float().to(device)
 
     def evaluate():
-        loss = losses(model, xv_d, yv, tv_d, 500)
+        m = ema.module if ema is not None else model
+        m.eval()
+        loss = losses(m, xv_d, yv, tv_d, 500)
+        model.train()
         k = bins.index(tv)
         return float(loss.mean()), [float(loss[k == i].mean()) for i in range(len(bins.centres))], float(loss.median())
 
+    ema = None
     if args.check:
         mean, per, med = evaluate()
         print(f"init: valid loss {mean:.3f} (median {med:.3f}); the linear fit: {saved['table']['ACE energy']['mean']:.3f}")
@@ -453,7 +502,11 @@ def main() -> None:
     if args.fp_check:
         fp_check(fp, model, train, ref, device, args)
         return
-    groups = [dict(params=list(model.parameters()))]
+    net_params = set(id(p) for p in model.net.parameters()) if model.net is not None else set()
+    feature_params = [p for p in model.parameters() if id(p) not in net_params] if model.linear else []
+    groups = [dict(params=feature_params, weight_decay=0.0)] if feature_params else []
+    if model.net is not None:
+        groups.append(dict(params=list(model.net.parameters()), lr=args.lr_net, weight_decay=args.weight_decay))
     if args.fp_weight > 0:  # a(s) starts at the mean residual near the data per bin and moves fast (hundreds of nats)
         g0 = torch.Generator().manual_seed(args.seed + 2)
         x, s0 = fp.points(train[torch.randint(len(train), (2048,), generator=g0)], g0)
@@ -463,8 +516,14 @@ def main() -> None:
         with torch.no_grad():
             fp.a.copy_(fp.bin_offsets(r0, s0[:n0]).to(fp.a))
         groups.append(dict(params=[fp.a], lr=args.fp_offset_lr))
-    opt = torch.optim.Adam(groups, lr=args.lr)
-    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, args.steps)
+    opt = (torch.optim.AdamW if args.optimizer == "adamw" else torch.optim.Adam)(groups, lr=args.lr)
+    if args.schedule == "step":
+        sched = torch.optim.lr_scheduler.StepLR(opt, int(0.7 * args.steps), gamma=0.5)
+    else:
+        sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, args.steps)
+    if args.ema:
+        ema = torch.optim.swa_utils.AveragedModel(model, multi_avg_fn=torch.optim.swa_utils.get_ema_multi_avg_fn(args.ema))
+    model.train()
     gen = torch.Generator().manual_seed(args.seed + 1)
     history = []
     mean, per, med = evaluate()
@@ -484,8 +543,12 @@ def main() -> None:
             running_fp.append(float(term.detach()))
         opt.zero_grad()
         total.backward()
+        if args.clip:
+            torch.nn.utils.clip_grad_norm_([p for g_ in groups for p in g_["params"]], args.clip)
         opt.step()
         sched.step()
+        if ema is not None:
+            ema.update_parameters(model)
         running.append(float(loss))
         if step % args.eval_every == 0 or step == args.steps:
             mean, per, med = evaluate()
@@ -507,7 +570,8 @@ def main() -> None:
             print(f"| {name} | {r['mean']:.3f} | " + " | ".join(f"{v:.2f}" for v in r["per_bin"]) + " |")
     if args.out:
         out = Path(args.out).expanduser()
-        torch.save(dict(c=model.c.detach().cpu(), state=model.state_dict(), edges=bins.edges, history=history,
+        final = ema.module if ema is not None else model
+        torch.save(dict(c=final.c.detach().cpu(), state=final.state_dict(), edges=bins.edges, history=history,
                         fp_offset=fp.a.detach().cpu(),
                         settings=vars(args),
                         basis=dict(wigner=basis.wigner, pairs=basis.pairs)), out)

@@ -46,9 +46,12 @@ def load_energy(path, device: str = "cpu"):
         s = init["settings"]
         basis = harmonic_basis(s, init.get("triples"))
         bins = Bins(ref, ref.loss_t_min, s["bins"])
+        head = args.get("residual", False) or args.get("no_linear", False)
         energy = Embedded(basis, bins, owners(basis), k=args.get("k", 2), embedding=args.get("embedding", "fs"),
-                          hidden=args.get("hidden", 64))
-        if "prior" in init:  # before the state, which holds its buffers
+                          hidden=args.get("hidden", 64), residual=head, linear=not args.get("no_linear", False),
+                          net_width=args.get("net_width", 1024), net_blocks=args.get("net_blocks", 2),
+                          dropout=args.get("dropout", 0.1))
+        if "prior" in init and not args.get("no_linear", False):  # before the state, which holds its buffers
             energy.prior = JointDensity(init["prior"]["centres"], init["prior"]["s0"])
             info_prior = f", joint density of {init['prior']['centres'].shape[-1]} poses"
         else:
@@ -59,6 +62,8 @@ def load_energy(path, device: str = "cpu"):
             with torch.no_grad():
                 energy.c.copy_(saved["c"])
         info = f"{args.get('embedding', 'fs')} embedding, K = {args.get('k', 2)}, basis {basis.dim}" + info_prior
+        if head:
+            info = ("energy head: network R alone" if args.get("no_linear") else "energy head: R + " + info)
     else:  # fit.py
         s = saved["settings"]
         if s.get("one_body"):
