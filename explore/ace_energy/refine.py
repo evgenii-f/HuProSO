@@ -32,6 +32,7 @@ J = 19
 def refine(model, x: torch.Tensor, free, sweeps: int, beta: float, gen: torch.Generator, mh: int = 3) -> torch.Tensor:
     w, a = model.coupling().detach(), model.a.detach()
     extra = bool(getattr(model, "degrees", ()))
+    assert not getattr(model, "pairs", False), "refine.py has no pair terms of degree 2"
     x = x.double().clone()
     v = x.reshape(len(x), -1)
     free = torch.as_tensor(list(free))

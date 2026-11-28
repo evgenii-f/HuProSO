@@ -63,7 +63,7 @@ def sample_fisher(f: torch.Tensor, gen: torch.Generator) -> torch.Tensor:
     lam, u = torch.linalg.eigh(a)
     lam = lam - lam[:, :1]  # the smallest eigenvalue 0
     lo, hi = torch.ones(len(f), dtype=f.dtype, device=f.device), torch.full((len(f),), 4.0, dtype=f.dtype, device=f.device)
-    for _ in range(60):  # b with sum 1 / (b + 2 lam) = 1, in [1, 4]
+    for _ in range(20):  # b with sum 1 / (b + 2 lam) = 1, in [1, 4] (any b > 0 gives exact draws; this one is optimal)
         b = (lo + hi) / 2
         big = (1 / (b[:, None] + 2 * lam)).sum(1) > 1
         lo, hi = torch.where(big, b, lo), torch.where(big, hi, b)
@@ -88,35 +88,90 @@ def uniform(n: int, gen: torch.Generator) -> torch.Tensor:
     return quat_to_rotmat(q / q.norm(dim=1, keepdim=True))
 
 
+def local(model, x: torch.Tensor, d2, w: torch.Tensor, a: torch.Tensor, j: int):
+    """The conditional of joint j of poses x [B, 19, 3, 3]: F_j [B, 3, 3] and, for one-body terms, the coefficients
+    [B, P] of its features (boltzmann.Boltzmann.features), exp(<F_j, x_j> + <coef, features(x_j)>); d2 [B, 19, 25] the
+    D^2 features of all joints (for pair terms; else None)."""
+    v = x.reshape(len(x), -1)
+    f = (a[9 * j:9 * j + 9] + v @ w[:, 9 * j:9 * j + 9]).reshape(-1, 3, 3)
+    if not getattr(model, "degrees", ()):
+        return f, None
+    coef = model.c[j].expand(len(x), -1)
+    if getattr(model, "pairs", False):
+        df, dc = model.pair_fields(x.reshape(len(x), J, 9), d2, j)
+        f = f + df.reshape(-1, 3, 3)
+        coef = coef.clone()
+        coef[:, model.d2] += dc
+    return f, coef
+
+
+def slope(model, xj: torch.Tensor, coef: torch.Tensor):
+    """g = <coef, features(xj)> [B], the features [B, P] and the tangent part [B, 3, 3] of the gradient of g with
+    respect to the entries of xj [B, 3, 3] (the features are polynomials in them): g(x) ~ g(xj) + <G, x - xj> near xj
+    on SO(3)."""
+    with torch.enable_grad():
+        y = xj.detach().clone().requires_grad_(True)
+        feat = model.features(y)
+        g = (feat * coef).sum(-1)
+        grad, = torch.autograd.grad(g.sum(), y)
+    s = xj.transpose(-1, -2) @ grad
+    return g.detach(), feat.detach(), xj @ (0.5 * (s - s.transpose(-1, -2)))
+
+
 def gibbs(model: PairwiseFisher, x: torch.Tensor, free, sweeps: int, gen: torch.Generator, trace=(), mh: int = 3,
-          stats=None) -> torch.Tensor:
+          stats=None, proposal: str = "fisher") -> torch.Tensor:
     """sweeps of Gibbs updates of the joints `free` (a random order per sweep) of poses x [B, 19, 3, 3]; the mean
     energy is printed after the sweeps in `trace`. A model with one-body terms g_j (boltzmann.Boltzmann with degrees)
     has the conditional exp(<F_j, x_j> + g_j(x_j)): then every update is `mh` Metropolis steps with the matrix Fisher
     exp <F_j, x_j> as the independent proposal (accepted with min(1, exp(g_j(new) - g_j(old)))), and stats (a list)
-    collects the share accepted."""
+    collects the share accepted. proposal "linear": the matrix Fisher exp <F_j + G(y), x_j> with G the tangent slope
+    of g_j at the current state y (slope()), accepted by Metropolis-Hastings with its normalizers c(F_j + G) (log_c)."""
     with torch.no_grad():
         w, a = model.coupling().detach(), model.a.detach()
         extra = bool(getattr(model, "degrees", ()))
         x = x.double().clone()
-        v = x.reshape(len(x), -1)
+        pairs = getattr(model, "pairs", False)
+        d2 = model.features(x)[..., model.d2].clone() if pairs else None
         free = torch.as_tensor(list(free))
         for sweep in range(1, sweeps + 1):
             for j in free[torch.randperm(len(free), generator=gen, device=gen.device).cpu()].tolist():
-                f = (a[9 * j:9 * j + 9] + v @ w[:, 9 * j:9 * j + 9]).reshape(-1, 3, 3)
+                f, coef = local(model, x, d2, w, a, j)
                 if not extra:
                     x[:, j] = sample_fisher(f, gen)
+                elif proposal == "linear":
+                    from boltzmann import Poly  # noqa: E402
+
+                    poly = Poly(model, coef, j)
+                    old, g_old, d2j = poly(x[:, j])
+                    lc_old = log_c(f + g_old)
+                    for _ in range(mh):
+                        new = sample_fisher(f + g_old, gen)
+                        g_new, slope_new, d2_new = poly(new)
+                        lc_new = log_c(f + slope_new)
+                        log_a = (g_new - old + (slope_new * x[:, j]).sum((-1, -2)) - (g_old * new).sum((-1, -2))
+                                 - lc_new + lc_old)
+                        ok = torch.log(torch.rand(len(x), dtype=x.dtype, device=x.device, generator=gen)) < log_a
+                        x[ok, j], d2j[ok], g_old[ok] = new[ok], d2_new[ok], slope_new[ok]
+                        old, lc_old = torch.where(ok, g_new, old), torch.where(ok, lc_new, lc_old)
+                        if stats is not None:
+                            stats.append(float(ok.double().mean()))
+                    if pairs:
+                        d2[:, j] = d2j
                 else:
-                    old = model.one_body(x[:, j], j)
+                    feat = model.features(x[:, j])
+                    old = (feat * coef).sum(-1)
                     for _ in range(mh):
                         new = sample_fisher(f, gen)
-                        g_new = model.one_body(new, j)
+                        feat_new = model.features(new)
+                        g_new = (feat_new * coef).sum(-1)
                         ok = torch.log(torch.rand(len(x), dtype=x.dtype, device=x.device, generator=gen)) < g_new - old
                         x[ok, j] = new[ok]
+                        feat[ok] = feat_new[ok]
                         old = torch.where(ok, g_new, old)
                         if stats is not None:
                             stats.append(float(ok.double().mean()))
-                v = x.reshape(len(x), -1)
+                    if pairs:
+                        d2[:, j] = feat[:, model.d2]
             if sweep in trace:
                 print(f"    sweep {sweep}: mean energy {float(model.energy(x).mean()):.2f}", flush=True)
     return x
@@ -147,14 +202,16 @@ def load(path: str) -> PairwiseFisher:
     from boltzmann import Boltzmann
 
     saved = torch.load(Path(path).expanduser(), weights_only=True)
-    model = Boltzmann(saved.get("degrees", ()))
+    model = Boltzmann(saved.get("degrees", ()), saved.get("pairs", False))
     missing, _ = model.load_state_dict(saved["state"], strict=False)
-    assert set(missing) <= {"c"}, missing
-    print(f"fit {path}: ridge {saved['ridge']}, one-body degrees {list(model.degrees)}", flush=True)
+    assert set(missing) <= {"c", "q12", "q21", "q22"}, missing
+    print(f"fit {path}: ridge {saved['ridge']}, one-body degrees {list(model.degrees)}, tree pairs {model.pairs}",
+          flush=True)
     return model.requires_grad_(False)
 
 
-def generate(model, sweeps_list, n: int, batch: int, out, dev=torch.device("cpu")) -> None:
+def generate(model, sweeps_list, n: int, batch: int, out, dev=torch.device("cpu"), start=None,
+             proposal="fisher") -> None:
     from generate import N_CONTRAST, joint_metrics  # noqa: E402
     from fit import REFERENCE, ROTATIONS, SPLIT  # noqa: E402
     from hp.evaluation.completion import build  # noqa: E402
@@ -178,8 +235,9 @@ def generate(model, sweeps_list, n: int, batch: int, out, dev=torch.device("cpu"
     for sweeps in sweeps_list:
         t0 = time.perf_counter()
         gen = torch.Generator(device=dev).manual_seed(0)
-        poses = gibbs(model, uniform(n * J, gen).reshape(n, J, 3, 3), range(J), sweeps, gen,
-                      trace={1, 10, sweeps // 2, sweeps}).float().cpu()
+        x0 = uniform(n * J, gen).reshape(n, J, 3, 3) if start is None else start[:n].double().to(dev)
+        poses = gibbs(model, x0, range(J), sweeps, gen,
+                      trace={1, 10, sweeps // 2, sweeps}, proposal=proposal).float().cpu()
         pieces = iter(poses.split(batch))
         holder.sample = lambda k, cond=None: next(pieces)
         report = evaluate(holder, valid, cfg)
@@ -192,7 +250,7 @@ def generate(model, sweeps_list, n: int, batch: int, out, dev=torch.device("cpu"
             torch.save(poses, Path(out).expanduser().with_name(f"{Path(out).stem}_{sweeps}.pt"))
 
 
-def inpaint(model, sweeps_list, poses: int, out, dev=torch.device("cpu")) -> None:
+def inpaint(model, sweeps_list, poses: int, out, dev=torch.device("cpu"), proposal="fisher") -> None:
     from hp.evaluation.completion import KEEP, OCCLUSIONS, TOES, Body, at_rest, metrics, summary, valid_poses
 
     gt, body = valid_poses(n=1000)[:poses], Body()
@@ -206,7 +264,7 @@ def inpaint(model, sweeps_list, poses: int, out, dev=torch.device("cpu")) -> Non
             gen = torch.Generator(device=dev).manual_seed(0)
             x = gt[:, KEEP].double().repeat_interleave(k, 0).to(dev)  # [N * K, 19, 3, 3], pose by pose
             x[:, free] = uniform(len(x) * len(free), gen).reshape(len(x), len(free), 3, 3)
-            x = gibbs(model, x, free, sweeps, gen).cpu()
+            x = gibbs(model, x, free, sweeps, gen, proposal=proposal).cpu()
             pred = gt[:, None].repeat(1, k, 1, 1, 1)
             pred[:, :, KEEP] = x.float().reshape(poses, k, J, 3, 3)
             hidden_toes = [t for t in TOES if t in hidden21]
@@ -243,6 +301,10 @@ def main() -> None:
     parser.add_argument("--poses", type=int, default=200)
     parser.add_argument("--out", default=None)
     parser.add_argument("--device", default="cpu", help="where the chains run (the metrics on the CPU)")
+    parser.add_argument("--from-chains", action="store_true",
+                        help="--generate from the persistent chains saved with a fit of boltzmann.py, not uniform "
+                             "(a diagnostic, not a measure of the model)")
+    parser.add_argument("--proposal", choices=["fisher", "linear"], default="fisher")
     args = parser.parse_args()
     if args.check:
         check()
@@ -250,9 +312,10 @@ def main() -> None:
     dev = torch.device(args.device)
     model = load(args.fit).to(dev)
     if args.generate:
-        generate(model, args.sweeps, args.samples, args.batch, args.out, dev)
+        start = torch.load(Path(args.fit).expanduser(), weights_only=True)["chains"] if args.from_chains else None
+        generate(model, args.sweeps, args.samples, args.batch, args.out, dev, start, args.proposal)
     if args.inpaint:
-        inpaint(model, args.sweeps, args.poses, args.out, dev)
+        inpaint(model, args.sweeps, args.poses, args.out, dev, args.proposal)
 
 
 if __name__ == "__main__":
