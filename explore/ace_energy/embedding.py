@@ -440,6 +440,7 @@ def main() -> None:
                         help="step: lr halved at 70%% of the steps (fact_RDW)")
     parser.add_argument("--clip", type=float, default=None, help="clip of the gradient norm")
     parser.add_argument("--ema", type=float, default=None, help="EMA decay; the EMA weights are evaluated and saved")
+    parser.add_argument("--threads", type=int, default=None, help="CPU threads of torch (a loaded server: few)")
     parser.add_argument("--fp-weight", type=float, default=0.0, help="weight of the Fokker-Planck term (0: none)")
     parser.add_argument("--fp-points", type=int, default=256, help="training poses per step for the term")
     parser.add_argument("--fp-probes", type=int, default=2, help="Hutchinson probes of the Laplacian")
@@ -449,6 +450,8 @@ def main() -> None:
     args = parser.parse_args()
     device = torch.device(args.device)
     torch.manual_seed(args.seed)
+    if args.threads:
+        torch.set_num_threads(args.threads)
 
     saved = torch.load(Path(args.init).expanduser(), map_location="cpu", weights_only=True)
     s = saved["settings"]
@@ -524,16 +527,24 @@ def main() -> None:
     if args.ema:
         ema = torch.optim.swa_utils.AveragedModel(model, multi_avg_fn=torch.optim.swa_utils.get_ema_multi_avg_fn(args.ema))
     model.train()
-    gen = torch.Generator().manual_seed(args.seed + 1)
+    # the training draws on the GPU when there is one (the poses kept there), else on the CPU as before
+    work = device if device.type == "cuda" and args.fp_weight == 0 else torch.device("cpu")  # fp: CPU draws
+    gen = torch.Generator(device=work).manual_seed(args.seed + 1)
+    train_w = train.to(work)
     history = []
     mean, per, med = evaluate()
     print(f"step 0: valid loss {mean:.3f} (median {med:.3f})", flush=True)
     history.append(dict(step=0, valid=mean, median=med, per_bin=per))
-    t0, running, running_fp = time.perf_counter(), [], []
+    t0, running, running_fp, t_draw = time.perf_counter(), [], [], 0.0
     for step in range(1, args.steps + 1):
-        x0 = train[torch.randint(len(train), (args.batch,), generator=gen)]
-        t = ref.loss_t_min + (1 - ref.loss_t_min) * torch.rand(args.batch, dtype=torch.float64, generator=gen)
+        td = time.perf_counter()
+        x0 = train_w[torch.randint(len(train_w), (args.batch,), generator=gen, device=work)]
+        t = ref.loss_t_min + (1 - ref.loss_t_min) * torch.rand(args.batch, dtype=torch.float64, generator=gen,
+                                                               device=work)
         xt, target, _ = draw(ref, x0, t, gen)
+        if work.type == "cuda":
+            torch.cuda.synchronize()
+        t_draw += time.perf_counter() - td
         pred = model.scaled_score(xt.float().to(device), t.float().to(device), create_graph=True)
         loss = ((pred - target.float().to(device)) ** 2).sum((1, 2)).mean()
         total = loss
@@ -549,7 +560,7 @@ def main() -> None:
         sched.step()
         if ema is not None:
             ema.update_parameters(model)
-        running.append(float(loss))
+        running.append(float(loss.detach()))
         if step % args.eval_every == 0 or step == args.steps:
             mean, per, med = evaluate()
             fpm = sum(running_fp) / len(running_fp) if running_fp else None
@@ -557,7 +568,7 @@ def main() -> None:
                                 fp=fpm))
             print(f"step {step}: train {sum(running) / len(running):.3f}, valid loss {mean:.3f} (median {med:.3f}), "
                   + (f"Fokker-Planck {fpm:.2f}, " if fpm is not None else "")
-                  + f"{(time.perf_counter() - t0) / step:.2f} s/step", flush=True)
+                  + f"{(time.perf_counter() - t0) / step:.2f} s/step (draws {t_draw / step:.3f})", flush=True)
             running, running_fp = [], []
     edges = [f"{bins.edges[i].exp():.0e}" for i in range(len(bins.centres))]
     print("| model | mean | " + " | ".join(f"s {e}" for e in edges) + " |")

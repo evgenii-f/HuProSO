@@ -204,7 +204,7 @@ def draw(ref, x0: torch.Tensor, t: torch.Tensor, generator=None):
     RSGM.loss: s and std of every joint, an IGSO(3) angle and a uniform axis."""
     s, std = ref.joint_s(t), ref.joint_std(t)
     omega = ref.angles.sample(s, generator)
-    axis = igso3.random_axes(s.shape, generator)
+    axis = igso3.random_axes(s.shape, generator, device=s.device)  # on the device of t
     xt = exp_frame(x0.double(), omega[..., None] * axis)
     target = std[..., None] * igso3.d_log_density(omega, s)[..., None] * axis
     return xt, target, std
