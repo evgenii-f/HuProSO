@@ -38,15 +38,25 @@ def joint_metrics(poses, skeleton, reference, train) -> dict:
                 dnn=float(nearest_neighbour_distance(poses[:SET], train).mean()))
 
 
+def two_heads(fit: str) -> bool:
+    """Whether a fit of embedding.py has two heads."""
+    saved = torch.load(Path(fit).expanduser(), map_location="cpu", weights_only=True)
+    return bool(saved.get("settings", {}).get("two_head", False))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("fits", nargs="*", help="energy_*.pt of fit.py or embedding.py")
     parser.add_argument("--no-network", action="store_true", help="without the row of the reference network")
     parser.add_argument("--band", type=float, nargs=2, default=(0.0, float("inf")), metavar=("S_LO", "S_HI"),
                         help="noise levels s(t) at which the energy is used, the network elsewhere")
+    parser.add_argument("--head", choices=("energy", "score", "band"), nargs="+", default=["band"],
+                        help="a model with two heads: one row per head (complete.energy_model)")
+    parser.add_argument("--split-s", type=float, default=0.04)
     parser.add_argument("--samples", type=int, default=5000)
     parser.add_argument("--batch", type=int, default=1000)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--seed", type=int, default=0, help="the seed of the harness (its draws and the sampler)")
     parser.add_argument("--out", default=None, help="a folder for the samples, one .pt per model")
     args = parser.parse_args()
     valid, train = load_reference("valid", ROTATIONS, SPLIT), load_reference("train", ROTATIONS, SPLIT)
@@ -56,13 +66,14 @@ def main() -> None:
     order = lambda n, k, seed: torch.randperm(n, generator=torch.Generator().manual_seed(seed))[:k]  # noqa: E731
     contrast = train[order(len(train), N_CONTRAST, 0)]
     cfg = EvalConfig(n_generated=args.samples, n_wasserstein=min(2000, args.samples), n_queries=min(2000, args.samples),
-                     n_likelihood=0, repeats=1, sample_batch=args.batch)
+                     n_likelihood=0, repeats=1, sample_batch=args.batch, seed=args.seed)
     rows = [("train poses", contrast[:args.samples], None),
             ("valid poses", valid[order(len(valid), args.samples, 1)], None)]
     print("| model | Wasserstein | recall | precision | FID_val | APD (cm) | dNN | minutes |\n"
           "|---|---|---|---|---|---|---|---|")
-    models = [] if args.no_network else [("network", None)]
-    models += [(Path(f).stem, f) for f in args.fits]
+    models = [] if args.no_network else [("network", None, None)]
+    models += [(Path(f).stem + (f", {h}" if two_heads(f) else ""), f, h) for f in args.fits
+               for h in (args.head if two_heads(f) else [None])]
 
     def line(name, report, m, minutes):
         if report is None:
@@ -74,12 +85,12 @@ def main() -> None:
 
     for name, poses, report in rows:
         line(name, report, joint_metrics(poses, skeleton, reference, train), 0)
-    for name, path in models:
+    for name, path, head in models:
         t0 = time.perf_counter()
         if path is None:
             model = build(dict(run=REFERENCE), args.device)
         else:
-            model = energy_model(path, REFERENCE, args.device, tuple(args.band))[0]
+            model = energy_model(path, REFERENCE, args.device, tuple(args.band), head or "band", args.split_s)[0]
         model.has_log_prob = False  # this instance only: no likelihood
         sample, kept = model.sample, []
         model.sample = lambda n, cond=None: kept.append(sample(n, cond)) or kept[-1]

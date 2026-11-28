@@ -47,11 +47,15 @@ SDS = dict(start="noise", scale="std", t_max=0.03069657326271095, lr=0.116074859
            prior_weight=0.01748741102436864, steps_per_iter=200, t_min=0.005332697742510199)  # t15 of dposer_like
 
 
-def energy_model(fit: str, reference: str, device: str, band=(0.0, float("inf"))):
+def energy_model(fit: str, reference: str, device: str, band=(0.0, float("inf")), head: str = "band",
+                 split_s: float = 0.04):
     """The reference RSGM with the score of the energy at the noise levels band[0] <= s(t) < band[1], the network's own
     score elsewhere. One noise level per call, as the samplers and the likelihood ODE do."""
     model = build(dict(run=reference), device)
     energy, _, _, info = load_energy(fit, device)
+    if getattr(energy, "two_head", False):
+        energy.head, energy.split_s = head, split_s
+        info += f": head {head}" + (f" (score below s = {split_s:g})" if head == "band" else "")
     network = model.score
 
     def score(x, t, f=None):
@@ -107,6 +111,10 @@ def main() -> None:
     parser.add_argument("--network", action="store_true", help="the reference network itself instead of the energy")
     parser.add_argument("--band", type=float, nargs=2, default=(0.0, float("inf")), metavar=("S_LO", "S_HI"),
                         help="noise levels s(t) at which the energy is used, the network elsewhere")
+    parser.add_argument("--head", choices=("energy", "score", "band"), default="band",
+                        help="a model with two heads: -grad E, the direct score, or -grad E above --split-s and the "
+                             "score below")
+    parser.add_argument("--split-s", type=float, default=0.04)
     parser.add_argument("--method", choices=("inpaint", "dposer"), default="inpaint",
                         help="inpaint: the point t81; dposer: SDS on SO(3), the point of SDS above")
     parser.add_argument("--guidance", type=float, default=None, help="the guidance of inpaint (default: that of t81)")
@@ -129,7 +137,8 @@ def main() -> None:
         model, info = build(dict(run=args.reference), args.device), "network"
         energy = None
     else:
-        model, energy, info = energy_model(args.fit, args.reference, args.device, tuple(args.band))
+        model, energy, info = energy_model(args.fit, args.reference, args.device, tuple(args.band), args.head,
+                                             args.split_s)
         if tuple(args.band) != (0.0, float("inf")):
             info += f", at {args.band[0]:g} <= s < {args.band[1]:g}"
     if args.method == "inpaint":

@@ -105,7 +105,7 @@ class Embedded(torch.nn.Module):
 
     def __init__(self, basis, bins: Bins, own: list, k: int = 2, embedding: str = "fs", hidden: int = 64,
                  joint_dim: int = 8, residual: bool = False, linear: bool = True, net_width: int = 1024,
-                 net_blocks: int = 2, dropout: float = 0.1):
+                 net_blocks: int = 2, dropout: float = 0.1, two_head: bool = False):
         super().__init__()
         if embedding not in ("fs", "mlp"):
             raise ValueError(f"Unknown embedding '{embedding}'. Use 'fs' or 'mlp'.")
@@ -113,8 +113,13 @@ class Embedded(torch.nn.Module):
             raise ValueError("an energy needs the features (linear) or the network (residual)")
         self.basis, self.bins, self.embedding = basis, bins, embedding
         self.linear = linear
+        if two_head and (linear or not residual):
+            raise ValueError("two heads only with the network alone (--no-linear)")
+        # two heads on one trunk: output 0 the energy E, outputs 1.. a direct scaled score r [19, 3]; the score used
+        # (self.head) is -grad E ("energy"), r ("score") or -grad E at s(t) >= split_s and r below ("band")
+        self.two_head, self.head, self.split_s = two_head, "band", 0.04
         # R(x, t): the TimeResNet of fact_RDW (t at the input as a scalar, no norm), one output, last layer zero
-        self.net = (TimeResNet(9 * 19, 1, net_width, net_blocks, 256, dropout, "input", "scalar", True, False, True)
+        self.net = (TimeResNet(9 * 19, 1 + 57 * two_head, net_width, net_blocks, 256, dropout, "input", "scalar", True, False, True)
                     if residual else None)
         self.prior = None  # a reference energy (joint_density.JointDensity), added to the energy of the features
         if embedding == "mlp":
@@ -341,8 +346,27 @@ class Embedded(torch.nn.Module):
         self._compiled = torch.compile(self.feature_energy, dynamic=False)
         return self
 
+    def heads(self, x: torch.Tensor, t: torch.Tensor, create_graph: bool = False):
+        """(-grad E_t, r) [B, J, 3] of the two heads, from one pass of the trunk."""
+        with torch.enable_grad():
+            delta = torch.zeros(x.shape[0], x.shape[1], 3, device=x.device, dtype=x.dtype, requires_grad=True)
+            out = self.net(exp_frame(x, delta).flatten(1), t.to(x.dtype))
+            (g,) = torch.autograd.grad(out[:, 0].sum(), delta, create_graph=create_graph)
+        r = out[:, 1:].reshape(x.shape[0], x.shape[1], 3)
+        return -g, (r if create_graph else r.detach())
+
     def scaled_score(self, x: torch.Tensor, t: torch.Tensor, create_graph: bool = False) -> torch.Tensor:
-        """-grad E~_t [B, J, 3] along the tangent directions (the scaled score of RSGM's loss)."""
+        """-grad E~_t [B, J, 3] along the tangent directions (the scaled score of RSGM's loss); with two heads the
+        score of self.head."""
+        if self.two_head:
+            if self.head == "score":
+                with torch.set_grad_enabled(torch.is_grad_enabled() and (create_graph or x.requires_grad)):
+                    return self.net(x.flatten(1), t.to(x.dtype))[:, 1:].reshape(x.shape[0], x.shape[1], 3)
+            e, r = self.heads(x, t, create_graph=create_graph or x.requires_grad)
+            if self.head == "energy":
+                return e
+            low = (self.bins.ref.s(t.detach().cpu().double()) < self.split_s).to(x.device)[:, None, None]
+            return torch.where(low, r, e)
         compiled = getattr(self, "_compiled", None)
         energy = compiled if compiled is not None and not create_graph and not x.requires_grad else self.feature_energy
         with torch.enable_grad():
@@ -356,7 +380,13 @@ class Embedded(torch.nn.Module):
         return -g + self.prior.scaled_score(x, s, graph=graph and x.requires_grad)
 
 
-def losses(model, xt, target, t, batch) -> torch.Tensor:
+def losses(model, xt, target, t, batch, head=None) -> torch.Tensor:
+    if head is not None:  # a model with two heads: the loss of one of them
+        kept, model.head = model.head, head
+        try:
+            return losses(model, xt, target, t, batch)
+        finally:
+            model.head = kept
     out = []
     for i in range(0, len(xt), batch):
         sl = slice(i, i + batch)
@@ -430,6 +460,9 @@ def main() -> None:
     parser.add_argument("--check", action="store_true", help="only: the energy at init against the linear fit")
     parser.add_argument("--residual", action="store_true", help="add the network R(x, t) (the energy head)")
     parser.add_argument("--no-linear", action="store_true", help="R alone: no features, no joint density")
+    parser.add_argument("--two-head", action="store_true",
+                        help="with --no-linear: one trunk, an energy head and a direct score head, the sum of their "
+                             "DSM losses")
     parser.add_argument("--net-width", type=int, default=1024)
     parser.add_argument("--net-blocks", type=int, default=2)
     parser.add_argument("--dropout", type=float, default=0.1)
@@ -461,7 +494,7 @@ def main() -> None:
     assert torch.equal(saved["edges"], bins.edges)
     model = Embedded(basis, bins, owners(basis), k=args.k, embedding=args.embedding, hidden=args.hidden,
                      residual=args.residual or args.no_linear, linear=not args.no_linear, net_width=args.net_width,
-                     net_blocks=args.net_blocks, dropout=args.dropout).to(device)
+                     net_blocks=args.net_blocks, dropout=args.dropout, two_head=args.two_head).to(device)
     model.init_linear(saved["w"])
     if "prior" in saved and not args.no_linear:  # the joint density of the fit, a fixed reference energy (not trained)
         model.prior = JointDensity(saved["prior"]["centres"], saved["prior"]["s0"]).to(device)
@@ -481,14 +514,22 @@ def main() -> None:
     def evaluate():
         m = ema.module if ema is not None else model
         m.eval()
-        loss = losses(m, xv_d, yv, tv_d, 500)
-        model.train()
         k = bins.index(tv)
-        return float(loss.mean()), [float(loss[k == i].mean()) for i in range(len(bins.centres))], float(loss.median())
+        heads = ("energy", "score", "band") if model.two_head else (None,)
+        out = {}
+        for h in heads:
+            loss = losses(m, xv_d, yv, tv_d, 500, h)
+            out[h] = (float(loss.mean()), [float(loss[k == i].mean()) for i in range(len(bins.centres))],
+                      float(loss.median()))
+        model.train()
+        if model.two_head:
+            print("  valid loss per head: " + ", ".join(f"{h} {v[0]:.3f}" for h, v in out.items()), flush=True)
+            return out["band"] + (out,)
+        return out[None] + (None,)
 
     ema = None
     if args.check:
-        mean, per, med = evaluate()
+        mean, per, med, _ = evaluate()
         print(f"init: valid loss {mean:.3f} (median {med:.3f}); the linear fit: {saved['table']['ACE energy']['mean']:.3f}")
         return
 
@@ -532,9 +573,9 @@ def main() -> None:
     gen = torch.Generator(device=work).manual_seed(args.seed + 1)
     train_w = train.to(work)
     history = []
-    mean, per, med = evaluate()
+    mean, per, med, by_head = evaluate()
     print(f"step 0: valid loss {mean:.3f} (median {med:.3f})", flush=True)
-    history.append(dict(step=0, valid=mean, median=med, per_bin=per))
+    history.append(dict(step=0, valid=mean, median=med, per_bin=per, heads=by_head))
     t0, running, running_fp, t_draw = time.perf_counter(), [], [], 0.0
     for step in range(1, args.steps + 1):
         td = time.perf_counter()
@@ -545,8 +586,13 @@ def main() -> None:
         if work.type == "cuda":
             torch.cuda.synchronize()
         t_draw += time.perf_counter() - td
-        pred = model.scaled_score(xt.float().to(device), t.float().to(device), create_graph=True)
-        loss = ((pred - target.float().to(device)) ** 2).sum((1, 2)).mean()
+        y = target.float().to(device)
+        if model.two_head:  # the sum of the DSM losses of both heads, on the same draws
+            pe, pr = model.heads(xt.float().to(device), t.float().to(device), create_graph=True)
+            loss = ((pe - y) ** 2).sum((1, 2)).mean() + ((pr - y) ** 2).sum((1, 2)).mean()
+        else:
+            pred = model.scaled_score(xt.float().to(device), t.float().to(device), create_graph=True)
+            loss = ((pred - y) ** 2).sum((1, 2)).mean()
         total = loss
         if args.fp_weight > 0:
             term = fp.loss(x0[:args.fp_points], gen, device)
@@ -562,10 +608,10 @@ def main() -> None:
             ema.update_parameters(model)
         running.append(float(loss.detach()))
         if step % args.eval_every == 0 or step == args.steps:
-            mean, per, med = evaluate()
+            mean, per, med, by_head = evaluate()
             fpm = sum(running_fp) / len(running_fp) if running_fp else None
             history.append(dict(step=step, valid=mean, median=med, per_bin=per, train=sum(running) / len(running),
-                                fp=fpm))
+                                fp=fpm, heads=by_head))
             print(f"step {step}: train {sum(running) / len(running):.3f}, valid loss {mean:.3f} (median {med:.3f}), "
                   + (f"Fokker-Planck {fpm:.2f}, " if fpm is not None else "")
                   + f"{(time.perf_counter() - t0) / step:.2f} s/step (draws {t_draw / step:.3f})", flush=True)
