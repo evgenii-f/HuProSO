@@ -19,6 +19,7 @@ stops after the current batch (Ctrl+C twice: at once, losing at most that batch)
 continue: the finished cells are read from the cache and the cell in progress continues after its last batch.
 """
 import argparse
+import re
 import signal
 import sys
 import time
@@ -90,18 +91,34 @@ MODELS = {
                                                      method="dposer", settings=DPOSER_TUNED),
     "DPoser: their full, D-Flow": dict(run="~/data/experiments/full/dposer_posedflow_s10/run_0001"),
 }
+# The cells of the factorial (2 blocks: all 32; 5 blocks: the 17 of sections 23 and 23.1 of
+# docs/experiments/2026-11-14_score_network_architectures.md), seed 10, in DPoser's optimization at the settings SDS
+# of RSGM 512x4, not tuned per cell: a comparison of the networks at one fixed point, as the inpainting of the
+# factorial.
+# Names "RSGM fact d2 <cell>" / "RSGM fact d5 <cell>"; select them with --match.
+D2 = ["0"] + ["".join(f for i, f in enumerate("RNADW") if bits >> i & 1) for bits in range(1, 32)]
+D5 = ["R", "RD", "RN", "RA", "RAD", "RW", "RDW", "RNW", "RAW", "RADW", "DW", "RND", "RNDW", "RNAD", "RNADW", "RNA",
+      "RNAW"]
+MODELS.update({f"RSGM fact d2 {c}": dict(run=f"~/data/experiments/factorial/rsgm_posedflow_fact_{c}_s10/run_0001",
+                                         method="dposer", settings=SDS) for c in D2})
+D5_ROOT = "~/data/experiments/factorial_depth"
+MODELS.update({f"RSGM fact d5 {c}": dict(run=f"{D5_ROOT}/rsgm_posedflow_fact_d5_{c}_s10/run_0001", method="dposer",
+                                         settings=SDS) for c in D5})
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--split", required=True, choices=["valid", "test"])
     parser.add_argument("--models", nargs="+", default=list(MODELS), choices=list(MODELS))
+    parser.add_argument("--match", default=None, help="a regex: only the --models whose name it matches")
     parser.add_argument("--sigmas", nargs="+", type=float, default=list(SIGMAS), choices=list(SIGMAS))
     parser.add_argument("--device", default="mps")
     parser.add_argument("--batch", type=int, default=10, help="sequences per batch (speed and memory only)")
     parser.add_argument("--cache", default=CACHE)
     parser.add_argument("--summary", action="store_true", help="only print what is cached")
     args = parser.parse_args()
+    if args.match:
+        args.models = [m for m in args.models if re.search(args.match, m)]
 
     requested = []  # a soft stop: Ctrl+C once or the STOP file; Ctrl+C twice stops at once
 

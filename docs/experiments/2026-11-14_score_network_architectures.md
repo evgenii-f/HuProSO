@@ -1470,6 +1470,17 @@ which is the size of the differences between seeds, and DW by 13.8 %. Only DW is
 deviation from the plan. DW at lr 1e-3 answers whether the network without residual fails at depth 5 by its structure
 or by its learning rate; H6 is judged on the better of the two.
 
+### 23.2. 2026-11-28: motion denoising of every cell (plan, written before the runs)
+
+Question: do the networks of the factorial differ in motion denoising (PoseD-Flow's Tab. 3 protocol, as in
+docs/experiments/2026-11-16_motion_denoising_rsgm_vs_dposer.md) as they do in inpainting? All 32 cells at 2 blocks and
+the 17 at 5 blocks (49 networks, seed 10), `scripts/evaluate_denoising.py --match "RSGM fact"`: 100 validation
+sequences, noise 40 and 100 mm, DPoser's optimization at the settings `SDS` chosen for RSGM 512x4 (not tuned per
+cell), batch 10 as every earlier row (the batch seeds the random draws: 19.92 against 19.97 mm on 10 sequences with
+batch 5 and 10). Responses: MPJPE and MPVPE per noise level. Validation only, no test row; one seed, so differences
+below about 0.3 mm in MPJPE are not read as effects. Reported as the tables of inpainting: depth 2 to 5 per cell, and
+every cell against fact_0.
+
 ## Conclusions
 
 1. Residual connections or LayerNorm are what a score network on SO(3) needs for score distillation at small noise:
