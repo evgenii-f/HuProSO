@@ -165,10 +165,14 @@ FACTORIAL = [c for c in CONFIGS if c.startswith("fact_")]
 # and the same with W), and the control without residual DW, whose pair is RDW. The depth-2 twin of every cell is the
 # cell of the same letters above. Run under their own root (~/data/experiments/factorial_depth).
 DEPTH5 = ["R", "RD", "RN", "RA", "RAD", "RW", "RDW", "RNW", "RAW", "RADW", "DW"]
+# Second round: the cells with LayerNorm that complete the 2^4 of N, A, D, W with residual on.
+DEPTH5 += ["RND", "RNDW", "RNAD", "RNADW", "RNA", "RNAW"]
 for cell in DEPTH5:
     CONFIGS[f"fact_d5_{cell}"] = CONFIGS[f"fact_{cell}"] + ["model.args.net_blocks=5"]
     if "A" in cell:
         ANISO.add(f"fact_d5_{cell}")
+# The control without residual at lr 1e-3: did DW fail at depth 5 by its learning rate or by its structure?
+CONFIGS["fact_d5_DW_lr0001"] = CONFIGS["fact_d5_DW"] + ["train.lr=1e-3"]
 # Outside the design: fact_NA with the small noise of the wide joints trained (section 13). With joint_scale the
 # smallest training noise of joint j is c_j s(loss_t_min), sqrt(c_j) times wider in angle than without it (1.4 deg for
 # the knees). tmin: loss_t_min = 2.2e-4, where max_j c_j s(t) equals s(0.002) of the isotropic networks; lik: the

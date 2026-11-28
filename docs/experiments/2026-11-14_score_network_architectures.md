@@ -1452,6 +1452,24 @@ seed. The comparisons are at the fixed inpainting point, so networks of differen
 APD, as in section 13; the APD is reported next to every pair. A cell whose training diverges at lr 2e-3 (loss NaN or
 validation loss above its depth-2 twin's at 30k) is rerun at 1e-3 and marked.
 
+### 23.1. 2026-11-28: second round (plan, written after the first 11 cells, before these runs)
+
+The first round showed that LayerNorm, which cost 1-2 mm in the inpainting mean at depth 2, costs little or nothing at
+depth 5 (R vs RN +1.5 mm, RW vs RNW -1.3 mm). Its largest penalties at depth 2 were with dropout (RND vs RD +3.2 mm,
+RNAD vs RAD +3.9 mm, RNDW vs RDW +2.0 mm), and those pairs were not run at depth 5. Six cells complete the 2^4 of N, A,
+D and W with residual on at depth 5: RND, RNDW, RNAD, RNADW, RNA, RNAW (same settings as the first round).
+
+Rule for N, fixed now: at depth 5, N does not hurt if every pair X vs XN (X in R, RD, RA, RAD and with W) is within 2
+mm in the inpainting mean and 0.5 mm in best of 10, or better; the penalty of depth 2 holds if the mean of the
+eight pairs is worse by more than 2 mm in the mean; else unresolved. The deciding pair for the choice of network is
+RDW vs RNDW.
+
+The lr rule above, as written, catches 7 of 11 cells: R, RA, RW, RDW, RAW, RADW by 0.3-1.3 % in the validation loss,
+which is the size of the differences between seeds, and DW by 13.8 %. Only DW is rerun at lr 1e-3
+(`fact_d5_DW_lr0001`): the rule is narrowed after seeing the results, to a difference above 5 %, and this is a
+deviation from the plan. DW at lr 1e-3 answers whether the network without residual fails at depth 5 by its structure
+or by its learning rate; H6 is judged on the better of the two.
+
 ## Conclusions
 
 1. Residual connections or LayerNorm are what a score network on SO(3) needs for score distillation at small noise:
