@@ -30,6 +30,11 @@ GPU noise in [IGSO(3) noise on the GPU](2026-11-16_igso3_noise_on_gpu.md), motio
   (knees; hips 4.9–5.9×), and with $c_j$ by the RMS spread the narrow axes of the knees and hips are the first of the
   body to be destroyed. In inpainting, however, `abl_norm_aniso` is not worse than `abl_norm` on these axes
   ($D = -0.0332$ rad², rule fixed before the run); its extra error is at the feet and on the wide axis of the hip.
+- **Calibration (2026-11-28): per-joint noise is overconfident.** The ratio $\rho$ of the squared distance of a
+  completion to the truth to that between two completions (1 for a calibrated sampler) is, on the hidden hips and
+  knees, 1.30 [1.22, 1.39] for `abl_norm_aniso` against 1.09 [1.04, 1.15] for `abl_norm`, most on the narrow axes
+  (1.6–1.9 against 1.2–1.4). The rule (aniso above iso) holds; its strong form (iso below 1) does not: the isotropic
+  network is the better calibrated end, so a noise between the two ($c_j^\gamma$) has no calibration to gain.
 - **Decision.** Per-joint noise stays a feature of completion (the hybrid and D-Flow); an anisotropic kernel on
   SO(3) is not built for the reason that was given for it. What makes per-joint noise lose at equal APD in
   inpainting is open; at the points checked it is less diversity.
@@ -246,6 +251,54 @@ the hip ($D_0$ +0.0034 [+0.0014, +0.0053]) and on axis 1 of the knee and the foo
 [+0.0016, +0.0040]). On the narrow axes both networks reach about the spread of the data (knees 0.074–0.077 rad against a
 std of 0.069), little better than the marginal alone.
 
+### Calibration of the spread
+
+The axis check found no larger error of the per-joint model on the narrow axes, but it has less spread there. Is it
+overconfident? If the truth and the K completions of a pose were draws of the same conditional, the mean squared
+distance of a completion to the truth would equal the mean squared distance between two completions:
+
+$$\rho = \frac{\mathbb E\, d(\hat x_k, x)^2}{\mathbb E\, d(\hat x_k, \hat x_l)^2},\quad k \ne l,$$
+
+1 if calibrated, above 1 overconfident (completions too close to each other for their error), below 1 too spread. d
+is the geodesic angle; per principal axis, the coordinate $v_i^\top \log(M_j^\top x)$.
+
+- **Hypothesis.** Per-joint noise decides all joints at the same noise level, isotropic noise the wide joints (legs)
+  first, when the context is still unreadable; so the per-joint model is sharper on the hidden legs at the same
+  overall APD.
+- **Rule, fixed before the run** (in the script's docstring): on legs, over the hips and knees (sum of the squared
+  angles of the four joints), $\rho_{aniso} - \rho_{iso} > 0$ with its 95% bootstrap interval over poses above 0. The
+  strong form also needs $\rho_{iso} < 1 < \rho_{aniso}$.
+- **Data.** The completions of the axis check (500 validation poses, K = 10, the same two points);
+  `explore/ace_energy/calibration.py`, Mac, under a minute.
+
+Legs hidden; distances in rad², $\rho$ with 95% bootstrap over poses, then $\rho$ per principal axis (widest first):
+
+| joint | model | to truth | pairwise | rho | rho axis 0 / 1 / 2 |
+|---|---|---|---|---|---|
+| LeftUpLeg | abl_norm | 0.0692 | 0.0579 | 1.20 [1.11, 1.28] | 1.23 / 1.11 / 1.18 |
+| LeftUpLeg | abl_norm_aniso | 0.0656 | 0.0519 | 1.26 [1.17, 1.38] | 1.25 / 1.19 / 1.58 |
+| RightUpLeg | abl_norm | 0.0610 | 0.0504 | 1.21 [1.13, 1.30] | 1.19 / 1.19 / 1.41 |
+| RightUpLeg | abl_norm_aniso | 0.0584 | 0.0429 | 1.36 [1.27, 1.46] | 1.32 / 1.32 / 1.81 |
+| LeftLeg | abl_norm | 0.2259 | 0.2216 | 1.02 [0.95, 1.10] | 0.99 / 1.17 / 1.28 |
+| LeftLeg | abl_norm_aniso | 0.2145 | 0.1879 | 1.14 [1.06, 1.23] | 1.07 / 1.63 / 1.64 |
+| RightLeg | abl_norm | 0.2321 | 0.2078 | 1.12 [1.04, 1.20] | 1.09 / 1.26 / 1.43 |
+| RightLeg | abl_norm_aniso | 0.2163 | 0.1450 | 1.49 [1.35, 1.66] | 1.44 / 1.86 / 1.88 |
+| LeftFoot | abl_norm | 0.0827 | 0.0732 | 1.13 [1.03, 1.24] | 1.11 / 1.19 / 1.24 |
+| LeftFoot | abl_norm_aniso | 0.0888 | 0.0688 | 1.29 [1.18, 1.41] | 1.22 / 1.56 / 1.57 |
+| RightFoot | abl_norm | 0.0793 | 0.0701 | 1.13 [1.04, 1.24] | 1.13 / 1.07 / 1.28 |
+| RightFoot | abl_norm_aniso | 0.0867 | 0.0668 | 1.30 [1.19, 1.41] | 1.28 / 1.32 / 1.46 |
+
+| occlusion | rho abl_norm (hips, knees) | rho abl_norm_aniso | aniso − iso |
+|---|---|---|---|
+| legs | 1.094 [1.042, 1.150] | 1.297 [1.216, 1.385] | **+0.203 [+0.128, +0.283]** |
+| left_leg | 1.188 [1.106, 1.282] | 1.287 [1.192, 1.397] | +0.099 [+0.006, +0.193] |
+
+- The rule holds: on the hidden legs the per-joint model is more overconfident than the isotropic one, at every
+  hidden joint and most on the narrow axes of the knees and hips (1.6–1.9 against 1.2–1.4). With its error there no
+  larger (the axis check), the narrow axes are where its completions are too close to each other.
+- The strong form does not hold: the isotropic network is overconfident too (1.09), only less, and nearly calibrated
+  on the wide axis of the knee (0.99–1.09).
+
 ### Conclusions of this phase
 
 - The rotations of a joint are as anisotropic within the joint as the joints are between each other, most in the
@@ -255,17 +308,26 @@ std of 0.069), little better than the marginal alone.
   built for this reason.
 - At these two points the per-joint model trades diversity (lower APD, worse best of 10) as in D-Flow, and its extra
   error is at the feet and on the wide axis of the hip.
+- The lost diversity is overconfidence, not a sharper correct conditional: the per-joint model has the same or a
+  smaller error on the narrow axes but its completions are too close to each other there ($\rho$ 1.30 against 1.09
+  on the hips and knees). The isotropic network is the better calibrated of the two, so no noise between them is
+  expected to gain.
 
 ## Conclusions
 
 1. The isotropic IGSO(3) noise was the main cause of the slow first phase of RSGM in the hybrid: a Brownian time per
    joint, matched to DPoser's z-scored noise, moves it halfway to DPoser; the same scaling at the input does not.
 2. Per-joint noise lowers the diversity of every completion procedure. Where the procedure cannot trade diversity
-   back (D-Flow), it holds the front; where it can (inpainting), the isotropic network is ahead at equal APD.
+   back (D-Flow), it holds the front; where it can (inpainting), the isotropic network is ahead at equal APD. In
+   inpainting the lower diversity is overconfidence, largest on the narrow axes of the legs.
 3. It does not help motion denoising, where the task's noise is isotropic in positions.
 4. Within a joint the anisotropy is large, but the narrow axes of the legs are not where per-joint noise loses.
    Without another reason, an anisotropic kernel (option A: a wrapped anisotropic Gaussian, about 1.5–2 days; option
-   B: an anisotropic Brownian heat kernel, a week or more) is not built.
+   B: an anisotropic Brownian heat kernel, a week or more) is not built; nor is a family of scales between the two
+   ($c_j^\gamma$), since the isotropic end is the better calibrated one.
+5. What remains for the noise is a different use of it, not another fixed schedule: independent noise levels per joint
+   in training would make inpainting an exact conditional (observed joints clean) and the schedule a choice at
+   inference. Not built; its motivation is the approximation of DPS guidance, not these checks.
 
 ## What it does not show
 
@@ -276,6 +338,10 @@ std of 0.069), little better than the marginal alone.
 - The axis check: one point per model, at different APD on its 500 poses (7.04 against 6.75 cm on left_leg, 9.11
   against 8.15 on legs), enough to locate the extra error by axis, not to rank the models; the 500 poses are among
   the 1000 on which the points were chosen; c10 and 1.2M parameters only, `dposer_like_aniso` not checked.
+- The calibration check: the same two points and poses; on these 500 poses the per-joint point has a lower APD on
+  legs (8.15 against 9.11 cm), so part of the difference in $\rho$ is the position on the front. Both points were
+  chosen for the mean and APD, an objective that rewards sharp completions, so $\rho > 1$ for both is expected; the
+  calibration of other points of the fronts, or of D-Flow and the hybrid, was not measured.
 - Principal axes are a linear summary of a curved distribution (the twist of a knee depends on its bend); the
   conditional spreads come from a model broader than the data.
 - A noise per principal axis was not trained, so its effect on the hybrid and on completion is unknown; the check
@@ -292,6 +358,7 @@ std of 0.069), little better than the marginal alone.
   the band table from `explore/evaluation/completion_diagnostics/plot_study_fronts.py --bands`.
 - Phase 2026-11-28, scripts (`explore/ace_energy/`): `joint_anisotropy.py` (spreads, principal and conditional stds,
   drowning times), `axis_errors.py` (inpainting of the two networks and the error along the principal axes, with the
-  rule). Logs and outputs: `~/data/experiments/ace/pl/joint_anisotropy.log`; `~/data/experiments/ace/axis/`
-  (`axis_errors_500.log`, the completions `abl_norm{,_aniso}_{left_leg,legs}_500.pt`, `rule_500.json`). The Fisher
+  rule), `calibration.py` (the ratio $\rho$ on the same completions, with the rule). Logs and outputs:
+  `~/data/experiments/ace/pl/joint_anisotropy.log`; `~/data/experiments/ace/axis/` (`axis_errors_500.log`, the
+  completions `abl_norm{,_aniso}_{left_leg,legs}_500.pt`, `rule_500.json`, `calibration_500.log`). The Fisher
   energy: `~/data/experiments/ace/pl/energy_bm.pt` ([its report](ace/2026-11-27_fisher_boltzmann.md)).
